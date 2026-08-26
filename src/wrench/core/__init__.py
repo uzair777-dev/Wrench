@@ -1,0 +1,1 @@
+"""Core Git engine package."""

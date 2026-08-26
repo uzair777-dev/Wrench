@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+
+# Build outputs — generated, never committed; see packaging/build-all.sh
+build-dir/
+.flatpak-builder/
+dist/
+linux/               # Briefcase's generated AppImage build tree (§6.3)
+
+# Local-only scratch space (dev/planning/ is NOT here — that's tracked deliberately)
+dev/scratch/*
+!dev/scratch/.gitkeep

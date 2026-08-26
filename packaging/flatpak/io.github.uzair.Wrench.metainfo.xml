@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.uzair.Wrench</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>AGPL-3.0-or-later</project_license>
+  <name>Wrench</name>
+  <summary>Native Linux desktop Git client built with Qt/PySide6</summary>
+  <description>
+    <p>
+      Wrench is a modern, full-featured Git client for Linux desktop environments,
+      featuring deep forge integrations, intuitive staging, commit graphs, and safety net snapshots.
+    </p>
+  </description>
+  <launchable type="desktop-id">io.github.uzair.Wrench.desktop</launchable>
+  <developer id="io.github.uzair">
+    <name>Uzair</name>
+  </developer>
+</component>

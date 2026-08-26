@@ -1,0 +1,25 @@
+app-id: io.github.uzair.Wrench
+runtime: org.kde.Platform
+runtime-version: '6.10'
+sdk: org.kde.Sdk
+command: wrench
+
+finish-args:
+  - --socket=fallback-x11
+  - --socket=wayland
+  - --device=dri
+
+modules:
+  - name: python3-dependencies
+    buildsystem: simple
+    build-commands: []
+
+  - name: wrench
+    buildsystem: simple
+    build-commands:
+      - pip3 install --verbose --exists-action=i --no-index --find-links="file://${PWD}" --prefix=${FLATPAK_DEST} .
+      - install -Dm644 packaging/flatpak/io.github.uzair.Wrench.desktop ${FLATPAK_DEST}/share/applications/io.github.uzair.Wrench.desktop
+      - install -Dm644 packaging/flatpak/io.github.uzair.Wrench.metainfo.xml ${FLATPAK_DEST}/share/metainfo/io.github.uzair.Wrench.metainfo.xml
+    sources:
+      - type: dir
+        path: ../../

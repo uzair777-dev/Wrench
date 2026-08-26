@@ -1,0 +1,61 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "wrench"
+version = "0.1.0"
+description = "A native Linux desktop Git client built with Qt/PySide6"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "AGPL-3.0-or-later" }
+authors = [
+    { name = "Uzair" }
+]
+dependencies = [
+    "PySide6",
+    "pygit2",
+    "secretstorage",
+    "platformdirs",
+    "httpx",
+    "watchdog",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pytest-qt",
+    "responses",
+    "ruff",
+    "black",
+    "briefcase",
+    "pre-commit",
+]
+
+[project.scripts]
+wrench = "wrench.app:main"
+git-credential-wrench = "wrench.core.git_credential_helper:main"
+
+[project.entry-points."wrench.forge_adapters"]
+github = "wrench.forge.adapters.github:GitHubAdapter"
+gitlab = "wrench.forge.adapters.gitlab:GitLabAdapter"
+forgejo = "wrench.forge.adapters.forgejo:ForgejoAdapter"
+bitbucket = "wrench.forge.adapters.bitbucket:BitbucketAdapter"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"wrench.storage" = ["*.sql"]
+"wrench" = ["py.typed"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B"]
+
+[tool.black]
+line-length = 100
+target-version = ["py312"]

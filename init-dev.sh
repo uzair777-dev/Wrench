@@ -43,6 +43,10 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     echo -e "\n${YELLOW}Checking and installing dependencies (editable dev mode)...${RESET}"
     pip install -e ".[dev]" --no-build-isolation 2>/dev/null || pip install -e ".[dev]"
 
+    echo -e "\n${YELLOW}Setting up bin/ CLI helpers in .venv/bin/...${RESET}"
+    chmod +x bin/*
+    ln -sf "${SCRIPT_DIR}/bin/"* "${SCRIPT_DIR}/.venv/bin/"
+
     echo -e "\n${YELLOW}Setting up pre-commit hooks...${RESET}"
     pre-commit install
 

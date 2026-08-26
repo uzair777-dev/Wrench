@@ -56,7 +56,8 @@ class GitCommandError(WrenchGitError):
         self.args_list = args
         self.returncode = returncode
         cmd_str = " ".join(args)
+        error_detail = f"\n\nError output:\n{stderr.strip()}" if stderr and stderr.strip() else ""
         super().__init__(
-            f"git command failed (exit {returncode}): {cmd_str}",
+            f"git command failed (exit {returncode}): {cmd_str}{error_detail}",
             stderr=stderr,
         )

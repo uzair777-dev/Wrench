@@ -5,6 +5,7 @@ sets cwd, environment, and timeout. UI code never calls this module directly;
 it goes through core.engine.
 """
 
+import logging
 import os
 import subprocess
 from pathlib import Path
@@ -16,6 +17,8 @@ from .exceptions import (
     GitCommandError,
 )
 
+logger = logging.getLogger(__name__)
+
 
 def run_git(
     repo_path: Path,
@@ -25,6 +28,7 @@ def run_git(
     check: bool = True,
 ) -> subprocess.CompletedProcess:
     """Run a git command in the given repo directory."""
+    logger.debug("[git] Executing in '%s': git %s", repo_path, " ".join(args))
     env = os.environ.copy()
     env["GIT_TERMINAL_PROMPT"] = "0"
 
@@ -39,10 +43,26 @@ def run_git(
             env=env,
         )
     except subprocess.TimeoutExpired as e:
+        logger.error(
+            "[git] Command timed out after %ds in '%s': git %s",
+            timeout,
+            repo_path,
+            " ".join(args),
+        )
         raise GitCommandError(args, -1, f"Command timed out after {timeout}s") from e
 
-    if check and result.returncode != 0:
-        raise GitCommandError(args, result.returncode, result.stderr.strip())
+    if result.returncode != 0:
+        logger.debug(
+            "[git] Failed (exit %d): git %s\n  stderr: %s\n  stdout: %s",
+            result.returncode,
+            " ".join(args),
+            result.stderr.strip(),
+            result.stdout.strip(),
+        )
+        if check:
+            raise GitCommandError(args, result.returncode, result.stderr.strip())
+    else:
+        logger.debug("[git] Succeeded (exit 0): git %s", " ".join(args))
 
     return result
 

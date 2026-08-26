@@ -46,6 +46,12 @@ class MainWindow(QMainWindow):
 
         self._init_ui()
 
+    def closeEvent(self, event):
+        if self._watcher:
+            self._watcher.stop()
+            self._watcher = None
+        super().closeEvent(event)
+
     def _init_ui(self):
         central_widget = QWidget(self)
         self.setCentralWidget(central_widget)
@@ -113,6 +119,7 @@ class MainWindow(QMainWindow):
         # 3. Right pane: Diff View
         self.diff_view = DiffView(self)
         self.diff_view.hunk_staged.connect(lambda: self.refresh_status())
+        self.diff_view.file_staged.connect(lambda: self.refresh_status())
         splitter.addWidget(self.diff_view)
 
         splitter.setSizes([200, 300, 600])
@@ -263,6 +270,15 @@ class MainWindow(QMainWindow):
         msg = self.commit_box.toPlainText().strip()
         if not msg:
             QMessageBox.warning(self, "Empty Commit", "Please enter a commit message.")
+            return
+
+        if self.staged_list.count() == 0:
+            QMessageBox.warning(
+                self,
+                "Nothing Staged",
+                "No changes are staged for commit.\n\n"
+                "Please stage the files or hunks you want to commit first.",
+            )
             return
 
         def _do_commit():

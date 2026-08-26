@@ -1,13 +1,55 @@
 """Background worker for long-running git operations (§4.8).
 
 All blocking git operations initiated by the UI run in a background QThread.
-Module-level _active_threads set prevents Python GC from destroying QThread
-objects while their OS thread is still executing.
+Callbacks are dispatched to the Qt main thread via a queued dispatcher to ensure
+complete thread safety with GUI widgets.
 """
 
-from PySide6.QtCore import QObject, QThread, Signal
+import logging
 
-_active_threads: set[QThread] = set()
+from PySide6.QtCore import QObject, Qt, QThread, Signal, Slot
+
+logger = logging.getLogger(__name__)
+
+_active_workers: set[tuple[QThread, QObject]] = set()
+
+
+class _Dispatcher(QObject):
+    """Dispatches worker results to the GUI main thread."""
+
+    dispatch_finished = Signal(object, object)
+    dispatch_failed = Signal(object, object)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.dispatch_finished.connect(self._handle_finished, Qt.ConnectionType.QueuedConnection)
+        self.dispatch_failed.connect(self._handle_failed, Qt.ConnectionType.QueuedConnection)
+
+    @Slot(object, object)
+    def _handle_finished(self, callback, result):
+        if callback:
+            try:
+                callback(result)
+            except Exception as e:
+                logger.exception("Error in background worker on_finished callback: %s", e)
+
+    @Slot(object, object)
+    def _handle_failed(self, callback, exc):
+        if callback:
+            try:
+                callback(exc)
+            except Exception as e:
+                logger.exception("Error in background worker on_failed callback: %s", e)
+
+
+_dispatcher: _Dispatcher | None = None
+
+
+def _get_dispatcher() -> _Dispatcher:
+    global _dispatcher
+    if _dispatcher is None:
+        _dispatcher = _Dispatcher()
+    return _dispatcher
 
 
 class GitOperationWorker(QObject):
@@ -34,34 +76,34 @@ class GitOperationWorker(QObject):
 def run_in_background(
     fn, *args, on_finished=None, on_failed=None, on_progress=None, **kwargs
 ) -> QThread:
+    dispatcher = _get_dispatcher()
     thread = QThread()
     worker = GitOperationWorker(fn, *args, **kwargs)
     worker.moveToThread(thread)
 
-    # Retain thread reference until finished
-    _active_threads.add(thread)
+    pair = (thread, worker)
+    _active_workers.add(pair)
 
     thread.started.connect(worker.run)
 
     if on_finished:
-        worker.finished.connect(on_finished)
+        worker.finished.connect(lambda res: dispatcher.dispatch_finished.emit(on_finished, res))
     if on_failed:
-        worker.failed.connect(on_failed)
+        worker.failed.connect(lambda err: dispatcher.dispatch_failed.emit(on_failed, err))
     if on_progress:
         worker.progress.connect(on_progress)
 
+    # Schedule worker deletion inside thread event loop, then quit thread
+    worker.finished.connect(worker.deleteLater)
+    worker.failed.connect(worker.deleteLater)
+    worker.finished.connect(thread.quit)
+    worker.failed.connect(thread.quit)
+
     def _cleanup():
-        thread.quit()
-
-    worker.finished.connect(_cleanup)
-    worker.failed.connect(_cleanup)
-
-    def _on_thread_finished():
-        _active_threads.discard(thread)
-        worker.deleteLater()
+        _active_workers.discard(pair)
         thread.deleteLater()
 
-    thread.finished.connect(_on_thread_finished)
+    thread.finished.connect(_cleanup)
 
     thread.start()
     return thread

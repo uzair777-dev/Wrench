@@ -16,18 +16,28 @@ logger = logging.getLogger("wrench")
 
 
 def setup_logging(debug: bool = False):
-    """Configure structured logging output with timestamps and colors."""
-    level = logging.DEBUG if debug else logging.INFO
+    """Configure structured logging output with timestamps and component filters."""
     log_format = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
     date_format = "%H:%M:%S"
+
+    # Configure root handler
     logging.basicConfig(
-        level=level,
+        level=logging.INFO,
         format=log_format,
         datefmt=date_format,
         force=True,
     )
+
+    # Enable detailed debug logs for Wrench modules
+    wrench_level = logging.DEBUG if debug else logging.INFO
+    logging.getLogger("wrench").setLevel(wrench_level)
+
+    # Suppress verbose third-party internal buffer logs
+    logging.getLogger("watchdog").setLevel(logging.WARNING)
+    logging.getLogger("urllib3").setLevel(logging.WARNING)
+
     if debug:
-        logger.info("Verbose debug logging enabled (--debug).")
+        logger.info("Verbose debug logging enabled for Wrench (--debug).")
 
 
 def main():

@@ -62,6 +62,7 @@ fi
 
 # 4. Developer Aliases (Active when sourced into the interactive shell)
 alias wrench-run="python -m wrench.app"
+alias wrench-debug="python -m wrench.app --debug"
 alias wrench-test="pytest -v"
 alias wrench-lint="ruff check . && black --check ."
 alias wrench-format="ruff check --fix . && black ."
@@ -69,6 +70,7 @@ alias wrench-ci-check="ruff check . && black --check . && pytest -v"
 
 echo -e "\n${BOLD}Available Developer Commands / Aliases:${RESET}"
 echo -e "  ${CYAN}wrench-run${RESET}       : Launch Wrench application (${BOLD}python -m wrench.app${RESET})"
+echo -e "  ${CYAN}wrench-debug${RESET}     : Launch Wrench with verbose debug logging (${BOLD}--debug${RESET})"
 echo -e "  ${CYAN}wrench-test${RESET}      : Run all pytest suites (${BOLD}pytest -v${RESET})"
 echo -e "  ${CYAN}wrench-lint${RESET}      : Check ruff linting & black formatting"
 echo -e "  ${CYAN}wrench-format${RESET}    : Auto-format codebase with ruff & black"

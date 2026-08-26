@@ -1,9 +1,13 @@
 """Core Git Engine — public façade."""
 
+import os
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import pygit2
+
+from .exceptions import BinaryFileStagingError, PatchApplyError, WrenchRepoNotFoundError
 
 
 @dataclass
@@ -126,24 +130,37 @@ class RepoHandle:
         self.path = path
 
 
+# Import read_ops and write_ops after all dataclasses are defined to avoid circular imports
+from . import read_ops, write_ops  # noqa: E402
+
+
 def init_repo(path: Path) -> None:
-    raise NotImplementedError
+    write_ops.init_repo(path)
 
 
 def clone_repo(url: str, dest: Path, *, progress_cb=None) -> None:
-    raise NotImplementedError
+    write_ops.clone_repo(url, dest, progress_cb=progress_cb)
 
 
 def open_repo(path: Path) -> RepoHandle:
-    raise NotImplementedError
+    if not path.exists():
+        raise WrenchRepoNotFoundError(f"Path does not exist: {path}")
+    git_dir = path / ".git"
+    if not git_dir.exists() and not (path / "HEAD").exists():
+        raise WrenchRepoNotFoundError(f"Not a git repository: {path}")
+    try:
+        pygit2_repo = pygit2.Repository(str(path))
+    except pygit2.GitError as e:
+        raise WrenchRepoNotFoundError(str(e)) from e
+    return RepoHandle(pygit2_repo, path)
 
 
 def get_status(repo: RepoHandle) -> RepoStatus:
-    raise NotImplementedError
+    return read_ops.get_status(repo)
 
 
 def get_diff(repo: RepoHandle, path: str, *, staged: bool) -> Diff:
-    raise NotImplementedError
+    return read_ops.get_diff(repo, path, staged=staged)
 
 
 def get_log(
@@ -153,63 +170,174 @@ def get_log(
     limit: int = 100,
     offset: int = 0,
 ) -> list[Commit]:
-    raise NotImplementedError
+    return read_ops.get_log(repo, filter, limit=limit, offset=offset)
 
 
 def blame(repo: RepoHandle, path: str) -> list[BlameLine]:
-    raise NotImplementedError
+    return read_ops.blame_file(repo, path)
 
 
 def stage_file(repo: RepoHandle, path: str) -> None:
-    raise NotImplementedError
-
-
-def stage_hunk(repo: RepoHandle, path: str, hunk_id: str) -> None:
-    raise NotImplementedError
-
-
-def stage_lines(repo: RepoHandle, path: str, line_numbers: list[int]) -> None:
-    raise NotImplementedError
+    """Stage an entire file (add to index)."""
+    repo.pygit2_repo.index.read()
+    repo.pygit2_repo.index.add(path)
+    repo.pygit2_repo.index.write()
 
 
 def unstage_file(repo: RepoHandle, path: str) -> None:
-    raise NotImplementedError
+    """Unstage a file (remove from index, keep in worktree)."""
+    if repo.pygit2_repo.head_is_unborn:
+        repo.pygit2_repo.index.read()
+        repo.pygit2_repo.index.remove(path)
+        repo.pygit2_repo.index.write()
+    else:
+        write_ops.run_git(repo.path, ["reset", "HEAD", "--", path])
+        repo.pygit2_repo.index.read()
+
+
+def stage_hunk(repo: RepoHandle, path: str, hunk_id: str) -> None:
+    """Stage a single hunk via constructed patch + git apply --cached."""
+    diff = read_ops.get_diff(repo, path, staged=False)
+    if diff.is_binary:
+        raise BinaryFileStagingError(f"Cannot stage hunks of binary file: {path}")
+
+    target_hunk = None
+    for h in diff.hunks:
+        if h.id == hunk_id:
+            target_hunk = h
+            break
+
+    if target_hunk is None:
+        raise PatchApplyError(f"Hunk '{hunk_id}' not found in diff for {path}")
+
+    patch_text = _build_hunk_patch(path, target_hunk)
+    _apply_patch(repo, patch_text)
+
+
+def stage_lines(repo: RepoHandle, path: str, line_numbers: list[int]) -> None:
+    """Stage specific lines within a diff via a synthetic partial patch."""
+    diff = read_ops.get_diff(repo, path, staged=False)
+    if diff.is_binary:
+        raise BinaryFileStagingError(f"Cannot stage lines of binary file: {path}")
+
+    for hunk in diff.hunks:
+        patch_text = _build_line_patch(path, hunk, line_numbers)
+        if patch_text:
+            _apply_patch(repo, patch_text)
+            return
+
+    raise PatchApplyError(f"No matching hunk found for lines {line_numbers} in {path}")
+
+
+def _build_hunk_patch(path: str, hunk: Hunk) -> str:
+    """Build a standalone patch from a single hunk."""
+    lines = [
+        f"--- a/{path}",
+        f"+++ b/{path}",
+        f"@@ -{hunk.old_start},{hunk.old_count} +{hunk.new_start},{hunk.new_count} @@",
+    ]
+    for dl in hunk.lines:
+        lines.append(f"{dl.origin}{dl.content}")
+
+    return "\n".join(lines) + "\n"
+
+
+def _build_line_patch(path: str, hunk: Hunk, line_numbers: list[int]) -> str | None:
+    """Build a synthetic patch from specific lines within a hunk."""
+    hunk_new_lines = {
+        dl.new_lineno for dl in hunk.lines if dl.origin == "+" and dl.new_lineno is not None
+    }
+    hunk_old_lines = {
+        dl.old_lineno for dl in hunk.lines if dl.origin == "-" and dl.old_lineno is not None
+    }
+    requested = set(line_numbers)
+
+    if not (requested & hunk_new_lines) and not (requested & hunk_old_lines):
+        return None
+
+    new_lines = []
+    old_count = 0
+    new_count = 0
+
+    for dl in hunk.lines:
+        if dl.origin == " ":
+            new_lines.append(f" {dl.content}")
+            old_count += 1
+            new_count += 1
+        elif dl.origin == "+":
+            if dl.new_lineno in requested:
+                new_lines.append(f"+{dl.content}")
+                new_count += 1
+        elif dl.origin == "-":
+            if dl.old_lineno in requested:
+                new_lines.append(f"-{dl.content}")
+                old_count += 1
+            else:
+                new_lines.append(f" {dl.content}")
+                old_count += 1
+                new_count += 1
+
+    header = f"@@ -{hunk.old_start},{old_count} +{hunk.new_start},{new_count} @@"
+    result = [f"--- a/{path}", f"+++ b/{path}", header] + new_lines
+    return "\n".join(result) + "\n"
+
+
+def _apply_patch(repo: RepoHandle, patch_text: str) -> None:
+    """Write a patch to a temp file and apply it to the index."""
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".patch", delete=False) as f:
+        f.write(patch_text)
+        tmp_path = f.name
+
+    try:
+        write_ops.run_git(repo.path, ["apply", "--cached", tmp_path])
+        repo.pygit2_repo.index.read()
+    except write_ops.GitCommandError as e:
+        raise PatchApplyError(f"git apply --cached failed: {e.stderr}", stderr=e.stderr) from e
+    finally:
+        if os.path.exists(tmp_path):
+            os.unlink(tmp_path)
 
 
 def commit(repo: RepoHandle, message: str, *, amend: bool = False) -> str:
-    raise NotImplementedError
+    sha = write_ops.commit(repo.path, message, amend=amend)
+    repo.pygit2_repo.index.read()
+    return sha
 
 
 def list_branches(repo: RepoHandle) -> list[str]:
-    raise NotImplementedError
+    return list(repo.pygit2_repo.branches.local)
 
 
 def create_branch(repo: RepoHandle, name: str, *, from_ref: str = "HEAD") -> None:
-    raise NotImplementedError
+    write_ops.create_branch(repo.path, name, from_ref)
 
 
 def switch_branch(repo: RepoHandle, name: str) -> None:
-    raise NotImplementedError
+    write_ops.switch_branch(repo.path, name)
+    repo.pygit2_repo.index.read()
 
 
 def delete_branch(repo: RepoHandle, name: str, *, force: bool = False) -> None:
-    raise NotImplementedError
+    write_ops.delete_branch(repo.path, name, force=force)
 
 
 def rename_branch(repo: RepoHandle, old: str, new: str) -> None:
-    raise NotImplementedError
+    write_ops.rename_branch(repo.path, old, new)
 
 
 def stash_create(repo: RepoHandle, message: str | None = None) -> str:
-    raise NotImplementedError
+    res = write_ops.stash_push(repo.path, message)
+    repo.pygit2_repo.index.read()
+    return res
 
 
 def stash_apply(repo: RepoHandle, stash_id: str) -> None:
-    raise NotImplementedError
+    write_ops.stash_apply(repo.path, stash_id)
+    repo.pygit2_repo.index.read()
 
 
 def stash_drop(repo: RepoHandle, stash_id: str) -> None:
-    raise NotImplementedError
+    write_ops.stash_drop(repo.path, stash_id)
 
 
 def push(repo: RepoHandle, remote: str, branch: str, *, force: bool = False) -> None:

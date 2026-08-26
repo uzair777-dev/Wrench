@@ -65,3 +65,5 @@ Once `source init-dev.sh` is executed (or by running scripts directly from `bin/
 ## License
 
 GNU Affero General Public License v3.0 ([LICENSE](LICENSE)).
+
+test

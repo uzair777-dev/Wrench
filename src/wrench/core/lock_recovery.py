@@ -12,12 +12,13 @@ from .exceptions import StaleLockDetectedError
 _STALE_THRESHOLD_SECONDS = 5.0
 
 
-def check_lock(repo_path: Path) -> None:
+def check_lock(repo_path: Path | str) -> None:
     """Check for a stale .git/index.lock.
 
     Raises StaleLockDetectedError if a stale lock exists.
     """
-    lock_file = repo_path / ".git" / "index.lock"
+    p = Path(repo_path)
+    lock_file = p / ".git" / "index.lock"
     if not lock_file.exists():
         return
 
@@ -30,9 +31,10 @@ def check_lock(repo_path: Path) -> None:
         pass
 
 
-def remove_lock(repo_path: Path) -> None:
+def remove_lock(repo_path: Path | str) -> None:
     """Remove .git/index.lock."""
-    lock_file = repo_path / ".git" / "index.lock"
+    p = Path(repo_path)
+    lock_file = p / ".git" / "index.lock"
     if lock_file.exists():
         lock_file.unlink()
 

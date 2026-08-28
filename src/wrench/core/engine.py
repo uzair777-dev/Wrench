@@ -16,6 +16,11 @@ class FileChange:
     change_type: str  # 'added' | 'modified' | 'deleted' | 'renamed'
     old_path: str | None = None
 
+    @property
+    def status_code(self) -> str:
+        codes = {"added": "A", "modified": "M", "deleted": "D", "renamed": "R"}
+        return codes.get(self.change_type, "M")
+
 
 @dataclass
 class RepoStatus:
@@ -28,6 +33,15 @@ class RepoStatus:
     behind: int
     has_conflicts: bool
     detached_head_sha: str | None = None
+    head_sha: str | None = None
+
+    @property
+    def branch_name(self) -> str | None:
+        return self.current_branch
+
+    @property
+    def is_detached_head(self) -> bool:
+        return self.is_detached
 
 
 @dataclass
@@ -38,6 +52,10 @@ class Commit:
     author_email: str
     author_date: str  # ISO 8601
     parent_shas: list[str]
+
+    @property
+    def author(self) -> str:
+        return self.author_name
 
 
 @dataclass
@@ -130,29 +148,37 @@ class RepoHandle:
         self.path = path
 
 
-# Import read_ops and write_ops after all dataclasses are defined to avoid circular imports
-from . import read_ops, write_ops  # noqa: E402
+# Import read_ops, write_ops, identity, reflog after all dataclasses are defined
+from . import identity, read_ops, reflog, write_ops  # noqa: E402
 
 
-def init_repo(path: Path) -> None:
-    write_ops.init_repo(path)
+def init_repo(path: Path | str) -> RepoHandle:
+    p = Path(path)
+    write_ops.init_repo(p)
+    return open_repo(p)
 
 
-def clone_repo(url: str, dest: Path, *, progress_cb=None) -> None:
-    write_ops.clone_repo(url, dest, progress_cb=progress_cb)
+def clone_repo(url: str, dest: Path | str, *, progress_cb=None) -> RepoHandle:
+    p = Path(dest)
+    write_ops.clone_repo(url, p, progress_cb=progress_cb)
+    return open_repo(p)
 
 
-def open_repo(path: Path) -> RepoHandle:
-    if not path.exists():
-        raise WrenchRepoNotFoundError(f"Path does not exist: {path}")
-    git_dir = path / ".git"
-    if not git_dir.exists() and not (path / "HEAD").exists():
-        raise WrenchRepoNotFoundError(f"Not a git repository: {path}")
+clone = clone_repo
+
+
+def open_repo(path: Path | str) -> RepoHandle:
+    p = Path(path)
+    if not p.exists():
+        raise WrenchRepoNotFoundError(f"Path does not exist: {p}")
+    git_dir = p / ".git"
+    if not git_dir.exists() and not (p / "HEAD").exists():
+        raise WrenchRepoNotFoundError(f"Not a git repository: {p}")
     try:
-        pygit2_repo = pygit2.Repository(str(path))
+        pygit2_repo = pygit2.Repository(str(p))
     except pygit2.GitError as e:
         raise WrenchRepoNotFoundError(str(e)) from e
-    return RepoHandle(pygit2_repo, path)
+    return RepoHandle(pygit2_repo, p)
 
 
 def get_status(repo: RepoHandle) -> RepoStatus:
@@ -178,18 +204,28 @@ def blame(repo: RepoHandle, path: str) -> list[BlameLine]:
 
 
 def stage_file(repo: RepoHandle, path: str) -> None:
-    """Stage an entire file (add to index)."""
+    """Stage an entire file (add to index, or remove from index for deleted files)."""
     repo.pygit2_repo.index.read()
-    repo.pygit2_repo.index.add(path)
+    full_path = repo.path / path
+    if full_path.exists():
+        repo.pygit2_repo.index.add(path)
+    else:
+        try:
+            repo.pygit2_repo.index.remove(path)
+        except (KeyError, OSError):
+            pass
     repo.pygit2_repo.index.write()
 
 
 def unstage_file(repo: RepoHandle, path: str) -> None:
-    """Unstage a file (remove from index, keep in worktree)."""
+    """Unstage a file (restore index entry to match HEAD)."""
     if repo.pygit2_repo.head_is_unborn:
         repo.pygit2_repo.index.read()
-        repo.pygit2_repo.index.remove(path)
-        repo.pygit2_repo.index.write()
+        try:
+            repo.pygit2_repo.index.remove(path)
+            repo.pygit2_repo.index.write()
+        except (KeyError, OSError):
+            pass
     else:
         write_ops.run_git(repo.path, ["reset", "HEAD", "--", path])
         repo.pygit2_repo.index.read()
@@ -325,10 +361,21 @@ def rename_branch(repo: RepoHandle, old: str, new: str) -> None:
     write_ops.rename_branch(repo.path, old, new)
 
 
+def discard_file(repo: RepoHandle, path: str) -> None:
+    """Discard all changes in a tracked or untracked file."""
+    write_ops.discard_file(repo.path, path)
+    repo.pygit2_repo.index.read()
+
+
 def stash_create(repo: RepoHandle, message: str | None = None) -> str:
     res = write_ops.stash_push(repo.path, message)
     repo.pygit2_repo.index.read()
     return res
+
+
+def stash_pop(repo: RepoHandle, stash_id: str | int = 0) -> None:
+    write_ops.stash_pop(repo.path, stash_id)
+    repo.pygit2_repo.index.read()
 
 
 def stash_apply(repo: RepoHandle, stash_id: str) -> None:
@@ -338,6 +385,24 @@ def stash_apply(repo: RepoHandle, stash_id: str) -> None:
 
 def stash_drop(repo: RepoHandle, stash_id: str) -> None:
     write_ops.stash_drop(repo.path, stash_id)
+
+
+def check_identity(repo_or_path: RepoHandle | Path | str) -> tuple[str, str]:
+    path = repo_or_path.path if isinstance(repo_or_path, RepoHandle) else Path(repo_or_path)
+    return identity.check_identity(path)
+
+
+def set_identity(repo_or_path: RepoHandle | Path | str, name: str, email: str) -> None:
+    path = repo_or_path.path if isinstance(repo_or_path, RepoHandle) else Path(repo_or_path)
+    identity.set_identity(path, name, email)
+
+
+def get_reflog(repo: RepoHandle) -> list[ReflogEntry]:
+    return reflog.get_reflog(repo)
+
+
+def restore_to_ref(repo: RepoHandle, sha: str) -> None:
+    reflog.restore_to_ref(repo, sha)
 
 
 def push(repo: RepoHandle, remote: str, branch: str, *, force: bool = False) -> None:

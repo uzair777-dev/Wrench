@@ -1,1 +1,0 @@
-"""Sidebar UI package."""

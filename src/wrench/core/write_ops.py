@@ -7,6 +7,7 @@ it goes through core.engine.
 
 import logging
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -21,14 +22,15 @@ logger = logging.getLogger(__name__)
 
 
 def run_git(
-    repo_path: Path,
+    repo_path: Path | str,
     args: list[str],
     *,
     timeout: int = 30,
     check: bool = True,
 ) -> subprocess.CompletedProcess:
     """Run a git command in the given repo directory."""
-    logger.debug("[git] Executing in '%s': git %s", repo_path, " ".join(args))
+    p = Path(repo_path)
+    logger.debug("[git] Executing in '%s': git %s", p, " ".join(args))
     env = os.environ.copy()
     env["GIT_TERMINAL_PROMPT"] = "0"
 
@@ -36,7 +38,7 @@ def run_git(
     try:
         result = subprocess.run(
             cmd,
-            cwd=repo_path,
+            cwd=p,
             capture_output=True,
             text=True,
             timeout=timeout,
@@ -129,33 +131,59 @@ def stash_push(repo_path: Path, message: str | None = None) -> str:
     return "stash@{0}"
 
 
-def stash_apply(repo_path: Path, stash_id: str) -> None:
+def stash_pop(repo_path: Path | str, stash_id: str | int = 0) -> None:
+    """Apply a stash entry and drop it."""
+    id_str = f"stash@{{{stash_id}}}" if isinstance(stash_id, int) else str(stash_id)
+    run_git(repo_path, ["stash", "pop", id_str])
+
+
+def stash_apply(repo_path: Path | str, stash_id: str) -> None:
     """Apply a stash entry without removing it."""
     run_git(repo_path, ["stash", "apply", stash_id])
 
 
-def stash_drop(repo_path: Path, stash_id: str) -> None:
+def stash_drop(repo_path: Path | str, stash_id: str) -> None:
     """Remove a stash entry."""
     run_git(repo_path, ["stash", "drop", stash_id])
 
 
-def init_repo(repo_path: Path) -> None:
+def discard_file(repo_path: Path | str, file_path: str) -> None:
+    """Discard changes in a file (restore tracked, unlink untracked)."""
+    p = Path(repo_path)
+    target = p / file_path
+
+    # Check if tracked by git
+    result = run_git(p, ["ls-files", file_path], check=False)
+    if result.returncode == 0 and result.stdout.strip():
+        # Tracked file: restore in index and working tree
+        run_git(p, ["checkout", "HEAD", "--", file_path], check=False)
+    else:
+        # Untracked file: delete from filesystem
+        if target.is_dir() and not target.is_symlink():
+            shutil.rmtree(target, ignore_errors=True)
+        elif target.exists() or target.is_symlink():
+            target.unlink(missing_ok=True)
+
+
+def init_repo(repo_path: Path | str) -> None:
     """Initialize a new git repository."""
-    repo_path.mkdir(parents=True, exist_ok=True)
-    run_git(repo_path, ["init"])
+    p = Path(repo_path)
+    p.mkdir(parents=True, exist_ok=True)
+    run_git(p, ["init"])
 
 
 def clone_repo(
     url: str,
-    dest: Path,
+    dest: Path | str,
     *,
     timeout: int = 600,
     progress_cb=None,
 ) -> None:
     """Clone a repository."""
-    dest.parent.mkdir(parents=True, exist_ok=True)
+    d = Path(dest)
+    d.parent.mkdir(parents=True, exist_ok=True)
     run_git(
-        dest.parent,
-        ["clone", url, str(dest.name)],
+        d.parent,
+        ["clone", url, str(d.name)],
         timeout=timeout,
     )

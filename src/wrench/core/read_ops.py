@@ -105,6 +105,8 @@ def get_status(repo: RepoHandle) -> RepoStatus:
                 unstaged.append(FileChange(path=filepath, change_type=change_type))
                 break
 
+    head_sha = str(r.head.target) if not head_is_unborn and hasattr(r, "head") and r.head else None
+
     return RepoStatus(
         staged=staged,
         unstaged=unstaged,
@@ -115,6 +117,7 @@ def get_status(repo: RepoHandle) -> RepoStatus:
         behind=behind,
         has_conflicts=has_conflicts,
         detached_head_sha=detached_head_sha,
+        head_sha=head_sha,
     )
 
 

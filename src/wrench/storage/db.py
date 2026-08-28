@@ -48,4 +48,6 @@ def run_migrations(conn: sqlite3.Connection) -> None:
         if current_version == 0:
             schema_sql = resources.files("wrench.storage").joinpath("schema.sql").read_text()
             conn.executescript(schema_sql)
+            conn.execute("PRAGMA user_version = 1")
+            conn.commit()
             logger.info("Applied initial schema (version 1)")

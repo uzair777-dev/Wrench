@@ -54,11 +54,20 @@ class RepoWatcher(QObject):
     status_changed = Signal()
     _raw_event_signal = Signal()
 
-    def __init__(self, repo_path: Path, parent=None, debounce_ms: int = 300):
+    def __init__(
+        self,
+        repo_path: Path | str,
+        on_change=None,
+        parent=None,
+        debounce_ms: int = 300,
+    ):
         super().__init__(parent)
-        self._repo_path = repo_path
+        self._repo_path = Path(repo_path)
         self._observer: Observer | None = None
         self._fallback: PollingFallback | None = None
+
+        if on_change:
+            self.status_changed.connect(on_change)
 
         self._debounce_timer = QTimer(self)
         self._debounce_timer.setSingleShot(True)

@@ -36,19 +36,29 @@ def add_repo(
     path: str,
     display_name: str | None = None,
 ) -> int:
+    """Adds a repository or updates last_opened_at if already registered."""
+    p_str = str(path)
     if display_name is None:
-        display_name = Path(path).name
+        display_name = Path(p_str).name
 
+    now = datetime.now().isoformat()
     with _db_lock:
         cursor = conn.execute(
-            "INSERT INTO repos (path, display_name) VALUES (?, ?)",
-            (path, display_name),
+            "INSERT INTO repos (path, display_name, last_opened_at, is_missing) "
+            "VALUES (?, ?, ?, 0) "
+            "ON CONFLICT(path) DO UPDATE SET "
+            "last_opened_at = excluded.last_opened_at, is_missing = 0",
+            (p_str, display_name, now),
         )
         conn.commit()
-        return cursor.lastrowid  # type: ignore[return-value]
+        if cursor.lastrowid:
+            return cursor.lastrowid
+        row = conn.execute("SELECT id FROM repos WHERE path = ?", (p_str,)).fetchone()
+        return row["id"] if row else 0
 
 
 def list_repos(conn: sqlite3.Connection) -> list[RepoRecord]:
+    """Lists all registered repositories, sorted by last_opened_at descending."""
     with _db_lock:
         rows = conn.execute(
             "SELECT * FROM repos ORDER BY last_opened_at DESC NULLS LAST"
@@ -58,7 +68,7 @@ def list_repos(conn: sqlite3.Connection) -> list[RepoRecord]:
 
 def get_repo_by_path(conn: sqlite3.Connection, path: str) -> RepoRecord | None:
     with _db_lock:
-        row = conn.execute("SELECT * FROM repos WHERE path = ?", (path,)).fetchone()
+        row = conn.execute("SELECT * FROM repos WHERE path = ?", (str(path),)).fetchone()
         return _row_to_record(row) if row else None
 
 
@@ -68,40 +78,72 @@ def get_repo_by_id(conn: sqlite3.Connection, repo_id: int) -> RepoRecord | None:
         return _row_to_record(row) if row else None
 
 
-def remove_repo(conn: sqlite3.Connection, repo_id: int) -> None:
+def remove_repo(conn: sqlite3.Connection, path_or_id: str | int) -> None:
+    """Removes a repository by ID or path."""
     with _db_lock:
-        conn.execute("DELETE FROM repos WHERE id = ?", (repo_id,))
+        if isinstance(path_or_id, int):
+            conn.execute("DELETE FROM repos WHERE id = ?", (path_or_id,))
+        else:
+            conn.execute("DELETE FROM repos WHERE path = ?", (str(path_or_id),))
         conn.commit()
 
 
-def update_last_opened(conn: sqlite3.Connection, repo_id: int) -> None:
+def touch_repo(conn: sqlite3.Connection, path_or_id: str | int) -> None:
+    """Updates last_opened_at timestamp by ID or path."""
+    now = datetime.now().isoformat()
     with _db_lock:
-        conn.execute(
-            "UPDATE repos SET last_opened_at = ? WHERE id = ?",
-            (datetime.now().isoformat(), repo_id),
-        )
+        if isinstance(path_or_id, int):
+            conn.execute(
+                "UPDATE repos SET last_opened_at = ? WHERE id = ?",
+                (now, path_or_id),
+            )
+        else:
+            conn.execute(
+                "UPDATE repos SET last_opened_at = ? WHERE path = ?",
+                (now, str(path_or_id)),
+            )
         conn.commit()
 
 
-def update_last_branch(conn: sqlite3.Connection, repo_id: int, branch: str) -> None:
+def update_last_opened(conn: sqlite3.Connection, path_or_id: str | int) -> None:
+    touch_repo(conn, path_or_id)
+
+
+def update_last_branch(conn: sqlite3.Connection, path_or_id: str | int, branch: str) -> None:
     with _db_lock:
-        conn.execute(
-            "UPDATE repos SET last_branch = ? WHERE id = ?",
-            (branch, repo_id),
-        )
+        if isinstance(path_or_id, int):
+            conn.execute(
+                "UPDATE repos SET last_branch = ? WHERE id = ?",
+                (branch, path_or_id),
+            )
+        else:
+            conn.execute(
+                "UPDATE repos SET last_branch = ? WHERE path = ?",
+                (branch, str(path_or_id)),
+            )
         conn.commit()
 
 
-def mark_missing(conn: sqlite3.Connection, repo_id: int) -> None:
+def mark_missing(conn: sqlite3.Connection, path_or_id: str | int) -> None:
     with _db_lock:
-        conn.execute("UPDATE repos SET is_missing = 1 WHERE id = ?", (repo_id,))
+        if isinstance(path_or_id, int):
+            conn.execute("UPDATE repos SET is_missing = 1 WHERE id = ?", (path_or_id,))
+        else:
+            conn.execute("UPDATE repos SET is_missing = 1 WHERE path = ?", (str(path_or_id),))
         conn.commit()
 
 
-def relocate_repo(conn: sqlite3.Connection, repo_id: int, new_path: str) -> None:
+def relocate_repo(conn: sqlite3.Connection, old_path_or_id: str | int, new_path: str) -> None:
+    """Updates the filesystem path of a relocated repository."""
     with _db_lock:
-        conn.execute(
-            "UPDATE repos SET path = ?, is_missing = 0 WHERE id = ?",
-            (new_path, repo_id),
-        )
+        if isinstance(old_path_or_id, int):
+            conn.execute(
+                "UPDATE repos SET path = ?, is_missing = 0 WHERE id = ?",
+                (str(new_path), old_path_or_id),
+            )
+        else:
+            conn.execute(
+                "UPDATE repos SET path = ?, is_missing = 0 WHERE path = ?",
+                (str(new_path), str(old_path_or_id)),
+            )
         conn.commit()

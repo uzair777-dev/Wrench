@@ -37,9 +37,13 @@ Wrench is engineered around four non-negotiable architectural tenets:
 graph TD
     subgraph UI ["UI Layer (PySide6)"]
         MW[MainWindow]
-        SB[RepoSidebar]
-        DV[DiffWidget]
+        TC[TabContainer / TabButton]
+        CT[ChangesTab]
+        HT[HistoryTab - Skeleton]
+        BW[BranchSwitcherWidget]
+        DV[DiffView]
         CG[CommitGraph - Phase 2]
+        MT[MergeTool - Phase 2]
         FP[ForgePanel - Phase 4]
         WKR[Worker Thread Pool & Dispatcher]
     end
@@ -63,6 +67,7 @@ graph TD
     subgraph Storage ["Storage Layer (src/wrench/storage)"]
         DB[(SQLite: wrench.db)]
         REG[repo_registry.py]
+        SET[settings.py]
         SNPREG[snapshots.py]
     end
 
@@ -73,9 +78,18 @@ graph TD
         FORGE[forge.capability / adapters]
     end
 
+    MW --> TC
+    TC --> CT
+    TC --> HT
+    CT --> BW
+    CT --> DV
     MW --> ENG
+    CT --> ENG
+    HT --> ENG
+    BW --> ENG
     DV --> ENG
-    SB --> REG
+    CT --> REG
+    MW --> SET
     ENG --> READ
     ENG --> WRITE
     ENG --> STG
@@ -86,6 +100,7 @@ graph TD
     INOT -->|Qt Signal| MW
     SNP --> DB
     REG --> DB
+    SET --> DB
     WRITE --> GCH
     GCH --> CRED
     CRED --> SS
@@ -97,10 +112,42 @@ graph TD
 ## 3. Component Breakdown
 
 ### 3.1 UI Layer (`src/wrench/ui/`)
-- **`MainWindow` (`ui/main_window.py`)**: Root `QMainWindow` and lifecycle coordinator. Owns the active `RepoHandle`, the active `RepoWatcher`, and handles window level error dialogs.
-- **`RepoSidebar` (`ui/sidebar/repo_sidebar.py`)**: Lists registered repositories, missing indicators, and provides quick repository switching.
-- **`DiffWidget` (`ui/diff_view/diff_widget.py`)**: Read-only, syntax-highlighted diff viewer rendering hunks with line-number metadata. Provides hunk dropdown controls and whole-file/hunk staging buttons.
-- **`workers.py`**: Background thread runner using `QThread` and a thread-safe `_Dispatcher` `QObject` via `Qt.ConnectionType.QueuedConnection` to ensure callbacks execute strictly on the main thread.
+- **`MainWindow` (`ui/main_window.py`)**: Root `QMainWindow` and lifecycle coordinator.
+  - Native `QMenuBar` with **File**, **Edit**, **View**, and **Help** menus.
+  - Hosts the central `TabContainer`.
+  - Persists window geometry and tab orientation into `app_settings` across sessions.
+  - Enforces quit guards when unsaved commit message drafts exist.
+  - Owns the active `RepoHandle` and `RepoWatcher`.
+- **`TabContainer` & `TabButton` (`ui/tabs/tab_bar.py`)**: Custom hybrid tab system.
+  - Supports dynamic switching between **Vertical** (left sidebar) and **Horizontal** (top bar) orientations.
+  - Pinned non-closable `Changes` tab (index 0) and closable category / dynamic detail tabs.
+  - Trailing `+` button with category tabs dropdown menu.
+  - Per-repo deduplication rule: `(tab_type, repo_path, entity_id)` avoids duplicate tabs.
+  - Keyboard tab switching (`Ctrl+1` .. `Ctrl+9`).
+- **`ChangesTab` (`ui/tabs/changes_tab.py`)**: Primary working tree changes workspace.
+  - Flush borderless repository selector `QComboBox` with missing repository auto-locate prompts.
+  - Embedded `BranchSwitcherWidget`.
+  - Merge conflict banner when merge conflicts are in progress.
+  - Unified changed files list (staged + unstaged + untracked) with status badges (`M`, `A`, `D`, `R`, `?`, `⚠ C`) and path tooltips.
+  - Tri-state select-all checkbox cycling `Unchecked ➔ All Checked ➔ All Unchecked`.
+  - Right-click file context menu (`Stage`, `Unstage`, `Discard`, `Copy Relative/Absolute Path`).
+  - Commit section with forge account avatar button, 72-character soft limit summary warning, description editor, amend toggle (pre-filled from last commit), and dynamic commit button.
+  - Right column embedded `DiffView` with clean state and programming quotes.
+- **`BranchSwitcherWidget` (`ui/widgets/branch_switcher.py`)**: Branch indicator and switcher.
+  - Displays active branch (`🌿 main ▾`), detached HEAD (`🔗 HEAD detached at {sha}`), or unborn branch (`🌿 main (initial)`).
+  - Searchable branch picker popup listing local and remote tracking branches.
+  - Uncommitted changes prompt: `Stash & Switch`, `Switch Anyway`, or `Cancel`.
+  - Right-click context actions: `Create New Branch…`, `Rename Branch…`, `Delete Branch…`.
+- **`HistoryTab` (`ui/tabs/history_tab.py`)**: Git log and history visualization skeleton.
+  - Top search and filter bar (search input, author filter, path filter, clear button) with 300ms debouncing.
+  - Swappable graph placeholder container (wired to `CommitGraphWidget` in Phase 2).
+  - Unborn branch empty state (`"No history yet"`).
+  - Hidden detail panel slot.
+- **`DiffView` (`ui/diff_view/diff_widget.py`)**: Syntax-highlighted diff viewer.
+  - Renders diff lines with line-number metadata.
+  - Provides hunk dropdown controls and whole-file / hunk staging action buttons.
+  - Binary file detection and exception safety.
+- **`workers.py`**: Background thread runner using `QThread` and a thread-safe `_Dispatcher` `QObject` via `Qt.ConnectionType.QueuedConnection` to ensure callbacks execute strictly on the main GUI thread.
 
 ### 3.2 Core Git Engine (`src/wrench/core/`)
 - **`engine.py`**: Public façade exposing unified, typed functions. Converts all internal exceptions into typed `WrenchGitError` derivatives (`WrenchRepoNotFoundError`, `GitCommandError`, `StagingError`, etc.).
@@ -124,7 +171,8 @@ graph TD
   - Configured with `check_same_thread=False`.
   - Serialized through a single process-wide `threading.Lock()` to prevent SQLite concurrency deadlocks.
   - Automated corrupt database quarantine and recovery.
-- **`repo_registry.py`**: Repository CRUD operations, tracking last opened times and relocated paths.
+- **`repo_registry.py`**: Repository CRUD operations, tracking last opened times, missing states, and relocated paths.
+- **`settings.py`**: App-level and per-repository key-value configuration storage.
 - **`schema.sql`**: Normalized relational schema with foreign key cascading deletes.
 
 ---
@@ -159,7 +207,38 @@ graph TD
 [inotify_watcher] detects index change -> 300ms debounce -> triggers UI refresh
 ```
 
-### 4.2 Non-Blocking Background Operations
+### 4.2 Safe Branch Switching Workflow
+```
+[User selects branch in BranchSwitcherWidget]
+        │
+        ▼
+[BranchSwitcherWidget] checks repo status
+        │
+   ┌────┴────────────────────────┐
+   ▼                             ▼
+[Worktree is Clean]        [Uncommitted Changes Exist]
+   │                             │
+   │                             ▼
+   │                       [Prompt Dialog: Stash & Switch / Switch Anyway / Cancel]
+   │                             │
+   │              ┌──────────────┴──────────────┐
+   │              ▼                             ▼
+   │        [Stash & Switch]              [Switch Anyway]
+   │              │                             │
+   │        1. engine.stash_create()            │
+   │        2. engine.switch_branch()           │
+   │        3. engine.stash_pop()               │
+   │              │                             │
+   └──────────────┬─────────────────────────────┘
+                  │
+                  ▼
+          [engine.switch_branch()]
+                  │
+                  ▼
+          [inotify_watcher] -> triggers ChangesTab & HistoryTab refresh
+```
+
+### 4.3 Non-Blocking Background Operations
 ```
 [UI Trigger: Clone / Push / Fetch]
         │
@@ -236,7 +315,9 @@ wrench/
 │   └── planning/                 # Architectural specifications, SRS & phase logs
 │       ├── srs.md
 │       ├── implementation-plan.md
-│       └── phase-one.md
+│       ├── ui-planning.md
+│       ├── phase-1.md
+│       └── phase-1.5.md
 ├── packaging/
 │   └── flatpak/                  # Flatpak packaging manifests
 ├── src/wrench/
@@ -252,11 +333,20 @@ wrench/
 │   │   └── paths.py              # XDG / platformdirs path resolution
 │   ├── forge/                    # Forge provider capability system
 │   ├── storage/                  # SQLite storage & repository registry
+│   │   ├── db.py                 # SQLite connection management & locks
+│   │   ├── repo_registry.py      # Repository tracking CRUD
+│   │   ├── settings.py           # App & repo key-value settings
+│   │   └── schema.sql            # Normalized relational schema
 │   ├── ui/                       # PySide6 desktop UI
 │   │   ├── main_window.py        # Main application window
 │   │   ├── workers.py            # Thread-safe background worker marshaller
-│   │   ├── sidebar/              # Repository sidebar widgets
-│   │   └── diff_view/            # Monospace diff viewer & staging controls
+│   │   ├── tabs/                 # Hybrid tab navigation system
+│   │   │   ├── tab_bar.py        # TabContainer & TabButton widgets
+│   │   │   ├── changes_tab.py    # Primary Changes workspace
+│   │   │   └── history_tab.py    # History / Commit graph skeleton
+│   │   ├── widgets/              # Reusable UI widgets
+│   │   │   └── branch_switcher.py# Interactive branch selector & popup
+│   │   └── diff_view/            # Syntax-highlighted diff viewer & staging
 │   └── watcher/                  # Inotify filesystem watching & debouncing
 └── tests/                        # Comprehensive test suite (unit, integration, UI)
 ```

@@ -179,12 +179,37 @@ wrench/
 │   │   ├── main_window.py
 │   │   ├── workers.py              # GitOperationWorker + run_in_background — §4.8, used by every
 │   │   │                            #   UI call site that invokes a long-running core.engine function
-│   │   ├── sidebar/                # repo registry / sidebar view
-│   │   ├── diff_view/              # FR-2.1
-│   │   ├── commit_graph/           # FR-2.2/2.3
-│   │   ├── merge_tool/             # FR-3.2
+│   │   ├── sidebar/                # [DEPRECATED by Phase 1.5] replaced by repo dropdown in changes_tab
+│   │   ├── tabs/                   # Phase 1.5: hybrid tab navigation shell (singletons + dynamic detail tabs)
+│   │   │   ├── __init__.py
+│   │   │   ├── tab_bar.py          # custom TabBar widget (vertical/horizontal, closable, dedup, +)
+│   │   │   ├── changes_tab.py      # repo selector + branch switcher + unified file list + commit + diff
+│   │   │   ├── history_tab.py      # skeleton: search bar + graph placeholder + detail panel slot
+│   │   │   ├── pr_list_tab.py      # Phase 4: PR/MR list category tab
+│   │   │   ├── pr_detail_tab.py    # Phase 4: PR detail dynamic tab
+│   │   │   ├── issue_list_tab.py   # Phase 4: Issues list category tab
+│   │   │   └── issue_detail_tab.py # Phase 4: Issue detail dynamic tab
+│   │   ├── widgets/                # Reusable UI widgets
+│   │   │   ├── __init__.py
+│   │   │   └── branch_switcher.py  # branch indicator/switcher dropdown (FR-1.6, ui-planning §3.2b)
+│   │   ├── dialogs/                # Dedicated dialogs
+│   │   │   ├── __init__.py
+│   │   │   ├── clone_dialog.py     # Clone repository dialog (FR-4.1, ui-planning §6.2)
+│   │   │   ├── stash_dialog.py     # Stash manager dialog (FR-1.7, ui-planning §6.1)
+│   │   │   ├── identity_dialog.py  # Git identity override dialog (FR-1.5, ui-planning §6.5)
+│   │   │   ├── reflog_dialog.py    # Reflog history & restore dialog (FR-1.10, ui-planning §6.7)
+│   │   │   ├── remotes_dialog.py   # Manage remotes configuration dialog (FR-4.4, ui-planning §6.8)
+│   │   │   └── backup_dialog.py    # On-demand backup & restore dialogs (FR-8.1-8.4, ui-planning §6.9)
+│   │   ├── diff_view/              # FR-2.1 (re-parented into changes_tab in Phase 1.5)
+│   │   ├── commit_graph/           # FR-2.2/2.3 (plugs into history_tab's graph slot in Phase 2)
+│   │   │   ├── graph_widget.py     # custom QPainter commit graph + accessible tree fallback
+│   │   │   ├── layout.py           # pure-python lane assignment
+│   │   │   └── detail_panel.py     # slide-in commit detail panel
+│   │   ├── merge_tool/             # FR-3.2: 3-way visual conflict resolution tool (ui-planning §6.6)
+│   │   │   ├── __init__.py
+│   │   │   └── merge_dialog.py     # 3-pane top (Ours/Base/Theirs) + Result bottom editor
 │   │   ├── forge_panel/            # FR-5.x UI
-│   │   └── snapshots_panel/        # FR-10.6: browse/restore rolling snapshots
+│   │   └── snapshots_panel.py      # FR-10.6: browse/restore rolling snapshots (ui-planning §6.4)
 │   └── py.typed
 ├── tests/
 │   ├── unit/
@@ -1030,8 +1055,117 @@ Each phase should be independently shippable/testable — don't let phases bleed
     - `ui/diff_view/`: the default tab (FR-2.1) — a two-pane layout: a `QListWidget` of changed files on the left (from `RepoStatus.staged`/`.unstaged`/`.untracked`, each row carrying a checkbox reflecting staged state), and a syntax-highlighted diff render of the selected file on the right, built from `get_diff`'s hunk data. Toggling a file's checkbox calls `stage_file`/`unstage_file`; a right-click context menu on a hunk exposes "Stage hunk" (`stage_hunk`), and drag-selecting specific lines within a hunk exposes "Stage selected lines" (`stage_lines`) — this is the concrete UI surface for the staging algorithm in step 6.
 13. **Acceptance check**: `pytest tests/unit/core tests/unit/storage -v` all green; manual QA — install via Flatpak, add a repo, stage/commit a line-level change, create/switch/delete a branch, stash and reapply, kill the app mid-write to leave a lock file and confirm the app detects and offers recovery on next launch, confirm a snapshot appears after a commit and after a manual "snapshot now" click.
 
+### Phase 1.5 — UI Shell Overhaul
+**Prerequisites:** Phase 1's acceptance check passed. The core engine, storage, watcher, and diff view all work. This phase restructures the UI *around* those existing components — it does not rewrite any core logic.
+
+**Design reference:** All layout, widget specs, interactions, and edge cases for this phase are defined in [`ui-planning.md`](file:///home/uzair/Projects/wrench/dev/planning/ui-planning.md). This section specifies only the **implementation steps and file-level changes** — for visual layouts, exact widget properties, and behavioral edge cases, cross-reference the corresponding `ui-planning.md` section cited in each step.
+
+**Scope boundary:** This phase delivers the tab-system shell, the fully redesigned Changes tab, and a **skeleton History tab** (container + empty state + placeholder for the commit graph widget). The full commit graph rendering, lane-assignment algorithm, and search/filter implementation remain in Phase 2 — this phase creates the slot they plug into.
+
+1. **Window chrome and menu bar** (`ui/main_window.py` rewrite) — ref: `ui-planning.md` §1
+   - Replace the existing `QSplitter`-based layout with a `QVBoxLayout` containing: (a) a `QMenuBar` at the top, (b) the tab system widget (step 2) filling the remaining space.
+   - Implement the full menu structure per §1.2: File (New/Open/Clone/Close/Quit), Edit (Undo/Redo/Cut/Copy/Paste/Select All/Find), View (Tab Position toggle, Zoom), Help (About/Docs). Wire the File menu items to their existing `core.engine` functions (init_repo, open_repo, clone_repo). Edit and View items can be stubs initially except Quit (which must work).
+   - Window geometry persistence: save position, size, and splitter ratios to `app_settings` on `closeEvent`; restore on startup. If restored geometry places the window off-screen (e.g., monitor removed), fall back to default `1200×800` centered.
+   - Quit guards per §1.3: check for (a) non-empty commit message/description text fields, (b) in-progress background operations via `workers.py`. Show appropriate confirmation dialogs before allowing close.
+   - Default size `1200×800`, minimum `900×600`.
+
+2. **Tab bar widget** (`ui/tabs/tab_bar.py` [NEW]) — ref: `ui-planning.md` §2
+   - Create a custom `TabBar` widget (subclass `QTabWidget` or build from `QToolButton` list + `QStackedWidget` — the latter gives full styling control).
+   - Hybrid tab model (§2.1): Category tabs (Changes, History, PR List, Issues List) are singletons; detail tabs (PR #42, Issue #17) are dynamic and closable.
+   - Per-repo deduplication rule (§2.1, §2.8): tab identity is `(tab_type, repo_path, entity_id)`. Opening an existing entity focuses that tab instead of opening a duplicate.
+   - Vertical tab mode (default): tab buttons stacked vertically on the left edge, content area to the right. Horizontal mode: tab buttons across the top. Toggled via View → Tab Position menu, persisted to `app_settings`.
+   - Tab properties: icon + short label, close `×` button on hover for all tabs except the Changes tab (which is permanently pinned and non-closable). `+` button trailing the tab list to add new category tabs (shows a dropdown: "History", "Pull Requests", "Issues" — only "History" is functional in this phase).
+   - Keyboard: `Ctrl+1/2/3…` switches by position.
+   - Tab persistence: save the open tab set and order to `app_settings` on close, restore on next launch.
+   - API: `add_tab(widget, label, icon, closable)`, `remove_tab(index)`, signal `tab_changed(index)`.
+
+3. **Changes tab — repository selector & branch switcher** (`ui/tabs/changes_tab.py` [NEW], `ui/widgets/branch_switcher.py` [NEW]) — ref: `ui-planning.md` §3.2, §3.2b
+   - Top of the Changes tab: a custom-styled `QComboBox` (flush, borderless, blended with theme) populated from `repo_registry.list_repos()`, sorted by `last_opened_at DESC`.
+   - On selection change → call `_open_repo_path()`, restart watcher, refresh status, and emit a signal (`repo_changed(path)`) that all open tabs connect to for refresh.
+   - Directly below repo dropdown: Branch indicator/switcher widget (`🌿 main ▾`, `ui-planning.md` §3.2b). Clicking opens a filterable branch popup list; switching branch calls `engine.switch_branch()`. If uncommitted changes exist, prompt with "Stash & Switch / Switch Anyway / Cancel". Right-click menu exposes Create/Rename/Delete branch operations.
+   - **Edge cases (all from §3.2, §3.2b):**
+     - Zero repos: show placeholder "No repositories" in dropdown; file list area shows centered empty state with "Open or clone a repository to get started" and two action buttons ("Open Repository…", "Clone Repository…") triggering the same File menu actions.
+     - First launch: auto-select most recently opened repo.
+     - Missing repo: show with ⚠️ icon and muted text. Selecting triggers a "Locate / Remove / Cancel" dialog. "Locate" uses a file picker → `repo_registry.relocate_repo()`.
+     - Detached HEAD: branch switcher shows `🔗 HEAD detached at {short_sha}` in warning color.
+     - Dropdown refreshes on: tab visibility, File → Open/Clone/New completion, repo removal.
+
+4. **Changes tab — unified file list** (`ui/tabs/changes_tab.py` continued) — ref: `ui-planning.md` §3.3
+   - Replace the Phase 1 split "Staged"/"Unstaged" two-list design with a **single unified `QListWidget`** showing all changed files (staged + unstaged + untracked combined). Each row has: a checkbox (checked = selected for commit), a change-type indicator (M/A/D/R/?), and the file's repo-relative path.
+   - **Select-all checkbox**: tri-state (`Qt.PartiallyChecked`). Fully checked when all files checked, unchecked when none, indeterminate when mixed. Click cycles: indeterminate/unchecked → all checked → all unchecked.
+   - All files checked by default when changes are detected.
+   - Sorting: staged first, then unstaged, then untracked. Alphabetical within each group.
+   - Click on row = select for diff display (does NOT toggle checkbox). Only clicking the checkbox toggles it.
+   - **Right-click context menu**: Stage File, Unstage File, Discard Changes (with confirmation), separator, Open in File Manager, Copy Relative Path, Copy Absolute Path.
+   - **Edge cases**: file list refresh preserves selection and checkbox states; if the selected file disappears, clear diff and show "Select a file to view changes"; long paths truncated with `…` from the left, full path in tooltip; count badge next to select-all ("☑ 42 files").
+
+5. **Changes tab — commit section** (`ui/tabs/changes_tab.py` continued) — ref: `ui-planning.md` §3.4
+   - Bottom of the left column. Layout top-to-bottom:
+     a. **Account icon** (leftmost): a small circular icon showing the current forge account's avatar/initial. Hover → tooltip with account details. Click → account picker popup (logged-in accounts + "Add account…"). If no forge account linked, show a generic user icon.
+     b. **Commit message** (`QLineEdit`): single-line, placeholder "Commit message", soft 72-char limit (subtle color change past 72, not a hard block). Positioned to the right of the account icon.
+     c. **Description** (`QTextEdit`): multi-line, placeholder "Description", 3-4 lines default height, user-resizable.
+     d. **Amend checkbox** + **Commit button** on the same row: `QCheckBox` "Amend" on the left, `QPushButton` "Commit to {branch}" on the right. Amend checkbox toggles amend mode — pre-fills message/description from the last commit, button label changes to "Amend commit on {branch}", committing calls `engine.commit(msg, amend=True)`. Hidden/disabled on unborn branches.
+   - Commit button enabled only when: message non-empty AND at least one file checked. Disabled state shows tooltip explaining why.
+   - **Edge cases**: detached HEAD → "Commit on detached HEAD" with warning tint and info banner; unborn branch → "Create initial commit", amend hidden; merge conflict → persistent banner at top of Changes tab; dirty commit fields on repo switch → save per-repo draft in memory (dict keyed by path), restore on switch-back, lost on quit.
+
+6. **Changes tab — diff view** (reuse `ui/diff_view/`) — ref: `ui-planning.md` §3.5
+   - Right column of the Changes tab. Reuse the existing `DiffView`/`DiffWidget` from Phase 1 — embed it as a child widget of `changes_tab.py`'s right-side layout. No reimplementation needed; just re-parent it from the old `QSplitter` into the new `QVBoxLayout`.
+   - Add binary file detection: if `Diff.is_binary`, show centered "Binary file changed" with file size. Hide hunk/line staging controls; only whole-file staging is available.
+   - Empty state per §3.5: no changes → "No changes" + random programming quote; no file selected → "Select a file to view changes".
+
+7. **Staging logic bridge** — ref: `ui-planning.md` §3.3 "Staging Logic"
+   - The checkbox model is a "commit selection" model, not direct staging. The commit flow sequence (called by the commit button's click handler) is:
+     a. `engine.unstage_all()` — reset the index to HEAD.
+     b. For each checked file: `engine.stage_file(path)`.
+     c. `engine.commit(message, amend=amend_checked)`.
+     d. Refresh the file list.
+   - This ensures the git index always reflects exactly the user's checkbox selection at commit time, regardless of any manual staging/unstaging done via the diff view's hunk buttons between checkbox interactions.
+
+8. **History tab — skeleton** (`ui/tabs/history_tab.py` [NEW]) — ref: `ui-planning.md` §4
+   - Create a container widget with three zones (top-to-bottom):
+     a. **Search/filter bar** (§4.6): a `QHBoxLayout` with a `QLineEdit` ("Search commits…"), an author filter dropdown, and a date-range picker. Wire the search box to a `LogFilter` dataclass but **do not implement the filter logic or debounce yet** — that's Phase 2. The bar exists as a visible, interactive-looking element that is non-functional until Phase 2 fills it in.
+     b. **Graph area**: a placeholder `QWidget` (or `QLabel` with centered text "Commit graph — coming in Phase 2") that Phase 2's `CommitGraphWidget` will replace. Wrap it in a layout that makes the swap a one-liner: `self.graph_layout.replaceWidget(placeholder, commit_graph_widget)`.
+     c. **Detail panel slot**: an empty `QWidget` at the right edge (or bottom), hidden by default. Phase 2 will insert the slide-in commit detail panel here.
+   - **Empty state** (no repo selected): same as Changes tab — "Open or clone a repository to get started". (No commits): "No history yet — Make your first commit to see the branch graph here."
+   - **Signals**: `commit_hovered(sha: str)`, `commit_clicked(sha: str)` — defined but not emitted until Phase 2 connects them to the graph widget.
+   - **Repo-switch handling**: connect to `changes_tab.repo_changed` signal. On repo switch, the graph placeholder resets. Once Phase 2 is implemented, this triggers a graph reload instead.
+
+9. **Sidebar deprecation**
+   - Remove `ui/sidebar/` module entirely (the `RepoSidebar` widget, `sidebar/__init__.py`). All its functionality is now covered by: (a) the repo dropdown in the Changes tab, (b) the tab bar for navigation.
+   - Remove the sidebar from `ui/main_window.py`'s layout. Remove the `QSplitter` that held sidebar + content area — the tab system widget is now the sole child of the main window's central widget.
+   - Update any imports or references to the sidebar in test files.
+
+10. **Tab-system wiring in main_window.py**
+    - `main_window.py` becomes a thin shell: `QMainWindow` with a `QMenuBar` and a `TabBar` as its central widget. It owns the `RepoHandle` lifecycle, passes it down to tabs via a shared reference or signal.
+    - The Changes tab is always present (index 0, non-closable). History tab is added by default (index 1, closable).
+    - Connect `changes_tab.repo_changed(path)` to a slot that updates `self._current_repo` and emits a signal all tabs listen to.
+
+11. **Theme and style integration**
+    - Ensure the new widgets (tab bar, repo dropdown, file list, commit section) inherit the existing `QApplication` style/palette. No custom stylesheets yet — use the default Qt theme. Custom theming (dark mode, accent colors) is deferred to Phase 7 polish.
+    - The repo dropdown's "flush" styling is achieved by setting `QComboBox { border: none; background: transparent; }` in a minimal stylesheet scoped to that widget only — not a global stylesheet change.
+
+12. **Test updates** (`tests/ui/`)
+    - Remove or rewrite any `pytest-qt` tests that reference `RepoSidebar`.
+    - Add basic widget tests for:
+      - `TabBar`: verify Changes tab is always present, add/remove tabs, keyboard switching.
+      - `ChangesTab`: repo dropdown populates from registry, file list checkbox tri-state, commit button enable/disable logic, amend pre-fill.
+      - `HistoryTab`: skeleton renders, empty state displays correctly.
+    - Existing `tests/unit/core/` and `tests/unit/storage/` tests are unaffected — this phase touches zero core logic.
+
+13. **Acceptance check**: `pytest tests/ -v` all green (including new UI tests and unchanged core tests); manual QA:
+    - Launch app → Changes tab visible with repo dropdown, tab bar on left.
+    - Toggle tab bar to horizontal (View → Tab Position → Top) and back.
+    - Add a repo via File → Open, confirm it appears in dropdown.
+    - Stage files via checkboxes, verify tri-state select-all behavior.
+    - Type a commit message → commit → file list refreshes, message clears.
+    - Check "Amend" → verify message pre-fills from last commit, commit button label changes.
+    - Switch to History tab → see placeholder/empty state (no graph yet).
+    - Switch repos via dropdown → verify all tabs refresh (History shows correct empty state for new repo).
+    - Close and reopen app → verify tab layout, window geometry, and last-selected repo are restored.
+    - Quit with text in commit message → verify confirmation dialog appears.
+
 ### Phase 2 — Commit Graph & Merge Tooling
-**Prerequisites:** Phase 1's acceptance check passed (core read/write ops, staging, branches, stash, status watching, lock recovery, reflog, and the MVP diff-view UI all working).
+**Prerequisites:** Phase 1.5's acceptance check passed (tab-based UI shell, Changes tab redesign, and History tab skeleton all working). Phase 2 now fills in the History tab's graph and adds merge tooling.
 1. `ui/commit_graph/`: FR-2.2 — render commits from `core.engine.get_log()` (paginated, not loading full history eagerly — see NFR performance target; the underlying implementation is `core/read_ops.py`, but per §4.1's façade rule the UI only ever calls the `core.engine` re-export). **Simplified v1 lane-assignment algorithm** (deliberately *not* a full min-crossing DAG layout — that's a hard graph problem, out of scope for v1 by design, not by oversight; matches the SRS's "simple yet colorful" requirement rather than over-building):
    a. Walk commits in topological + date order (pygit2's `GIT_SORT_TOPOLOGICAL | GIT_SORT_TIME`, which `get_log` should expose).
    b. Maintain a list of "active lanes," each holding the commit sha it currently expects next.
@@ -1040,9 +1174,9 @@ Each phase should be independently shippable/testable — don't let phases bleed
    e. Assign each lane a persistent color from a fixed ~8-color palette, chosen once when the lane opens and kept for its lifetime, so a lane doesn't change color as it's drawn.
    f. This is O(n) in commit count and produces a readable, if not perfectly minimal-crossing, graph.
    Unit test: a fixture repo with one merge commit (two parents) — assert the algorithm opens exactly 2 lanes at the merge point and both converge back to 1 lane before it.
-2. FR-2.3: search/filter over the log. Filter params (`author`, `message_substring`, `date_from`, `date_to`, `path`) become a `LogFilter` dataclass passed into `get_log(repo, filter: LogFilter | None = None)`; matching is plain case-insensitive substring search, not regex — regex support is a plausible v2 nicety, not a v1 requirement. UI: a single search box above the commit graph plus a small filter-chip row (author avatar picker, date-range popup) that composes into one `LogFilter` per query, re-run debounced (reuse the same single-shot-`QTimer` pattern as §5 Phase 1 step 7, 300ms) rather than on every keystroke.
+2. FR-2.3: search/filter over the log (ref: `ui-planning.md` §4.6). Filter params (`author`, `message_substring`, `date_from`, `date_to`, `path`) become a `LogFilter` dataclass passed into `get_log(repo, filter: LogFilter | None = None)`; matching is plain case-insensitive substring search, not regex — regex support is a plausible v2 nicety, not a v1 requirement. UI: a search bar above the commit graph with search input, author filter, path/file picker, and date-range popup that composes into one `LogFilter` per query, re-run debounced (reuse the same single-shot-`QTimer` pattern as §5 Phase 1 step 7, 300ms) rather than on every keystroke. Matching commits are highlighted and non-matching dimmed per `ui-planning.md` §4.6.
 3. `core/engine.py::merge()`: FR-3.1 — `run_git(["merge", source_branch])`. Distinguish outcomes from git's exit code and output: exit 0 with "Already up to date" in stdout → `MergeResult(status="up_to_date")`; exit 0 otherwise → `MergeResult(status="merged", commit_sha=...)` (fast-forward or clean 3-way, both fine to treat the same way from the UI's perspective); nonzero exit with `<<<<<<<` conflict markers present in the working tree → `MergeResult(status="conflict", conflicted_files=[...])`, read via `repo.index.conflicts`, **not raised as an exception** — a merge conflict is an expected, routine outcome the UI should route into the merge tool, not an error state.
-4. `ui/merge_tool/`: FR-3.2 — a three-pane view (ours / theirs / result) per conflicted file. For each entry in `repo.index.conflicts` (which yields `(ancestor, ours, theirs)` `IndexEntry` tuples, any of which may be `None` for add/delete conflicts), read the corresponding blob content via `repo[entry.id].data` to populate the ours/theirs panes; the result pane starts as the working-tree file's current content (which already contains git's own conflict markers) and the user edits it directly or uses "take ours"/"take theirs" buttons that substitute the whole file. On save, write the result pane's content to the working-tree file and call `stage_file` — the merge isn't "done" until every conflicted path has been staged this way, and the tool should visibly track remaining-vs-resolved count so the user knows when it's safe to commit. For binary conflicts (no sensible three-pane text diff), skip straight to a simpler "keep ours / keep theirs / keep both as separate files" choice.
+4. `ui/merge_tool/`: FR-3.2 (ref: `ui-planning.md` §6.6) — `ui/merge_tool/merge_dialog.py`: 3-pane top layout (Ours / Base / Theirs synchronized diff panes) + editable Result pane at the bottom. For each entry in `repo.index.conflicts` (which yields `(ancestor, ours, theirs)` `IndexEntry` tuples, any of which may be `None` for add/delete conflicts), read the corresponding blob content via `repo[entry.id].data` to populate the top panes. Provide conflict hunk navigation (`◀ Prev Conflict` / `Next Conflict ▶`, "Conflict N of Total") and per-hunk resolution actions: "Accept Current (Ours)", "Accept Incoming (Theirs)", "Accept Both (Ours ➔ Theirs)", "Accept Both (Theirs ➔ Ours)", and direct manual editing in the Result pane. On "Mark Resolved & Next", write the result pane's content to the working-tree file, call `stage_file`, and advance. Track remaining-vs-resolved count. Binary conflicts show "keep ours / keep theirs / keep both". Abort button calls `engine.merge_abort()`.
 5. `core/engine.py::rebase()`: FR-3.3, deliberately **non-interactive only** in v1 (no commit reordering/squashing UI — that's part of FR-2.4's drag-and-drop rebase, explicitly deferred to v2). `run_git(["rebase", onto])`; conflicts follow the same detection pattern as `merge()` above, reusing the merge tool UI, with one difference the UI must handle: a multi-commit rebase can conflict repeatedly, once per replayed commit, so after each conflict is resolved and staged, call `run_git(["rebase", "--continue"])` rather than assuming one resolution finishes the whole operation — loop until git reports the rebase complete or the user aborts via `run_git(["rebase", "--abort"])`.
 6. Complete snapshot trigger wiring (FR-10.2): call `snapshots.take_snapshot(repo, "pre_risky_op")` at the start of `merge()` and `rebase()` (added above), and add the per-repo `QTimer`-driven `timer` trigger (§4.6) now that a natural place to own its lifecycle — the open repo's main window — exists. `ui/snapshots_panel/`: minimal v1 view listing snapshots (timestamp, trigger type, label) with a restore action calling `snapshots.restore_snapshot`.
 7. **Acceptance check**: `pytest tests/unit/core/test_merge.py tests/unit/core/test_rebase.py tests/unit/core/test_snapshots.py -v` green (snapshot tests assert a `pre_risky_op` snapshot exists before a rebase/merge, and that restoring it via `read-tree --reset -u` doesn't move the branch ref — check `repo.head.target` is unchanged after restore); manual QA — merge two branches with a real conflict, resolve via the UI, confirm the resulting commit is correct via `git log`; separately, make an uncommitted change, wait for a timer-triggered snapshot, restore it, confirm the change reappears and the branch/HEAD didn't move.
@@ -1579,7 +1713,22 @@ Flattened, in strict execution order, across every phase — the literal path th
 - [ ] 1.12 `ui/main_window.py` + `ui/sidebar/` + `ui/diff_view/` (default tab) + `ui/workers.py` (§4.8 — needed starting Phase 3, scaffold now)
 - [ ] 1.13 **CHECK**: `pytest tests/unit/core tests/unit/storage -v` green; manual QA per §5 Phase 1 acceptance check, including a snapshot appearing after commit and after manual "snapshot now"
 
-**Phase 2 — Commit Graph & Merge Tooling** *(prerequisites: 1.13 checked)*
+**Phase 1.5 — UI Shell Overhaul** *(prerequisites: 1.13 checked)*
+- [x] 1.5.1 `ui/main_window.py` rewrite: `QMenuBar` + menu structure (File/Edit/View/Help), window geometry persistence, quit guards (unsaved commit msg, background ops)
+- [x] 1.5.2 `ui/tabs/tab_bar.py` [NEW]: custom tab widget with vertical/horizontal toggle, hybrid model (singleton category tabs + dynamic detail tabs), per-repo dedup, pinned Changes tab, closable others, `+` button, `Ctrl+1/2/3` keyboard shortcuts, tab persistence
+- [x] 1.5.3 `ui/tabs/changes_tab.py` [NEW] + `ui/widgets/branch_switcher.py` [NEW] — repo selector (flush `QComboBox`, zero-repos state, missing-repo dialog, auto-select MRU) + branch indicator/switcher (`🌿 main ▾`, branch popup list, stash & switch prompt, create/rename/delete)
+- [x] 1.5.4 Changes tab — unified file list: single `QListWidget` with checkboxes, tri-state select-all, right-click context menu (Stage/Unstage/Discard/Open/Copy Path), edge cases (refresh preserves state, long path truncation, count badge)
+- [x] 1.5.5 Changes tab — commit section: account icon, commit message + description fields, amend toggle (pre-fills from last commit, hidden on unborn), commit button ("Commit to {branch}"), edge cases (detached HEAD, unborn, merge conflict banner, per-repo draft save)
+- [x] 1.5.6 Changes tab — diff view: re-parent existing `DiffView` into new layout, binary file detection ("Binary file changed"), empty states (no changes + quote, no selection)
+- [x] 1.5.7 Staging logic bridge: commit flow = unstage_all → stage checked → commit → refresh
+- [x] 1.5.8 `ui/tabs/history_tab.py` [NEW] — skeleton: search/filter bar (visible but non-functional), graph placeholder widget (swappable in Phase 2), detail panel slot (hidden), empty states, `repo_changed` signal handling
+- [x] 1.5.9 Sidebar deprecation: remove `ui/sidebar/`, remove `QSplitter`, update imports/tests
+- [x] 1.5.10 Tab-system wiring in `main_window.py`: thin shell, Changes tab pinned at index 0, History tab at index 1, `repo_changed` signal propagation
+- [x] 1.5.11 Theme/style: inherit default Qt palette, scoped borderless stylesheet for repo dropdown only
+- [x] 1.5.12 Test updates: remove sidebar tests, add `TabBar`/`ChangesTab`/`HistoryTab` widget tests
+- [x] 1.5.13 **CHECK**: `pytest tests/ -v` all green; manual QA — tab toggle, repo dropdown, tri-state checkboxes, amend, History placeholder, repo switch refreshes all tabs, geometry/tab persistence, quit guard dialog
+
+**Phase 2 — Commit Graph & Merge Tooling** *(prerequisites: 1.5.13 checked)*
 - [ ] 2.1 `ui/commit_graph/`: simplified lane-assignment algorithm per §5 Phase 2 step 1 — not a full DAG-layout attempt
 - [ ] 2.2 Log search/filter (`LogFilter` dataclass)
 - [ ] 2.3 `core.engine.merge()`: FF/3-way/conflict detection

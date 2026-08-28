@@ -4,7 +4,7 @@ import html
 import logging
 
 from PySide6.QtCore import Signal
-from PySide6.QtGui import QFont
+from PySide6.QtGui import QFont, QPalette
 from PySide6.QtWidgets import (
     QComboBox,
     QHBoxLayout,
@@ -131,6 +131,27 @@ class DiffView(QWidget):
         self.stage_hunk_btn.setText("Unstage Hunk" if self._staged else "Stage Hunk")
         self.stage_hunk_btn.setVisible(True)
 
+        # Detect if palette is dark or light
+        bg_color = self.palette().color(QPalette.Base)
+        is_dark = bg_color.lightnessF() < 0.5
+
+        if is_dark:
+            hunk_style = (
+                "color: #38bdf8; font-weight: bold; background-color: #0c2d48; "
+                "padding: 2px 6px; margin-top: 6px; border-radius: 2px;"
+            )
+            add_style = "color: #4ade80; background-color: #14381e; padding: 1px 6px;"
+            del_style = "color: #f87171; background-color: #3d1414; padding: 1px 6px;"
+            ctx_style = "color: #d1d5db; padding: 1px 6px;"
+        else:
+            hunk_style = (
+                "color: #0288d1; font-weight: bold; background-color: #e1f5fe; "
+                "padding: 2px 6px; margin-top: 6px; border-radius: 2px;"
+            )
+            add_style = "color: #166534; background-color: #dcfce7; padding: 1px 6px;"
+            del_style = "color: #991b1b; background-color: #fee2e2; padding: 1px 6px;"
+            ctx_style = "color: #1f2937; padding: 1px 6px;"
+
         # Build colored diff HTML
         pre_tag = (
             "<pre style='font-family: monospace; font-size: 12px; line-height: 1.4; "
@@ -141,21 +162,15 @@ class DiffView(QWidget):
             hunk_hdr = (
                 f"@@ -{hunk.old_start},{hunk.old_count} " f"+{hunk.new_start},{hunk.new_count} @@"
             )
-            hunk_style = (
-                "color: #0288d1; font-weight: bold; background: #e1f5fe; "
-                "padding: 2px 4px; margin-top: 6px;"
-            )
             html_lines.append(f"<div style='{hunk_style}'>{html.escape(hunk_hdr)}</div>")
             for line in hunk.lines:
                 escaped = html.escape(f"{line.origin} {line.content}")
                 if line.origin == "+":
-                    style = "color: #2e7d32; background-color: #e8f5e9; padding: 1px 4px;"
-                    html_lines.append(f"<div style='{style}'>{escaped}</div>")
+                    html_lines.append(f"<div style='{add_style}'>{escaped}</div>")
                 elif line.origin == "-":
-                    style = "color: #c62828; background-color: #ffebee; padding: 1px 4px;"
-                    html_lines.append(f"<div style='{style}'>{escaped}</div>")
+                    html_lines.append(f"<div style='{del_style}'>{escaped}</div>")
                 else:
-                    html_lines.append(f"<div style='padding: 1px 4px;'>{escaped}</div>")
+                    html_lines.append(f"<div style='{ctx_style}'>{escaped}</div>")
 
         html_lines.append("</pre>")
         self.editor.setHtml("".join(html_lines))

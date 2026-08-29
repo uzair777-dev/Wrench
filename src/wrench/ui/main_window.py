@@ -11,11 +11,12 @@ Provides:
 
 from __future__ import annotations
 
+import json
 import logging
 import sqlite3
 from pathlib import Path
 
-from PySide6.QtCore import QByteArray, Qt
+from PySide6.QtCore import QByteArray, Qt, QTimer
 from PySide6.QtGui import QGuiApplication, QKeySequence
 from PySide6.QtWidgets import (
     QFileDialog,
@@ -52,6 +53,14 @@ class MainWindow(QMainWindow):
         self._conn = conn if conn is not None else get_connection()
         self._current_repo: RepoHandle | None = None
         self._watcher: RepoWatcher | None = None
+        self._repos_state: dict[str, dict] = {}
+        self._is_restoring: bool = True
+
+        # 1000ms debounce timer for coalescing auto-save writes
+        self._auto_save_timer = QTimer(self)
+        self._auto_save_timer.setSingleShot(True)
+        self._auto_save_timer.setInterval(1000)
+        self._auto_save_timer.timeout.connect(self._save_session_state)
 
         self._init_ui()
         self._restore_settings()
@@ -67,6 +76,7 @@ class MainWindow(QMainWindow):
         self.changes_tab.open_repo_dialog_requested.connect(self._on_open_repo)
         self.changes_tab.clone_repo_dialog_requested.connect(self._on_clone_repo)
         self.changes_tab.resolve_conflicts_requested.connect(self._on_resolve_conflicts)
+        self.changes_tab.state_changed.connect(self._on_changes_tab_state_changed)
         self.tab_container.add_tab(
             widget=self.changes_tab,
             label=self.tr("Changes"),
@@ -87,6 +97,11 @@ class MainWindow(QMainWindow):
         # Connect add category tab request from (+) menu
         self.tab_container.add_category_tab_requested.connect(self._on_add_category_tab)
 
+        # Connect auto-save signals on tab changes
+        self.tab_container.current_changed.connect(lambda *_: self._schedule_auto_save())
+        self.tab_container.tabs_mutated.connect(lambda *_: self._schedule_auto_save())
+        self.tab_container.orientation_changed.connect(lambda *_: self._schedule_auto_save())
+
         # Menu bar
         self._create_menu_bar()
 
@@ -95,6 +110,29 @@ class MainWindow(QMainWindow):
         self.setStatusBar(self.status_bar)
         self.status_label = QLabel(self.tr("Ready"), self.status_bar)
         self.status_bar.addWidget(self.status_label)
+
+    def _schedule_auto_save(self) -> None:
+        """Restarts the 1000ms debounce timer to batch session persistence writes."""
+        if getattr(self, "_is_restoring", False):
+            return
+        if hasattr(self, "_auto_save_timer"):
+            self._auto_save_timer.start()
+
+    def _on_changes_tab_state_changed(self) -> None:
+        if getattr(self, "_is_restoring", False):
+            return
+        if self.changes_tab._repo:
+            repo_path = str(self.changes_tab._repo.path)
+            self._repos_state[repo_path] = self.changes_tab.get_current_repo_state()
+        self._schedule_auto_save()
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._schedule_auto_save()
+
+    def moveEvent(self, event) -> None:
+        super().moveEvent(event)
+        self._schedule_auto_save()
 
     def _create_menu_bar(self) -> None:
         menu_bar = self.menuBar()
@@ -177,22 +215,116 @@ class MainWindow(QMainWindow):
         act_report.triggered.connect(self._on_report_bug)
 
     def _restore_settings(self) -> None:
-        """Restores window geometry, tab orientation, and active repository."""
-        # Tab orientation
-        saved_orientation = settings.get_setting(self._conn, "ui.tab_orientation")
-        if saved_orientation == "horizontal":
-            self.tab_container.set_orientation(Qt.Horizontal)
-        else:
-            self.tab_container.set_orientation(Qt.Vertical)
-
-        # Geometry
-        saved_geom = settings.get_setting(self._conn, "ui.window_geometry")
-        if saved_geom:
+        """Restores full session state (window, tabs, orientation, active repo, selections)."""
+        raw_session = settings.get_setting(self._conn, "ui.session_state")
+        session_data = None
+        if raw_session:
             try:
-                byte_array = QByteArray.fromHex(saved_geom.encode("utf-8"))
-                self.restoreGeometry(byte_array)
+                session_data = json.loads(raw_session)
             except Exception as e:
-                logger.warning("Could not restore window geometry: %s", e)
+                logger.warning("Could not parse ui.session_state JSON: %s", e)
+
+        if session_data and isinstance(session_data, dict):
+            win_data = session_data.get("window", {})
+            # Tab orientation
+            orient_str = win_data.get("tab_orientation", "vertical")
+            if orient_str == "horizontal":
+                self.tab_container.set_orientation(Qt.Horizontal)
+            else:
+                self.tab_container.set_orientation(Qt.Vertical)
+
+            # Window geometry and state
+            geom_hex = win_data.get("geometry_hex")
+            if geom_hex:
+                try:
+                    self.restoreGeometry(QByteArray.fromHex(geom_hex.encode("utf-8")))
+                except Exception as e:
+                    logger.warning("Could not restore window geometry: %s", e)
+
+            state_hex = win_data.get("state_hex")
+            if state_hex:
+                try:
+                    self.restoreState(QByteArray.fromHex(state_hex.encode("utf-8")))
+                except Exception as e:
+                    logger.warning("Could not restore window state: %s", e)
+
+            # Repos state cache
+            self._repos_state = session_data.get("repos_state", {})
+            self.changes_tab._commit_drafts.update(self._repos_state)
+
+            # Changes tab splitter position
+            splitter_hex = session_data.get("changes_tab", {}).get("splitter_hex")
+            if splitter_hex:
+                self.changes_tab.restore_splitter_state(splitter_hex)
+
+            # Active repository
+            saved_repo_path = session_data.get("active_repo_path")
+            self.changes_tab.load_repos(select_path=saved_repo_path)
+
+            if saved_repo_path and saved_repo_path in self._repos_state:
+                self.changes_tab.restore_repo_state(self._repos_state[saved_repo_path])
+
+            # Restore open tabs
+            tabs_data = session_data.get("tabs")
+            if tabs_data and isinstance(tabs_data, dict):
+                items = tabs_data.get("items", [])
+                saved_active_idx = tabs_data.get("active_index", 0)
+                if items:
+                    self.tab_container.clear_tabs()
+                    for item in items:
+                        t_type = item.get("tab_type")
+                        label = item.get("label", "")
+                        closable = item.get("closable", True)
+                        is_pinned = item.get("is_pinned", False)
+
+                        if t_type == "changes":
+                            self.tab_container.add_tab(
+                                widget=self.changes_tab,
+                                label=label or self.tr("Changes"),
+                                tab_type="changes",
+                                closable=closable,
+                                is_pinned=is_pinned,
+                            )
+                        elif t_type == "history":
+                            self.tab_container.add_tab(
+                                widget=self.history_tab,
+                                label=label or self.tr("History"),
+                                tab_type="history",
+                                closable=closable,
+                                is_pinned=is_pinned,
+                            )
+                        else:
+                            placeholder = QWidget(self)
+                            layout = QVBoxLayout(placeholder)
+                            layout.setAlignment(Qt.AlignCenter)
+                            lbl = QLabel(self.tr(f"{t_type.title()} coming soon"), placeholder)
+                            layout.addWidget(lbl)
+                            self.tab_container.add_tab(
+                                widget=placeholder,
+                                label=label or t_type.title(),
+                                tab_type=t_type,
+                                closable=closable,
+                                is_pinned=is_pinned,
+                            )
+                    if self.tab_container.count() > 0:
+                        idx = max(0, min(saved_active_idx, self.tab_container.count() - 1))
+                        self.tab_container.set_current_index(idx)
+        else:
+            # Fallback for initial launch or legacy settings
+            saved_orientation = settings.get_setting(self._conn, "ui.tab_orientation")
+            if saved_orientation == "horizontal":
+                self.tab_container.set_orientation(Qt.Horizontal)
+            else:
+                self.tab_container.set_orientation(Qt.Vertical)
+
+            saved_geom = settings.get_setting(self._conn, "ui.window_geometry")
+            if saved_geom:
+                try:
+                    self.restoreGeometry(QByteArray.fromHex(saved_geom.encode("utf-8")))
+                except Exception as e:
+                    logger.warning("Could not restore window geometry: %s", e)
+
+            self.changes_tab.load_repos()
 
         # Ensure window is visible on a valid screen
         screen = QGuiApplication.screenAt(self.pos())
@@ -202,21 +334,50 @@ class MainWindow(QMainWindow):
                 center = QGuiApplication.primaryScreen().availableGeometry().center()
                 self.move(center.x() - 600, center.y() - 400)
 
-        # Load repositories in ChangesTab
-        self.changes_tab.load_repos()
+        # Mark restoration complete and ensure no lingering auto-save timer
+        self._is_restoring = False
+        if hasattr(self, "_auto_save_timer"):
+            self._auto_save_timer.stop()
 
-    def _save_settings(self) -> None:
-        """Persists window geometry and tab configuration."""
+    def _save_session_state(self) -> None:
+        """Persists the complete session state to app_settings."""
         try:
-            geom_hex = self.saveGeometry().toHex().data().decode("utf-8")
-            settings.set_setting(self._conn, "ui.window_geometry", geom_hex)
+            if self.changes_tab._repo:
+                repo_path = str(self.changes_tab._repo.path)
+                self._repos_state[repo_path] = self.changes_tab.get_current_repo_state()
 
+            geom_hex = self.saveGeometry().toHex().data().decode("utf-8")
+            state_hex = self.saveState().toHex().data().decode("utf-8")
             orient_str = (
                 "horizontal" if self.tab_container.orientation() == Qt.Horizontal else "vertical"
             )
+
+            session_data = {
+                "version": 1,
+                "window": {
+                    "geometry_hex": geom_hex,
+                    "state_hex": state_hex,
+                    "tab_orientation": orient_str,
+                },
+                "tabs": self.tab_container.serialize_tabs(),
+                "active_repo_path": (
+                    str(self.changes_tab._repo.path) if self.changes_tab._repo else None
+                ),
+                "changes_tab": {
+                    "splitter_hex": self.changes_tab.save_splitter_state(),
+                },
+                "repos_state": self._repos_state,
+            }
+
+            settings.set_setting(self._conn, "ui.session_state", json.dumps(session_data))
+            settings.set_setting(self._conn, "ui.window_geometry", geom_hex)
             settings.set_setting(self._conn, "ui.tab_orientation", orient_str)
         except Exception as e:
-            logger.warning("Failed to save UI settings: %s", e)
+            logger.warning("Failed to save UI session settings: %s", e)
+
+    def _save_settings(self) -> None:
+        """Public alias for persisting session settings."""
+        self._save_session_state()
 
     def closeEvent(self, event) -> None:
         # Quit guard 1: Check unsaved commit draft
@@ -234,8 +395,11 @@ class MainWindow(QMainWindow):
                 event.ignore()
                 return
 
-        # Save settings and stop watcher
-        self._save_settings()
+        # Flush auto-save timer and persist session synchronously
+        if hasattr(self, "_auto_save_timer"):
+            self._auto_save_timer.stop()
+        self._save_session_state()
+
         if self._watcher:
             self._watcher.stop()
             self._watcher = None
@@ -263,6 +427,12 @@ class MainWindow(QMainWindow):
             status = engine.get_status(self._current_repo)
             branch = status.branch_name or "detached"
             self.status_label.setText(self.tr(f"Opened: {Path(path).name} ({branch})"))
+
+            # Restore cached draft/selections if available for this repo
+            if path in self._repos_state:
+                self.changes_tab.restore_repo_state(self._repos_state[path])
+
+            self._schedule_auto_save()
         except Exception as e:
             logger.error("Error setting up repo watcher: %s", e)
             self.status_label.setText(self.tr(f"Error opening repository: {e}"))

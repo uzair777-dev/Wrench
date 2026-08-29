@@ -203,3 +203,93 @@ class TestMainWindow:
         assert window.tab_container.count() >= 2
         assert window.menuBar() is not None
         assert window.statusBar() is not None
+
+    def test_session_state_persistence_and_restore(self, db_conn, simple_repo, monkeypatch, qapp):
+        from PySide6.QtWidgets import QMessageBox
+
+        monkeypatch.setattr(QMessageBox, "question", lambda *args, **kwargs: QMessageBox.Yes)
+
+        repo_path = str(simple_repo.path)
+        repo_registry.add_repo(db_conn, repo_path, "Simple")
+
+        window1 = MainWindow(conn=db_conn)
+        window1.show()
+
+        # Modify orientation
+        window1.tab_container.set_orientation(Qt.Horizontal)
+
+        # Pin history tab (index 1) and unpin changes tab (index 0)
+        window1.tab_container.unpin_tab(0)
+        window1.tab_container.pin_tab(1)
+
+        # Set active tab to History
+        window1.tab_container.set_current_index(1)
+
+        # Set draft commit message in ChangesTab
+        window1.changes_tab.commit_msg_input.setText("Persisted draft summary")
+        window1.changes_tab.commit_desc_input.setPlainText("Persisted draft description")
+
+        # Trigger save
+        window1._save_session_state()
+        window1.close()
+
+        # Create new MainWindow simulating app restart
+        window2 = MainWindow(conn=db_conn)
+        window2.show()
+
+        # Verify orientation
+        assert window2.tab_container.orientation() == Qt.Horizontal
+
+        # Verify tab count and pin states
+        assert window2.tab_container.count() == 2
+        changes_meta = window2.tab_container.tab_metadata(0)
+        history_meta = window2.tab_container.tab_metadata(1)
+        assert changes_meta.is_pinned is False
+        assert changes_meta.closable is True
+        assert history_meta.is_pinned is True
+        assert history_meta.closable is False
+
+        # Verify active tab index
+        assert window2.tab_container.current_index() == 1
+
+        # Verify draft commit text restored for the repo
+        assert window2.changes_tab.commit_msg_input.text() == "Persisted draft summary"
+        assert window2.changes_tab.commit_desc_input.toPlainText() == "Persisted draft description"
+        window2.close()
+
+    def test_auto_save_debounce_coalescing(self, db_conn, simple_repo, monkeypatch, qapp):
+        from PySide6.QtWidgets import QMessageBox
+
+        monkeypatch.setattr(QMessageBox, "question", lambda *args, **kwargs: QMessageBox.Yes)
+
+        repo_path = str(simple_repo.path)
+        repo_registry.add_repo(db_conn, repo_path, "Simple")
+
+        window = MainWindow(conn=db_conn)
+        window.show()
+        window._auto_save_timer.stop()
+
+        assert not window._auto_save_timer.isActive()
+
+        # Type text which triggers state_changed -> _schedule_auto_save
+        window.changes_tab.commit_msg_input.setText("Fast typing 1")
+        assert window._auto_save_timer.isActive()
+
+        window.changes_tab.commit_msg_input.setText("Fast typing 2")
+        assert window._auto_save_timer.isActive()
+
+        window.close()
+
+    def test_corrupt_session_state_fallback(self, db_conn, simple_repo, qapp):
+        from wrench.storage import settings
+
+        repo_registry.add_repo(db_conn, str(simple_repo.path), "Simple")
+        settings.set_setting(db_conn, "ui.session_state", "{INVALID_JSON: [}")
+
+        # Should not throw exception and should fallback gracefully
+        window = MainWindow(conn=db_conn)
+        window.show()
+
+        assert window.tab_container.count() >= 2
+        assert window.tab_container.orientation() == Qt.Vertical
+        window.close()

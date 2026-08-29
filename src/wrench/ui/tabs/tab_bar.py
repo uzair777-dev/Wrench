@@ -188,6 +188,7 @@ class TabContainer(QWidget):
 
     current_changed = Signal(int)
     tab_closed = Signal(int)
+    tabs_mutated = Signal()
     orientation_changed = Signal(Qt.Orientation)
     add_category_tab_requested = Signal(str)  # 'changes' | 'history' | 'pr_list' | 'issues_list'
 
@@ -385,6 +386,7 @@ class TabContainer(QWidget):
         self._rebuild_strip()
         idx = len(self._tabs) - 1
         self.set_current_index(idx)
+        self.tabs_mutated.emit()
         return idx
 
     def pin_tab(self, index: int) -> None:
@@ -393,6 +395,7 @@ class TabContainer(QWidget):
             self._tabs[index].is_pinned = True
             self._tabs[index].closable = False
             self._rebuild_strip()
+            self.tabs_mutated.emit()
 
     def unpin_tab(self, index: int) -> None:
         """Unpins a tab, restoring normal closable status."""
@@ -400,6 +403,7 @@ class TabContainer(QWidget):
             self._tabs[index].is_pinned = False
             self._tabs[index].closable = True
             self._rebuild_strip()
+            self.tabs_mutated.emit()
 
     def toggle_pin(self, index: int) -> None:
         """Toggles pinned state of a tab."""
@@ -450,6 +454,37 @@ class TabContainer(QWidget):
             self.set_current_index(new_idx)
         else:
             self._current_index = -1
+
+        self.tabs_mutated.emit()
+
+    def clear_tabs(self) -> None:
+        """Removes all open tabs from the container."""
+        while self._tabs:
+            widget = self._tabs.pop().widget
+            self._stack.removeWidget(widget)
+        self._tab_buttons.clear()
+        self._current_index = -1
+        self._rebuild_strip()
+        self.tabs_mutated.emit()
+
+    def serialize_tabs(self) -> dict:
+        """Serializes current tab state to a dictionary for persistence."""
+        items = []
+        for tab in self._tabs:
+            items.append(
+                {
+                    "tab_type": tab.tab_type,
+                    "label": tab.label,
+                    "repo_path": tab.repo_path,
+                    "entity_id": tab.entity_id,
+                    "closable": tab.closable,
+                    "is_pinned": tab.is_pinned,
+                }
+            )
+        return {
+            "active_index": self._current_index,
+            "items": items,
+        }
 
     def set_current_index(self, index: int) -> None:
         if 0 <= index < len(self._tabs):

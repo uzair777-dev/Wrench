@@ -17,7 +17,7 @@ import random
 import sqlite3
 from pathlib import Path
 
-from PySide6.QtCore import QPoint, Qt, Signal
+from PySide6.QtCore import QByteArray, QPoint, Qt, Signal
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
@@ -148,6 +148,7 @@ class ChangesTab(QWidget):
     """Main Changes tab container."""
 
     repo_changed = Signal(str)  # Emitted when active repo path changes
+    state_changed = Signal()  # Emitted when per-repo selection, draft text, or splitter moves
     open_repo_dialog_requested = Signal()
     clone_repo_dialog_requested = Signal()
     resolve_conflicts_requested = Signal()
@@ -284,6 +285,7 @@ class ChangesTab(QWidget):
         btn_row.addWidget(self.commit_btn)
         commit_layout.addLayout(btn_row)
 
+        left_widget.setMinimumWidth(220)
         left_layout.addWidget(commit_group)
         self.splitter.addWidget(left_widget)
 
@@ -291,6 +293,7 @@ class ChangesTab(QWidget):
         # Right Column (Diff View + Empty States)
         # -------------------------------------------------------------
         right_widget = QWidget(self)
+        right_widget.setMinimumWidth(300)
         right_layout = QVBoxLayout(right_widget)
         right_layout.setContentsMargins(0, 0, 0, 0)
 
@@ -326,6 +329,7 @@ class ChangesTab(QWidget):
         self.splitter.addWidget(right_widget)
         self.splitter.setStretchFactor(0, 4)
         self.splitter.setStretchFactor(1, 6)
+        self.splitter.splitterMoved.connect(lambda *_: self.state_changed.emit())
 
         # Setup shortcut: Ctrl+Enter to commit
         commit_shortcut = QShortcut(QKeySequence("Ctrl+Return"), self)
@@ -368,13 +372,10 @@ class ChangesTab(QWidget):
         self.refresh()
 
     def _open_repo_by_path(self, path: str) -> None:
-        # Save current draft message before switching
+        # Save current repo state (draft text, selections) before switching
         if self._repo:
             current_p = str(self._repo.path)
-            self._commit_drafts[current_p] = (
-                self.commit_msg_input.text(),
-                self.commit_desc_input.toPlainText(),
-            )
+            self._commit_drafts[current_p] = self.get_current_repo_state()
 
         # Check if missing
         if not Path(path).exists():
@@ -404,14 +405,22 @@ class ChangesTab(QWidget):
             repo_registry.touch_repo(self._conn, path)
             self.set_repo(repo)
 
-            # Restore draft message for this repo if one existed
+            # Restore draft message and selections for this repo if one existed
             if path in self._commit_drafts:
-                msg, desc = self._commit_drafts[path]
-                self.commit_msg_input.setText(msg)
-                self.commit_desc_input.setPlainText(desc)
+                cached = self._commit_drafts[path]
+                if isinstance(cached, dict):
+                    self.restore_repo_state(cached)
+                elif isinstance(cached, tuple):
+                    msg, desc = cached
+                    self.commit_msg_input.setText(msg)
+                    self.commit_desc_input.setPlainText(desc)
             else:
+                self.commit_msg_input.blockSignals(True)
+                self.commit_desc_input.blockSignals(True)
                 self.commit_msg_input.clear()
                 self.commit_desc_input.clear()
+                self.commit_msg_input.blockSignals(False)
+                self.commit_desc_input.blockSignals(False)
 
             self.repo_changed.emit(path)
         except Exception as e:
@@ -543,10 +552,12 @@ class ChangesTab(QWidget):
         path = item.data(Qt.UserRole)
         if path:
             self._show_file_diff(path)
+            self.state_changed.emit()
 
     def _on_item_checked_changed(self) -> None:
         self._update_select_all_state()
         self._update_commit_button()
+        self.state_changed.emit()
 
     def _update_select_all_state(self) -> None:
         total = self.files_list.count()
@@ -579,6 +590,7 @@ class ChangesTab(QWidget):
             if isinstance(w, FileListItemWidget):
                 w.set_checked(target_checked)
         self._update_commit_button()
+        self.state_changed.emit()
 
     def _on_commit_text_changed(self) -> None:
         # 72-char soft limit visual indication
@@ -588,6 +600,7 @@ class ChangesTab(QWidget):
         else:
             self.commit_msg_input.setStyleSheet("")
         self._update_commit_button()
+        self.state_changed.emit()
 
     def _on_amend_toggled(self, checked: bool) -> None:
         if not self._repo:
@@ -608,6 +621,7 @@ class ChangesTab(QWidget):
             if self._previous_untracked_msg:
                 self.commit_msg_input.setText(self._previous_untracked_msg)
         self._update_commit_button()
+        self.state_changed.emit()
 
     def _update_commit_button(self) -> None:
         if not self._repo:
@@ -768,3 +782,69 @@ class ChangesTab(QWidget):
         return bool(
             self.commit_msg_input.text().strip() or self.commit_desc_input.toPlainText().strip()
         )
+
+    def get_current_repo_state(self) -> dict:
+        """Exports current active repo's UI state (selected file, checked files, commit drafts)."""
+        checked_paths: list[str] = []
+        for i in range(self.files_list.count()):
+            w = self.files_list.itemWidget(self.files_list.item(i))
+            if isinstance(w, FileListItemWidget) and w.is_checked():
+                checked_paths.append(w.path)
+
+        return {
+            "selected_file": self._selected_file,
+            "checked_files": checked_paths,
+            "commit_summary": self.commit_msg_input.text(),
+            "commit_desc": self.commit_desc_input.toPlainText(),
+            "is_amend": self.amend_cb.isChecked(),
+        }
+
+    def restore_repo_state(self, state: dict) -> None:
+        """Restores commit drafts and file selections for the active repo."""
+        if not isinstance(state, dict):
+            return
+
+        summary = state.get("commit_summary", "")
+        desc = state.get("commit_desc", "")
+        is_amend = bool(state.get("is_amend", False))
+
+        self.commit_msg_input.blockSignals(True)
+        self.commit_desc_input.blockSignals(True)
+        self.amend_cb.blockSignals(True)
+
+        self.commit_msg_input.setText(summary)
+        self.commit_desc_input.setPlainText(desc)
+        self.amend_cb.setChecked(is_amend)
+
+        self.commit_msg_input.blockSignals(False)
+        self.commit_desc_input.blockSignals(False)
+        self.amend_cb.blockSignals(False)
+
+        self._on_commit_text_changed()
+
+        checked_files = set(state.get("checked_files", []))
+        if checked_files:
+            for i in range(self.files_list.count()):
+                item = self.files_list.item(i)
+                w = self.files_list.itemWidget(item)
+                if isinstance(w, FileListItemWidget):
+                    w.set_checked(w.path in checked_files)
+            self._update_select_all_state()
+            self._update_commit_button()
+
+        selected_file = state.get("selected_file")
+        if selected_file:
+            self._show_file_diff(selected_file)
+
+    def save_splitter_state(self) -> str:
+        """Exports splitter position as hex string."""
+        return self.splitter.saveState().toHex().data().decode("utf-8")
+
+    def restore_splitter_state(self, hex_str: str) -> None:
+        """Restores splitter position from hex string."""
+        if hex_str:
+            try:
+                byte_array = QByteArray.fromHex(hex_str.encode("utf-8"))
+                self.splitter.restoreState(byte_array)
+            except Exception as e:
+                logger.warning("Could not restore splitter state: %s", e)

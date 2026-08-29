@@ -106,7 +106,7 @@ Each section includes: **layout**, **widget specs**, **interactions**, **edge ca
 |---|---|
 | **Quit with unsaved commit message** | If the commit message or description field in the Changes tab contains text, show a confirmation dialog: "You have an unsaved commit message. Quit anyway?" with "Quit" and "Cancel" buttons. Do not silently discard typed text |
 | **Quit during background operation** | If a push/pull/fetch/clone is in progress (tracked via `workers.py`), show: "An operation is in progress. Quitting may leave your repository in an inconsistent state. Quit anyway?" with "Quit" and "Cancel" |
-| **Window geometry persistence** | Save window position, size, and splitter positions to `app_settings` on close. Restore on next launch. If saved geometry is off-screen (monitor unplugged), fall back to default centered position |
+| **Window geometry & GUI state persistence** | Save window position, size, state (maximized/normal), splitter positions, open tab order/pin states, active repository, and per-repo file selections/commit drafts to `app_settings` (`ui.session_state`). Restored on next launch. Uses a 1000ms coalesced debounce timer for continuous auto-saving plus immediate flush on exit to survive unexpected termination. If saved geometry is off-screen (monitor unplugged), fall back to default centered position |
 
 ---
 
@@ -116,14 +116,19 @@ Each section includes: **layout**, **widget specs**, **interactions**, **edge ca
 
 The tab system is the **primary navigation layer** inside the window, directly below the menu bar. It works like **browser tabs** — can be displayed **vertically on the left side** (default, GitKraken-style) or **horizontally on top** (toggled via View → Toggle Tab Orientation).
 
-**Tab model: Hybrid (category singletons + dynamic detail tabs)**
+**Tab model: Fully Dynamic with Right-Click Pinning**
 
 Tabs fall into two categories:
 
 | Category | Examples | Behavior |
 |---|---|---|
-| **Category tabs** (singleton) | Changes, History, PR List, Issues List | Only one instance allowed at a time. Opening one that's already open switches to it. Changes tab is pinned (non-closable); others are closable. |
-| **Detail tabs** (dynamic) | A specific PR (#42), a specific Issue (#17), file blame | Opened by clicking an item inside a category tab (e.g., clicking PR #42 in the PR list opens a "PR #42" detail tab). Closable. Multiple detail tabs can coexist (e.g., PR #42 and PR #99 open simultaneously). |
+| **Category tabs** (singleton) | Changes, History, PR List, Issues List | One instance per repo/type. Opening one that is already open switches to it. Can be pinned/unpinned via right-click. Closable when unpinned and re-openable from the `+` menu. |
+| **Detail tabs** (dynamic) | A specific PR (#42), a specific Issue (#17), file blame | Opened by clicking an item inside a category tab. Closable and pinnable. Multiple detail tabs can coexist. |
+
+**Right-Click Context Menu & Pinning**:
+- Right-clicking any tab opens a context menu: `Pin Tab` / `Unpin Tab`, `Close Tab` (disabled if pinned), `Close Other Tabs`, `Close Tabs to the Right / Below`.
+- Pinned tabs display a `📌` badge prefix, hide the `×` close button, and are protected from accidental closure.
+- Tab pinning status, open tab list, tab order, and active tab index are continuously persisted to `app_settings` via `ui.session_state`.
 
 **Per-repo deduplication rule**: A detail tab is uniquely identified by `(tab_type, repo_path, entity_id)`. For example, `("pr_detail", "/home/user/my-repo", "42")`. If the user tries to open a tab that matches an already-open identity triple, the existing tab is focused instead of opening a duplicate. This prevents opening the same PR/Issue twice for the same repo, while still allowing the same PR number from different repos.
 
@@ -224,7 +229,7 @@ When clicked, shows a dropdown with available **category** tab types:
 
 | Case | Behavior |
 |---|---|
-| **Tab persistence across app restarts** | The set of open tabs (both category and detail) and their order is saved to `app_settings` on close and restored on next launch. If a saved tab type is no longer available (e.g., PR tab was open but forge account has since been unlinked), silently skip it and open only valid tabs. Detail tabs that can't be restored (entity no longer exists, or forge disconnected) are silently dropped |
+| **Session & Tab persistence across restarts/crashes** | The set of open tabs (category and detail), their order, pin states, active tab index, active repository, and per-repo selections/drafts are saved continuously (1000ms debounce interval) to `app_settings` (`ui.session_state`) and restored on next launch. If a saved tab type is no longer available (e.g., PR tab was open but forge account has since been unlinked), silently skip it. If all tabs were closed before exit, fall back to opening the default `Changes` tab pinned so the application is never blank. |
 | **Repo switch updates all tabs** | When the user switches repos via the Changes tab dropdown, **all open tabs refresh** to show the new repo's data. The History tab reloads its graph, the PR/Issues tabs (if open) re-fetch from the new repo's linked forge account. If the new repo has no forge link, forge-dependent tabs show an inline message: "Connect a forge account to view pull requests" rather than closing the tab. **Detail tabs from the previous repo are NOT auto-closed** — they remain open but show stale data with a subtle banner: "This tab shows data from {old_repo_name}. Switch to that repo to refresh." |
 | **Tab focus on repo switch** | The currently active tab stays active after a repo switch. Do not auto-switch to the Changes tab |
 | **Dedup: same entity, same repo** | If user clicks PR #42 and a tab for `(pr_detail, current_repo, 42)` already exists, focus that tab. Don't open a second one |
@@ -236,7 +241,7 @@ When clicked, shows a dropdown with available **category** tab types:
 
 ## 3. Changes Tab
 
-This is the **default/home tab** and cannot be closed. It shows the working copy status, file staging, commit controls, and the diff view. Layout inspired by **GitHub Desktop**.
+This is the **staging and commit workspace**. By default it starts pinned at launch, but can be unpinned, closed, and re-opened from the `+` menu. It shows the working copy status, file staging, commit controls, and the diff view. Layout inspired by **GitHub Desktop**.
 
 ### 3.1 Overall Layout
 

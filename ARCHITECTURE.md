@@ -115,23 +115,33 @@ graph TD
 - **`MainWindow` (`ui/main_window.py`)**: Root `QMainWindow` and lifecycle coordinator.
   - Native `QMenuBar` with **File**, **Edit**, **View**, and **Help** menus.
   - Hosts the central `TabContainer`.
-  - Persists window geometry and tab orientation into `app_settings` across sessions.
-  - Enforces quit guards when unsaved commit message drafts exist.
+  - **GUI Session Persistence Engine**: Runs a continuous 1000ms debounced auto-save timer (`_auto_save_timer`) coalescing window geometry, splitter ratios, tab list/order/pinning, active repo, and per-repo selections/drafts into `app_settings` key `ui.session_state`.
+  - Synchronous flush on `closeEvent(event)` ensures state is never lost on shutdown or unexpected termination.
+  - Startup restoration guard `_is_restoring` prevents initialization noise from wiping saved drafts and checkbox selections.
+  - Enforces quit guards when unsaved commit message drafts exist or background workers are busy.
   - Owns the active `RepoHandle` and `RepoWatcher`.
-- **`TabContainer` & `TabButton` (`ui/tabs/tab_bar.py`)**: Custom hybrid tab system.
-  - Supports dynamic switching between **Vertical** (left sidebar) and **Horizontal** (top bar) orientations.
-  - Pinned non-closable `Changes` tab (index 0) and closable category / dynamic detail tabs.
+- **`TabContainer`, `TabStripWidget`, & `TabButton` (`ui/tabs/tab_bar.py`)**: Custom hybrid tab system.
+  - Supports dynamic switching between **Vertical** (left sidebar, default) and **Horizontal** (top bar) orientations.
+  - **Dynamic Tab Model & Pinning**: All tabs are dynamic. Right-click context menu provides `Pin Tab` / `Unpin Tab`, `Close Tab`, `Close Other Tabs`, and `Close Tabs to the Right/Below`. Pinned tabs show a `📌` badge prefix and hide the `×` close button.
+  - **Drag-and-Drop Tab Reordering**:
+    - `TabButton` captures mouse drag motions via `installEventFilter` and initiates `QDrag` with visual pixmap snapshots.
+    - `TabStripWidget` implements drag target tracking (`dragEnterEvent`, `dragMoveEvent`, `dragLeaveEvent`, `dropEvent`) and renders a 2px visual insertion line in `paintEvent`.
+    - `move_tab(from_index, to_index)` enforces the pinned grouping constraint (pinned tabs reorder among pinned tabs; unpinned tabs reorder among unpinned tabs).
+    - Active tab focus is retained during reordering and triggers `tabs_mutated` for debounced auto-save persistence.
+  - **Section Dividers**: 1px subtle divider line between the tab strip and main content area (`border-right` in vertical mode, `border-bottom` in horizontal mode).
   - Trailing `+` button with category tabs dropdown menu.
   - Per-repo deduplication rule: `(tab_type, repo_path, entity_id)` avoids duplicate tabs.
   - Keyboard tab switching (`Ctrl+1` .. `Ctrl+9`).
 - **`ChangesTab` (`ui/tabs/changes_tab.py`)**: Primary working tree changes workspace.
   - Flush borderless repository selector `QComboBox` with missing repository auto-locate prompts.
   - Embedded `BranchSwitcherWidget`.
+  - Visible 1px divider `QSplitter::handle` with interactive hover highlight.
   - Merge conflict banner when merge conflicts are in progress.
   - Unified changed files list (staged + unstaged + untracked) with status badges (`M`, `A`, `D`, `R`, `?`, `⚠ C`) and path tooltips.
   - Tri-state select-all checkbox cycling `Unchecked ➔ All Checked ➔ All Unchecked`.
   - Right-click file context menu (`Stage`, `Unstage`, `Discard`, `Copy Relative/Absolute Path`).
   - Commit section with forge account avatar button, 72-character soft limit summary warning, description editor, amend toggle (pre-filled from last commit), and dynamic commit button.
+  - Per-repo selections and draft text snapshotting (`get_current_repo_state()` / `restore_repo_state()`) during repository switches.
   - Right column embedded `DiffView` with clean state and programming quotes.
 - **`BranchSwitcherWidget` (`ui/widgets/branch_switcher.py`)**: Branch indicator and switcher.
   - Displays active branch (`🌿 main ▾`), detached HEAD (`🔗 HEAD detached at {sha}`), or unborn branch (`🌿 main (initial)`).
@@ -144,7 +154,7 @@ graph TD
   - Unborn branch empty state (`"No history yet"`).
   - Hidden detail panel slot.
 - **`DiffView` (`ui/diff_view/diff_widget.py`)**: Syntax-highlighted diff viewer.
-  - Renders diff lines with line-number metadata.
+  - Renders diff lines with line-number metadata and theme-adaptive light/dark mode contrast.
   - Provides hunk dropdown controls and whole-file / hunk staging action buttons.
   - Binary file detection and exception safety.
 - **`workers.py`**: Background thread runner using `QThread` and a thread-safe `_Dispatcher` `QObject` via `Qt.ConnectionType.QueuedConnection` to ensure callbacks execute strictly on the main GUI thread.
@@ -258,6 +268,34 @@ ui.workers.run_in_background(fn, *args, on_finished=cb, on_failed=err_cb)
         │
         └── Receives signal via Qt.QueuedConnection
         └── Executes on_finished / on_failed directly on Main GUI Thread
+```
+
+### 4.4 Continuous Session State & Draft Persistence Workflow
+```
+[UI Events: Typing Draft, Checking Files, Reordering Tabs, Switching Repos, Resizing Splitter]
+        │
+        ▼
+[MainWindow._trigger_auto_save()]
+        │
+        ▼
+[QTimer: 1000ms Debounce Delay] ───(Rapid bursts coalesce into a single timer restart)───┐
+        │                                                                                │
+        ▼ (Timer fires after 1s quiet)                                                   │
+[MainWindow._save_session_state()]                                                       │
+        │                                                                                │
+        ├── Serializes Window Geometry + Window State (Hex)                              │
+        ├── Serializes Tab Order + Types + Labels + Pinning State                        │
+        ├── Serializes Active Tab Index + Active Repo Path                               │
+        ├── Serializes Per-Repo Draft State (Message, Description, Amend, Checkboxes)   │
+        │                                                                                │
+        ▼                                                                                │
+[storage.settings.set_setting("ui.session_state", json_blob)]                            │
+        │                                                                                │
+        ▼                                                                                │
+[SQLite: app_settings] ◄─────────────────────────────────────────────────────────────────┘
+        │
+        ├── On Startup: MainWindow._restore_settings() re-hydrates full UI state
+        └── On Close: MainWindow.closeEvent() executes immediate synchronous flush
 ```
 
 ---

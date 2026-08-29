@@ -170,6 +170,11 @@ class ChangesTab(QWidget):
         main_layout.setSpacing(0)
 
         self.splitter = QSplitter(Qt.Horizontal, self)
+        self.splitter.setStyleSheet(
+            "QSplitter::handle:horizontal { "
+            "background-color: rgba(128, 128, 128, 0.25); width: 1px; } "
+            "QSplitter::handle:horizontal:hover { background-color: palette(highlight); }"
+        )
         main_layout.addWidget(self.splitter)
 
         # -------------------------------------------------------------

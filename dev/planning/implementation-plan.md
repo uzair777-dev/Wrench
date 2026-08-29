@@ -1071,14 +1071,16 @@ Each phase should be independently shippable/testable — don't let phases bleed
    - Default size `1200×800`, minimum `900×600`.
 
 2. **Tab bar widget** (`ui/tabs/tab_bar.py` [NEW]) — ref: `ui-planning.md` §2
-   - Create a custom `TabContainer` and `TabButton` widget providing full styling control and dynamic tab lifecycle.
+   - Create a custom `TabContainer`, `TabStripWidget`, and `TabButton` widget providing full styling control and dynamic tab lifecycle.
    - Dynamic tab model (§2.1): All tabs (Changes, History, PRs, Issues, detail tabs) are dynamic and closable by default, with right-click context pinning (`Pin Tab` / `Unpin Tab`). Pinned tabs show a `📌` badge, hide the `×` button, and are protected from accidental removal.
+   - Drag-and-drop tab reordering: tabs can be reordered via mouse drag. Pinned tabs are grouped at the top/left and reorderable among pinned tabs; unpinned tabs are reorderable among unpinned tabs. Active tab focus is preserved and order is persisted via `ui.session_state`.
+   - Section dividers: 1px subtle divider line between the tab strip and main content area (`border-right` in vertical mode, `border-bottom` in horizontal mode).
    - Per-repo deduplication rule (§2.1, §2.8): tab identity is `(tab_type, repo_path, entity_id)`. Opening an existing entity focuses that tab instead of opening a duplicate.
    - Vertical tab mode (default): tab buttons stacked vertically on the left edge, content area to the right. Horizontal mode: tab buttons across the top. Toggled via View → Tab Position menu, persisted to `ui.session_state`.
    - Trailing `+` button dropdown adds available category tabs ("Changes", "History", "Pull Requests", "Issues").
    - Keyboard: `Ctrl+1/2/3…` switches by position.
    - Tab persistence: serialize full tab list, order, pin state, and active index to `ui.session_state`.
-   - API: `add_tab(...)`, `remove_tab(index)`, `pin_tab(index)`, `unpin_tab(index)`, `serialize_tabs()`, signals `current_changed(int)`, `tab_closed(int)`, `orientation_changed(Orientation)`.
+   - API: `add_tab(...)`, `remove_tab(index)`, `pin_tab(index)`, `unpin_tab(index)`, `move_tab(from_index, to_index)`, `serialize_tabs()`, signals `current_changed(int)`, `tab_closed(int)`, `tabs_mutated()`, `orientation_changed(Orientation)`.
 
 3. **Changes tab — repository selector & branch switcher** (`ui/tabs/changes_tab.py` [NEW], `ui/widgets/branch_switcher.py` [NEW]) — ref: `ui-planning.md` §3.2, §3.2b
    - Top of the Changes tab: a custom-styled `QComboBox` (flush, borderless, blended with theme) populated from `repo_registry.list_repos()`, sorted by `last_opened_at DESC`.

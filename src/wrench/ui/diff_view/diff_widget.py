@@ -101,9 +101,39 @@ class DiffView(QWidget):
             self.editor.setPlainText(f"Error loading diff:\n{e}")
             return
 
+        # Detect if palette is dark or light
+        win_color = self.palette().color(QPalette.Window)
+        base_color = self.palette().color(QPalette.Base)
+        is_dark = win_color.lightnessF() < 0.5 or base_color.lightnessF() < 0.5
+
+        if is_dark:
+            self.editor.setStyleSheet(
+                "QTextEdit { background-color: #1e1e1e; color: #d4d4d4; "
+                "border: 1px solid rgba(128, 128, 128, 0.25); border-radius: 3px; }"
+            )
+            hunk_style = (
+                "color: #38bdf8; font-weight: bold; background-color: #0c2d48; "
+                "padding: 2px 6px; margin-top: 6px; border-radius: 2px;"
+            )
+            add_style = "color: #4ade80; background-color: #14381e; padding: 1px 6px;"
+            del_style = "color: #f87171; background-color: #3d1414; padding: 1px 6px;"
+            ctx_style = "color: #d1d5db; padding: 1px 6px;"
+        else:
+            self.editor.setStyleSheet(
+                "QTextEdit { background-color: #ffffff; color: #1f2937; "
+                "border: 1px solid rgba(128, 128, 128, 0.25); border-radius: 3px; }"
+            )
+            hunk_style = (
+                "color: #0288d1; font-weight: bold; background-color: #e1f5fe; "
+                "padding: 2px 6px; margin-top: 6px; border-radius: 2px;"
+            )
+            add_style = "color: #166534; background-color: #dcfce7; padding: 1px 6px;"
+            del_style = "color: #991b1b; background-color: #fee2e2; padding: 1px 6px;"
+            ctx_style = "color: #1f2937; padding: 1px 6px;"
+
         if self._diff.is_binary:
             self.editor.setHtml(
-                "<p style='color: #888; padding: 10px;'>"
+                "<p style='color: #888888; padding: 10px;'>"
                 "<i>Binary file diff not supported.</i></p>"
             )
             self.hunk_combo.setVisible(False)
@@ -112,7 +142,7 @@ class DiffView(QWidget):
 
         if not self._diff.hunks:
             self.editor.setHtml(
-                "<p style='color: #888; padding: 10px;'>" "<i>No changes in this file.</i></p>"
+                "<p style='color: #888888; padding: 10px;'>" "<i>No changes in this file.</i></p>"
             )
             self.hunk_combo.setVisible(False)
             self.stage_hunk_btn.setVisible(False)
@@ -131,31 +161,11 @@ class DiffView(QWidget):
         self.stage_hunk_btn.setText("Unstage Hunk" if self._staged else "Stage Hunk")
         self.stage_hunk_btn.setVisible(True)
 
-        # Detect if palette is dark or light
-        bg_color = self.palette().color(QPalette.Base)
-        is_dark = bg_color.lightnessF() < 0.5
-
-        if is_dark:
-            hunk_style = (
-                "color: #38bdf8; font-weight: bold; background-color: #0c2d48; "
-                "padding: 2px 6px; margin-top: 6px; border-radius: 2px;"
-            )
-            add_style = "color: #4ade80; background-color: #14381e; padding: 1px 6px;"
-            del_style = "color: #f87171; background-color: #3d1414; padding: 1px 6px;"
-            ctx_style = "color: #d1d5db; padding: 1px 6px;"
-        else:
-            hunk_style = (
-                "color: #0288d1; font-weight: bold; background-color: #e1f5fe; "
-                "padding: 2px 6px; margin-top: 6px; border-radius: 2px;"
-            )
-            add_style = "color: #166534; background-color: #dcfce7; padding: 1px 6px;"
-            del_style = "color: #991b1b; background-color: #fee2e2; padding: 1px 6px;"
-            ctx_style = "color: #1f2937; padding: 1px 6px;"
-
         # Build colored diff HTML
+        text_color = "#d4d4d4" if is_dark else "#1f2937"
         pre_tag = (
-            "<pre style='font-family: monospace; font-size: 12px; line-height: 1.4; "
-            "margin: 0; padding: 6px;'>"
+            f"<pre style='font-family: monospace; font-size: 12px; line-height: 1.4; "
+            f"margin: 0; padding: 6px; color: {text_color};'>"
         )
         html_lines = [pre_tag]
         for hunk in self._diff.hunks:

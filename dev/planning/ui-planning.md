@@ -182,16 +182,16 @@ Tabs fall into two categories:
 | Orientation | `Qt.Vertical` (default) or `Qt.Horizontal`, stored in user preferences |
 | Toggle | `View → Toggle Tab Orientation` menu action, or a small toggle icon in the tab bar itself |
 | Tab items | Each is a clickable widget with: icon, label text, optional close button (`×`) on hover |
-| Add button | `+` icon button at the trailing edge — opens a dropdown/menu listing available **category** tab types to add |
-| Reordering | Tabs are **drag-reorderable** within the bar |
-| Closable | All tabs show a close `×` on hover, except the Changes tab which **cannot be closed** (it's the home tab) |
+| Reordering | Tabs are **drag-and-drop reorderable** via mouse dragging. Pinned tabs remain grouped at the top/left and can be reordered among themselves; unpinned tabs can be reordered among unpinned tabs. A visual insertion indicator displays the target drop position. Reordering updates order, retains active focus, and automatically persists to `ui.session_state`. |
+| Section Dividers | The tab strip has a distinct 1px subtle divider line separating it from the main content area (`border-right` in vertical mode, `border-bottom` in horizontal mode). In ChangesTab, the `QSplitter` handle has a 1px border with hover highlight. |
+| Closable | All tabs show a close `×` on hover, except pinned tabs which hide the `×` button and display `📌` |
 | Keyboard | `Ctrl+1/2/3/…` switches to tab by position |
 | Tab label | Category tabs show their type name ("Changes", "History"). Detail tabs show entity info: "PR #42 — Fix login bug" (type + ID + truncated title) |
 
 ### 2.5 Default Tabs
 
 On first launch, the tab bar contains:
-1. **Changes** (cannot be closed, always present)
+1. **Changes** (default pinned, can be unpinned/closed and re-opened from `+`)
 2. **History**
 
 Other category tabs (PR List, Issues List) are added via the `[+]` button and are forge-dependent — they only appear in the `[+]` menu when a forge account is linked to the current repo.

@@ -14,15 +14,26 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 
-from PySide6.QtCore import QPoint, Qt, Signal
-from PySide6.QtGui import QIcon, QKeySequence, QPalette, QShortcut
+from PySide6.QtCore import QEvent, QMimeData, QPoint, Qt, Signal
+from PySide6.QtGui import (
+    QDrag,
+    QIcon,
+    QKeySequence,
+    QPainter,
+    QPalette,
+    QPen,
+    QShortcut,
+)
 from PySide6.QtWidgets import (
+    QApplication,
     QBoxLayout,
     QHBoxLayout,
     QMenu,
     QPushButton,
     QSizePolicy,
     QStackedWidget,
+    QStyle,
+    QStyleOption,
     QToolButton,
     QWidget,
 )
@@ -43,7 +54,7 @@ class TabMetadata:
 
 
 class TabButton(QWidget):
-    """A single tab button in the tab bar strip with close button and context menu."""
+    """A single tab button with close button, context menu, and drag support."""
 
     clicked = Signal()
     close_requested = Signal()
@@ -65,6 +76,8 @@ class TabButton(QWidget):
         self._closable = closable and not is_pinned
         self._is_active = False
         self._orientation = Qt.Vertical
+        self._tab_index: int = 0
+        self._drag_start_pos: QPoint | None = None
 
         self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
 
@@ -78,6 +91,7 @@ class TabButton(QWidget):
             self.main_btn.setIcon(icon)
         self.main_btn.clicked.connect(self.clicked.emit)
         self.main_btn.setFocusPolicy(Qt.NoFocus)
+        self.main_btn.installEventFilter(self)
         layout.addWidget(self.main_btn)
 
         self.close_btn = QToolButton(self)
@@ -100,10 +114,65 @@ class TabButton(QWidget):
 
         self._update_style()
 
+    def set_tab_index(self, index: int) -> None:
+        self._tab_index = index
+
+    def eventFilter(self, obj, event) -> bool:
+        if obj == self.main_btn:
+            if event.type() == QEvent.MouseButtonPress:
+                if event.button() == Qt.LeftButton:
+                    self._drag_start_pos = event.pos()
+            elif event.type() == QEvent.MouseMove:
+                if event.buttons() & Qt.LeftButton and self._drag_start_pos is not None:
+                    dist = (event.pos() - self._drag_start_pos).manhattanLength()
+                    if dist >= QApplication.startDragDistance():
+                        drag = QDrag(self)
+                        mime = QMimeData()
+                        mime.setData(
+                            "application/x-wrench-tab-index",
+                            str(self._tab_index).encode("utf-8"),
+                        )
+                        drag.setMimeData(mime)
+
+                        pixmap = self.grab()
+                        drag.setPixmap(pixmap)
+                        drag.setHotSpot(event.pos())
+                        self._drag_start_pos = None
+                        drag.exec(Qt.MoveAction)
+                        return True
+            elif event.type() == QEvent.MouseButtonRelease:
+                self._drag_start_pos = None
+        return super().eventFilter(obj, event)
+
     def mousePressEvent(self, event) -> None:
         if event.button() == Qt.LeftButton:
+            self._drag_start_pos = event.pos()
             self.clicked.emit()
         super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event) -> None:
+        if event.buttons() & Qt.LeftButton and self._drag_start_pos is not None:
+            dist = (event.pos() - self._drag_start_pos).manhattanLength()
+            if dist >= QApplication.startDragDistance():
+                drag = QDrag(self)
+                mime = QMimeData()
+                mime.setData(
+                    "application/x-wrench-tab-index",
+                    str(self._tab_index).encode("utf-8"),
+                )
+                drag.setMimeData(mime)
+
+                pixmap = self.grab()
+                drag.setPixmap(pixmap)
+                drag.setHotSpot(event.pos())
+                self._drag_start_pos = None
+                drag.exec(Qt.MoveAction)
+                return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event) -> None:
+        self._drag_start_pos = None
+        super().mouseReleaseEvent(event)
 
     def _show_context_menu(self, pos: QPoint) -> None:
         menu = QMenu(self)
@@ -183,6 +252,135 @@ class TabButton(QWidget):
             )
 
 
+class TabStripWidget(QWidget):
+    """Custom container for the tab bar strip with drag-and-drop support and drop indicators."""
+
+    def __init__(self, container: TabContainer, parent: QWidget | None = None):
+        super().__init__(parent)
+        self._container = container
+        self._drop_marker_index: int | None = None
+        self.setAttribute(Qt.WA_StyledBackground, True)
+        self.setAcceptDrops(True)
+
+    def paintEvent(self, event) -> None:
+        opt = QStyleOption()
+        opt.initFrom(self)
+        painter = QPainter(self)
+        self.style().drawPrimitive(QStyle.PE_Widget, opt, painter, self)
+
+        if self._drop_marker_index is not None and self._container._tab_buttons:
+            painter.setRenderHint(QPainter.Antialiasing)
+            highlight_color = self.palette().color(QPalette.Highlight)
+            pen = QPen(highlight_color, 2)
+            painter.setPen(pen)
+
+            num_buttons = len(self._container._tab_buttons)
+            target_idx = max(0, min(self._drop_marker_index, num_buttons))
+
+            if self._container._orientation == Qt.Vertical:
+                if target_idx < num_buttons:
+                    btn = self._container._tab_buttons[target_idx]
+                    y = btn.y() - 1
+                else:
+                    last_btn = self._container._tab_buttons[-1]
+                    y = last_btn.y() + last_btn.height() + 1
+                painter.drawLine(4, y, self.width() - 4, y)
+            else:
+                if target_idx < num_buttons:
+                    btn = self._container._tab_buttons[target_idx]
+                    x = btn.x() - 1
+                else:
+                    last_btn = self._container._tab_buttons[-1]
+                    x = last_btn.x() + last_btn.width() + 1
+                painter.drawLine(x, 4, x, self.height() - 4)
+
+    def dragEnterEvent(self, event) -> None:
+        if event.mimeData().hasFormat("application/x-wrench-tab-index"):
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dragMoveEvent(self, event) -> None:
+        if not event.mimeData().hasFormat("application/x-wrench-tab-index"):
+            event.ignore()
+            return
+
+        try:
+            src_idx = int(
+                event.mimeData().data("application/x-wrench-tab-index").data().decode("utf-8")
+            )
+        except Exception:
+            event.ignore()
+            return
+
+        pos = event.position().toPoint() if hasattr(event, "position") else event.pos()
+        num_tabs = len(self._container._tabs)
+        if num_tabs == 0:
+            event.ignore()
+            return
+
+        target_idx = num_tabs
+        for i, btn in enumerate(self._container._tab_buttons):
+            if self._container._orientation == Qt.Vertical:
+                mid_y = btn.y() + btn.height() // 2
+                if pos.y() < mid_y:
+                    target_idx = i
+                    break
+            else:
+                mid_x = btn.x() + btn.width() // 2
+                if pos.x() < mid_x:
+                    target_idx = i
+                    break
+
+        # Enforce pinned grouping constraint
+        num_pinned = sum(1 for t in self._container._tabs if t.is_pinned)
+        src_is_pinned = (
+            self._container._tabs[src_idx].is_pinned if 0 <= src_idx < num_tabs else False
+        )
+
+        if src_is_pinned:
+            target_idx = max(0, min(target_idx, num_pinned))
+        else:
+            target_idx = max(num_pinned, min(target_idx, num_tabs))
+
+        self._drop_marker_index = target_idx
+        self.update()
+        event.acceptProposedAction()
+
+    def dragLeaveEvent(self, event) -> None:
+        self._drop_marker_index = None
+        self.update()
+        event.accept()
+
+    def dropEvent(self, event) -> None:
+        if not event.mimeData().hasFormat("application/x-wrench-tab-index"):
+            event.ignore()
+            return
+
+        try:
+            src_idx = int(
+                event.mimeData().data("application/x-wrench-tab-index").data().decode("utf-8")
+            )
+        except Exception:
+            event.ignore()
+            return
+
+        target_idx = self._drop_marker_index
+        self._drop_marker_index = None
+        self.update()
+
+        if target_idx is not None:
+            if target_idx > src_idx:
+                dest_idx = target_idx - 1
+            else:
+                dest_idx = target_idx
+
+            if dest_idx != src_idx:
+                self._container.move_tab(src_idx, dest_idx)
+
+        event.acceptProposedAction()
+
+
 class TabContainer(QWidget):
     """Main tab container holding the TabBar strip and the QStackedWidget content area."""
 
@@ -210,7 +408,8 @@ class TabContainer(QWidget):
         self._main_layout.setContentsMargins(0, 0, 0, 0)
         self._main_layout.setSpacing(0)
 
-        self._strip_widget = QWidget(self)
+        self._strip_widget = TabStripWidget(self, self)
+        self._strip_widget.setObjectName("tab_strip")
         self._strip_layout = QBoxLayout(
             QBoxLayout.TopToBottom if orientation == Qt.Vertical else QBoxLayout.LeftToRight,
             self._strip_widget,
@@ -254,7 +453,12 @@ class TabContainer(QWidget):
             self._strip_widget.setMaximumWidth(180)
             self._strip_widget.setMinimumHeight(0)
             self._strip_widget.setMaximumHeight(16777215)
-            self._strip_layout.setContentsMargins(2, 4, 2, 4)
+            self._strip_widget.setStyleSheet(
+                "QWidget#tab_strip { "
+                "border-right: 1px solid rgba(128, 128, 128, 0.25); "
+                "background: transparent; }"
+            )
+            self._strip_layout.setContentsMargins(2, 4, 4, 4)
         else:
             self._main_layout.setDirection(QBoxLayout.TopToBottom)
             self._strip_layout.setDirection(QBoxLayout.LeftToRight)
@@ -263,7 +467,12 @@ class TabContainer(QWidget):
             self._strip_widget.setMaximumWidth(16777215)
             self._strip_widget.setMinimumHeight(32)
             self._strip_widget.setMaximumHeight(44)
-            self._strip_layout.setContentsMargins(4, 2, 4, 2)
+            self._strip_widget.setStyleSheet(
+                "QWidget#tab_strip { "
+                "border-bottom: 1px solid rgba(128, 128, 128, 0.25); "
+                "background: transparent; }"
+            )
+            self._strip_layout.setContentsMargins(4, 2, 4, 4)
 
         self._rebuild_strip()
 
@@ -288,6 +497,7 @@ class TabContainer(QWidget):
                 is_pinned=tab.is_pinned,
                 parent=self._strip_widget,
             )
+            btn.set_tab_index(idx)
             btn.set_orientation(self._orientation)
             btn.set_active(idx == self._current_index)
             btn.clicked.connect(lambda i=idx: self.set_current_index(i))
@@ -304,6 +514,26 @@ class TabContainer(QWidget):
         else:
             self._strip_layout.addWidget(self._add_btn, 0, Qt.AlignVCenter)
             self._strip_layout.addStretch()
+
+    def move_tab(self, from_index: int, to_index: int) -> None:
+        """Moves a tab from from_index to to_index, preserving focus and firing tabs_mutated."""
+        if not (0 <= from_index < len(self._tabs) and 0 <= to_index < len(self._tabs)):
+            return
+        if from_index == to_index:
+            return
+
+        active_tab = (
+            self._tabs[self._current_index] if 0 <= self._current_index < len(self._tabs) else None
+        )
+
+        tab = self._tabs.pop(from_index)
+        self._tabs.insert(to_index, tab)
+
+        if active_tab and active_tab in self._tabs:
+            self._current_index = self._tabs.index(active_tab)
+
+        self._rebuild_strip()
+        self.tabs_mutated.emit()
 
     def set_orientation(self, orientation: Qt.Orientation) -> None:
         if self._orientation != orientation:

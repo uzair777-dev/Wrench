@@ -137,6 +137,47 @@ class TestTabContainer:
         container.set_orientation(Qt.Horizontal)
         assert container.orientation() == Qt.Horizontal
 
+    def test_move_tab_and_focus_retention(self, qapp):
+        container = TabContainer(orientation=Qt.Vertical)
+        w1 = QWidget()
+        w2 = QWidget()
+        w3 = QWidget()
+
+        container.add_tab(w1, "Tab A")
+        container.add_tab(w2, "Tab B")
+        container.add_tab(w3, "Tab C")
+
+        # Focus Tab A (index 0)
+        container.set_current_index(0)
+        assert container.current_index() == 0
+
+        # Move Tab C (index 2) to position 0
+        container.move_tab(2, 0)
+        assert container.count() == 3
+        assert container.tab_metadata(0).label == "Tab C"
+        assert container.tab_metadata(1).label == "Tab A"
+        assert container.tab_metadata(2).label == "Tab B"
+
+        # Tab A should still be the active tab (now at index 1)
+        assert container.current_index() == 1
+        assert container.current_widget() == w1
+
+    def test_reorder_with_pinned_tabs(self, qapp):
+        container = TabContainer(orientation=Qt.Vertical)
+        w1 = QWidget()
+        w2 = QWidget()
+        w3 = QWidget()
+
+        container.add_tab(w1, "Pinned 1", is_pinned=True)
+        container.add_tab(w2, "Pinned 2", is_pinned=True)
+        container.add_tab(w3, "Unpinned 1", is_pinned=False)
+
+        # Move Pinned 2 (index 1) to index 0
+        container.move_tab(1, 0)
+        assert container.tab_metadata(0).label == "Pinned 2"
+        assert container.tab_metadata(1).label == "Pinned 1"
+        assert container.tab_metadata(2).label == "Unpinned 1"
+
 
 class TestBranchSwitcherWidget:
     def test_branch_display(self, simple_repo, qapp):

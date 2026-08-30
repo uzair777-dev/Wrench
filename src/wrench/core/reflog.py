@@ -55,5 +55,14 @@ def get_reflog(repo: RepoHandle) -> list[ReflogEntry]:
 
 def restore_to_ref(repo: RepoHandle, sha: str) -> None:
     """Reset current branch HEAD hard to the given commit SHA."""
+    from . import exceptions, read_ops, snapshots
+
+    status = read_ops.get_status(repo)
+    if getattr(status, "merge_in_progress", False):
+        raise exceptions.RepoBusyError("reflog restore", "merge")
+    if getattr(status, "rebase_in_progress", False):
+        raise exceptions.RepoBusyError("reflog restore", "rebase")
+
+    snapshots.take_snapshot(repo, "pre_risky_op")
     run_git(repo.path, ["reset", "--hard", sha])
     repo.pygit2_repo.index.read()

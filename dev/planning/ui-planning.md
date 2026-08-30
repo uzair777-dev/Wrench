@@ -1102,7 +1102,7 @@ Summary of new and modified files for implementation:
 | `src/wrench/ui/dialogs/remotes_dialog.py` | **NEW** | Remotes Configuration dialog (§6.8, FR-4.4) |
 | `src/wrench/ui/dialogs/backup_dialog.py` | **NEW** | Backup & Restore dialogs (§6.9, FR-8.1–8.4) |
 | `src/wrench/ui/dialogs/identity_dialog.py` | **NEW** | Git Identity override dialog (§6.5, FR-1.5) |
-| `src/wrench/ui/snapshots_panel.py` | **NEW** | Snapshot browse/restore panel (§6.4, FR-10.6) |
+| `src/wrench/ui/snapshots_panel/__init__.py` | **NEW** | Snapshot browse/restore panel (§6.4, FR-10.6) |
 | `src/wrench/ui/widgets/branch_switcher.py` | **NEW** | Branch indicator/switcher widget (§3.2b, FR-1.6) |
 | `src/wrench/ui/diff_view/diff_widget.py` | **KEEP** | Reused as-is in Changes tab, History detail panel, and PR detail tab |
 | `src/wrench/ui/sidebar/` | **DEPRECATE** | Replaced by repo dropdown in Changes tab. Remove in Phase 1.5 |

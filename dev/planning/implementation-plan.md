@@ -209,7 +209,8 @@ wrench/
 │   │   │   ├── __init__.py
 │   │   │   └── merge_dialog.py     # 3-pane top (Ours/Base/Theirs) + Result bottom editor
 │   │   ├── forge_panel/            # FR-5.x UI
-│   │   └── snapshots_panel.py      # FR-10.6: browse/restore rolling snapshots (ui-planning §6.4)
+│   │   └── snapshots_panel/       # FR-10.6: browse/restore rolling snapshots (ui-planning §6.4);
+│   │                              #   package on disk, panel implemented in its __init__.py
 │   └── py.typed
 ├── tests/
 │   ├── unit/
@@ -404,6 +405,14 @@ class RepoStatus:
     behind: int
     has_conflicts: bool
     detached_head_sha: str | None = None   # only set when is_detached is True
+    merge_in_progress: bool = False    # Phase 2 addition: GIT_REPOSITORY_STATE_MERGE. Distinct
+                                       # from has_conflicts — a merge whose conflicts are all
+                                       # resolved reports has_conflicts=False but is still an
+                                       # open merge until the user commits; the Changes-tab
+                                       # banner (ui-planning §3.6) stays up on this flag
+    rebase_in_progress: bool = False   # Phase 2 addition: GIT_REPOSITORY_STATE_REBASE_MERGE /
+                                       # _APPLY — drives the same banner and the merge tool's
+                                       # rebase mode (§5 Phase 2 step 5)
 
 @dataclass
 class FileChange:
@@ -462,6 +471,21 @@ class MergeResult:
 class RebaseResult:
     status: str                  # 'complete' | 'conflict' | 'aborted'
     conflicted_files: list[str] = field(default_factory=list)
+
+@dataclass
+class FileStat:
+    """One row of the 'Files changed' list in a commit's detail view / hover tooltip
+    (ui-planning §4.4/§4.5). Phase 2 addition."""
+    path: str
+    change_type: str        # 'added' | 'modified' | 'deleted' | 'renamed'
+    additions: int
+    deletions: int
+
+@dataclass
+class RefLabel:
+    """A badge rendered on the commit graph (ui-planning §4.2/§4.3). Phase 2 addition."""
+    name: str               # 'main', 'feature/x', 'v1.0.0', 'HEAD'
+    kind: str               # 'branch' | 'tag' | 'head' — 'head' gets its own pill style
 
 @dataclass
 class Remote:
@@ -526,6 +550,45 @@ def fetch(repo: "RepoHandle", remote: str) -> None: ...
 
 def merge(repo: "RepoHandle", source_branch: str) -> "MergeResult": ...
 def rebase(repo: "RepoHandle", onto: str) -> "RebaseResult": ...
+
+# --- Phase 2 surface (implementations land in Phase 2; signatures fixed here so
+#     ui/history_tab.py, ui/commit_graph/, and ui/merge_tool/ can be written against
+#     them without drift) ---
+
+def get_commit_diff(repo: "RepoHandle", sha: str, path: str | None = None) -> Diff: ...
+    # Diff of a commit against its FIRST parent (roots: against the empty tree).
+    # Merge commits diff against the first parent only — v1 renders no combined diffs.
+    # `path` narrows to a single file, matching get_diff's per-file contract. This is
+    # what the History detail panel and hover tooltips render through the same Diff
+    # model the Changes tab already uses.
+def get_commit_file_stats(repo: "RepoHandle", sha: str) -> list[FileStat]: ...
+    # per-file additions/deletions for the detail panel's file list and the hover
+    # tooltip's +N/-M columns (ui-planning §4.4/§4.5); computed from the same
+    # first-parent diff as get_commit_diff via diff.patch / per-file line counts
+def get_ref_labels(repo: "RepoHandle") -> dict[str, list[RefLabel]]: ...
+    # sha -> [RefLabel] for the commit-graph pill badges: one entry per branch tip,
+    # tag target, and HEAD. Detached HEAD contributes a single 'head' label at
+    # detached_head_sha. Annotated tag refs must be peeled to their commit target
+    # (ref.peel() returns the Commit object; for tags the peel target is accessible
+    # via .target, so e.g. ref.peel().target gives the commit the tag points at).
+    # Cheap, un-paginated — called once per graph refresh
+
+def iter_commits(repo: "RepoHandle", *, all_refs: bool = False) -> "Iterator[Commit]":
+    # One live pygit2 walker kept open and yielded from — the commit-graph's batch
+    # loader advances THIS iterator across scroll batches rather than re-issuing
+    # get_log(offset=...) per batch, which re-walks the whole DAG every time and turns
+    # incremental scroll into O(n²) on large repos. The walker is seeded from HEAD
+    # (always) plus every local branch ref under refs/heads/* and tag ref under
+    # refs/tags/* when all_refs=True. Seeds are sorted by full ref name before
+    # pushing, so lane assignment is deterministic across refreshes and test runs
+    # (§5 Phase 2 step 1a). Yields Commit objects in walk order
+    # (GIT_SORT_TOPOLOGICAL | GIT_SORT_TIME). Do NOT re-issue get_log(offset=N)
+    # for each batch — re-walking from the root each time is O(n²) and ruins the
+    # promise of virtualized rendering; advance this single generator instead.
+def rebase_continue(repo: "RepoHandle") -> None: ...   # run_git(["rebase", "--continue"]);
+                                                       # non-zero exit means another conflict —
+                                                       # NOT an exception (§5 Phase 2 step 5)
+def rebase_abort(repo: "RepoHandle") -> None: ...      # run_git(["rebase", "--abort"])
 ```
 
 `RepoHandle` wraps a `pygit2.Repository` for reads and the repo's filesystem `Path` for subprocess calls. It is created once per opened repo and cached by `ui/main_window.py`; never re-open a repo per operation.
@@ -535,6 +598,7 @@ def rebase(repo: "RepoHandle", onto: str) -> "RebaseResult": ...
 ### 4.2 `core/write_ops.py` (subprocess wrapper conventions)
 
 - All `git` invocations go through one helper: `run_git(repo_path: Path, args: list[str], *, timeout: int = 30) -> subprocess.CompletedProcess`. This is the single place that sets `cwd`, environment (notably `GIT_TERMINAL_PROMPT=0` so git never blocks waiting for interactive credential input — credential negotiation happens via the credential helper below instead), and timeout.
+- **Locale-stable output, or your parsing breaks for real users.** The same `env` must also set `LC_ALL=C` on every invocation: Phases 2–3 parse git's stdout/stderr ("Already up to date", "rejected", dirty-tree refusal messages) to derive typed results, and all of that pattern-matching silently stops matching the moment a user's `LANG`/`LC_MESSAGES` localizes git's strings. English-only parsing is a deliberate v1 constraint. Corollary: read stderr/stdout as bytes and decode with `errors="replace"` — a C-locale git can emit raw non-UTF-8 bytes for non-UTF-8 filenames, which a strict UTF-8 decode would turn into an exception instead of a diff.
 - Credential negotiation: configure a custom `credential.helper` pointing at a small internal script (`core/git_credential_helper.py`, invoked as `git credential-wrench`) that reads/writes via `credentials/secret_service.py` instead of any host credential helper (per SRS constraint — never shell out to `git-credential-libsecret` on the host).
 - **Multi-account (FR-4.5)**: also set `credential.useHttpPath = true` in the same repo-local config write — by default git does *not* send the URL path to credential helpers, only protocol+host, which is fine for a single account per host but ambiguous the moment a second account on the same host exists. With `useHttpPath` on, the helper receives enough to disambiguate by repo, not just host (exact matching logic in §5 Phase 3).
 - Every `write_ops.py` function must raise a typed exception (`core/exceptions.py`) on non-zero exit, with the raw stderr attached, so the UI layer can show a real error instead of a generic failure.
@@ -1169,20 +1233,54 @@ Each phase should be independently shippable/testable — don't let phases bleed
 
 ### Phase 2 — Commit Graph & Merge Tooling
 **Prerequisites:** Phase 1.5's acceptance check passed (tab-based UI shell, Changes tab redesign, and History tab skeleton all working). Phase 2 now fills in the History tab's graph and adds merge tooling.
+
+**Read-first note (added during a Phase 2 review pass):** this phase's steps below are the improved, tightened version. The step *numbers* and their scope are unchanged from the original pass, and §4.1's Phase-2 additions (`merge_abort`, `rebase_continue`, `rebase_abort`, `get_commit_diff`, `get_commit_file_stats`, `get_ref_labels`, `RepoStatus.merge_in_progress`/`rebase_in_progress`) exist specifically to close gaps this phase's UI surfaces were already promised (ui-planning §6.6 called `engine.merge_abort()` before any such signature existed — now it does).
 1. `ui/commit_graph/`: FR-2.2 — render commits from `core.engine.get_log()` (paginated, not loading full history eagerly — see NFR performance target; the underlying implementation is `core/read_ops.py`, but per §4.1's façade rule the UI only ever calls the `core.engine` re-export). **Simplified v1 lane-assignment algorithm** (deliberately *not* a full min-crossing DAG layout — that's a hard graph problem, out of scope for v1 by design, not by oversight; matches the SRS's "simple yet colorful" requirement rather than over-building):
-   a. Walk commits in topological + date order (pygit2's `GIT_SORT_TOPOLOGICAL | GIT_SORT_TIME`, which `get_log` should expose).
-   b. Maintain a list of "active lanes," each holding the commit sha it currently expects next.
-   c. For each commit: if its sha matches an active lane's expectation, place it in that lane, then set that lane's expectation to this commit's first parent; open one new lane for each *additional* parent (merge commits), or close the lane if this commit has no parents (a root).
-   d. If a commit's sha matches no active lane's expectation, open a new lane for it — this happens at every branch tip.
-   e. Assign each lane a persistent color from a fixed ~8-color palette, chosen once when the lane opens and kept for its lifetime, so a lane doesn't change color as it's drawn.
-   f. This is O(n) in commit count and produces a readable, if not perfectly minimal-crossing, graph.
-   Unit test: a fixture repo with one merge commit (two parents) — assert the algorithm opens exactly 2 lanes at the merge point and both converge back to 1 lane before it.
-2. FR-2.3: search/filter over the log (ref: `ui-planning.md` §4.6). Filter params (`author`, `message_substring`, `date_from`, `date_to`, `path`) become a `LogFilter` dataclass passed into `get_log(repo, filter: LogFilter | None = None)`; matching is plain case-insensitive substring search, not regex — regex support is a plausible v2 nicety, not a v1 requirement. UI: a search bar above the commit graph with search input, author filter, path/file picker, and date-range popup that composes into one `LogFilter` per query, re-run debounced (reuse the same single-shot-`QTimer` pattern as §5 Phase 1 step 7, 300ms) rather than on every keystroke. Matching commits are highlighted and non-matching dimmed per `ui-planning.md` §4.6.
-3. `core/engine.py::merge()`: FR-3.1 — `run_git(["merge", source_branch])`. Distinguish outcomes from git's exit code and output: exit 0 with "Already up to date" in stdout → `MergeResult(status="up_to_date")`; exit 0 otherwise → `MergeResult(status="merged", commit_sha=...)` (fast-forward or clean 3-way, both fine to treat the same way from the UI's perspective); nonzero exit with `<<<<<<<` conflict markers present in the working tree → `MergeResult(status="conflict", conflicted_files=[...])`, read via `repo.index.conflicts`, **not raised as an exception** — a merge conflict is an expected, routine outcome the UI should route into the merge tool, not an error state.
-4. `ui/merge_tool/`: FR-3.2 (ref: `ui-planning.md` §6.6) — `ui/merge_tool/merge_dialog.py`: 3-pane top layout (Ours / Base / Theirs synchronized diff panes) + editable Result pane at the bottom. For each entry in `repo.index.conflicts` (which yields `(ancestor, ours, theirs)` `IndexEntry` tuples, any of which may be `None` for add/delete conflicts), read the corresponding blob content via `repo[entry.id].data` to populate the top panes. Provide conflict hunk navigation (`◀ Prev Conflict` / `Next Conflict ▶`, "Conflict N of Total") and per-hunk resolution actions: "Accept Current (Ours)", "Accept Incoming (Theirs)", "Accept Both (Ours ➔ Theirs)", "Accept Both (Theirs ➔ Ours)", and direct manual editing in the Result pane. On "Mark Resolved & Next", write the result pane's content to the working-tree file, call `stage_file`, and advance. Track remaining-vs-resolved count. Binary conflicts show "keep ours / keep theirs / keep both". Abort button calls `engine.merge_abort()`.
-5. `core/engine.py::rebase()`: FR-3.3, deliberately **non-interactive only** in v1 (no commit reordering/squashing UI — that's part of FR-2.4's drag-and-drop rebase, explicitly deferred to v2). `run_git(["rebase", onto])`; conflicts follow the same detection pattern as `merge()` above, reusing the merge tool UI, with one difference the UI must handle: a multi-commit rebase can conflict repeatedly, once per replayed commit, so after each conflict is resolved and staged, call `run_git(["rebase", "--continue"])` rather than assuming one resolution finishes the whole operation — loop until git reports the rebase complete or the user aborts via `run_git(["rebase", "--abort"])`.
-6. Complete snapshot trigger wiring (FR-10.2): call `snapshots.take_snapshot(repo, "pre_risky_op")` at the start of `merge()` and `rebase()` (added above), and add the per-repo `QTimer`-driven `timer` trigger (§4.6) now that a natural place to own its lifecycle — the open repo's main window — exists. `ui/snapshots_panel/`: minimal v1 view listing snapshots (timestamp, trigger type, label) with a restore action calling `snapshots.restore_snapshot`.
-7. **Acceptance check**: `pytest tests/unit/core/test_merge.py tests/unit/core/test_rebase.py tests/unit/core/test_snapshots.py -v` green (snapshot tests assert a `pre_risky_op` snapshot exists before a rebase/merge, and that restoring it via `read-tree --reset -u` doesn't move the branch ref — check `repo.head.target` is unchanged after restore); manual QA — merge two branches with a real conflict, resolve via the UI, confirm the resulting commit is correct via `git log`; separately, make an uncommitted change, wait for a timer-triggered snapshot, restore it, confirm the change reappears and the branch/HEAD didn't move.
+   a. **Walk scope — all refs, not just HEAD.** A graph that only draws HEAD-reachable commits can never show FR-2.2's "multi-branch visualization," so Phase 1's HEAD-only walk is insufficient here even though it's still correct for other callers. Add an `all_refs: bool = False` keyword to `get_log` (additive; existing callers keep their behavior). When `True`, seed the walk from every local branch head under `refs/heads/*`, every tag target under `refs/tags/*`, **and** HEAD (pygit2's walker supports repeated `.push()` for each seed; dedup across overlapping histories is the walker's job, not yours). The Phase 1 zero-commit guard (`repo.head_is_unborn` → return `[]`) still runs first. The graph calls `get_log(all_refs=True)`; nothing else in v1 does. **Determinism matters:** `.push()` seeds are sorted by full ref name before being passed to the walker — `Repository.references` iteration order is not contractually stable, and lane assignment is a function of walk order, so an unsorted seed order produces lanes that re-shuffle between refreshes and CI runs. A stable sort makes the layout reproducible (and unit-testable) rather than "differs by hash-order luck."
+   b. **Lane-assignment rules (rigid, replacing the earlier a–f sketch — it broke in three specific places on real repos).** State: `lanes: list[Lane]`, each `Lane(expected_sha: str | None, color)`. Output per commit: `(commit, lane_index, connectors)` where a connector is `(from_lane, to_lane)` for drawing. Process commits in walk order (`GIT_SORT_TOPOLOGICAL | GIT_SORT_TIME`):
+      - **R1.** If one or more lanes expect this commit's sha, it occupies the **lowest-numbered** such lane; every *other* lane also expecting this sha is closed here, emitting a connector from each into the occupied lane. (Skipping this rule leaves dangling duplicate rails after histories reconverge — e.g. after one merge both the feature lane and the main lane expect the same next parent.)
+      - **R2.** If no lane expects it (a branch tip we've just met), open a new lane assigned to it, then continue with R3.
+      - **R3.** Let `P1..Pn` be the commit's parents (`commit.parent_shas` — required by §4.1 exactly for this). For `P1`: if no *other surviving* lane already expects `P1`, this lane's `expected_sha = P1`. If another lane already expects `P1`, close this lane with a connector into that one — otherwise two rails descend separately onto the same commit and that commit gets drawn twice (or a rail vanishes mid-graph). For `P2..Pn` (merge commits; octopus merges, `n >= 3`, are the same rule, per ui-planning §4.11): if some lane already expects `Pi`, emit a connector into that lane; otherwise open a new lane expecting `Pi`, appended at the right end.
+      - **R4.** No parents (a root): close the lane after this row.
+      - **R5.** Colors come from the **ten**-entry `GRAPH_COLORS` palette in ui-planning §5.1 (an earlier draft of this step said "~8" — ui-planning's shipped list is authoritative), assigned in lane-creation order, cycling; a lane keeps its color for its whole lifetime, including across pagination boundaries (see (d)).
+   c. **Pagination and layout consistency.** Initial load 200 commits, then batches of 100 on scroll (ui-planning §4.8). On each new batch, recompute lanes **from scratch over the entire loaded window** — never maintain incremental lane state across batches. The algorithm is O(n), so even the NFR's 100k-commit target is tens of milliseconds of pure Python; an incremental lane state that drifts at batch boundaries is the classic "lanes shuffle when I scroll" bug and buys nothing. `get_log` calls — and any lane computation over a window larger than a few thousand commits — go through `ui.workers.run_in_background` per §4.8 (the history tab is the one place even a *read* operation falls under that rule).
+   d. **Ref labels for the pill badges:** one `get_ref_labels(repo)` call per refresh (§4.1), mapping `sha -> [RefLabel]`; it's cheap and un-paginated. Detached HEAD renders the `HEAD` pill at `detached_head_sha` in addition to any branch labels.
+   e. **Pure layout core:** `ui/commit_graph/layout.py` takes `list[Commit]` and `dict[str, list[RefLabel]]` and returns the row/connector structure — no Qt imports, fully unit-testable without a displayserver. `graph_widget.py` only paints what `layout.py` emits.
+   f. **Accessible fallback ships with the graph, not in Phase 7** (ui-planning §5.4 flags this as the highest-effort a11y item): the History tab hosts a `QTreeView` over the same row data (subject, short sha, author, relative time, branch labels), toggled via the View menu and auto-activated when `QAccessible.isActive()`. The custom `QPainter` widget is invisible to screen readers; a tree of the same data is not.
+   g. **Integration with the Phase 1.5 skeleton:** swap `self.graph_placeholder` out of `self.graph_layout` via the `replaceWidget` seam written into `history_tab.py`. The zero-commit ("No history yet") and no-repo empty states already exist in the skeleton — the graph widget only ever replaces the placeholder, never the empty-state widget. Wire the skeleton's existing `commit_hovered`/`commit_clicked` signals to the graph.
+   h. **Detail panel (ui-planning §4.5/§4.11):** on `commit_clicked`, fill the detail-panel slot with: metadata header (full SHA copy-on-click, author, absolute+relative time), the full message, a file list driven by `get_commit_file_stats(sha)` (change type, `+N/-M` per `FileStat`), and a `DiffView` instance fed by `get_commit_diff(sha, path)` — initial selection is the first file. Semantics per ui-planning: clicking the *same* commit toggles the panel closed; clicking a *different* commit updates in place without re-animating; `Escape` closes; the panel is scroll-pinned independent of the graph. **Staging controls are hidden in this DiffView usage** — hunk/line staging is a working-tree concept and is meaningless against a historical commit; reusing the widget without suppressing those buttons would present actions that can never succeed. The hover tooltip (§4.4) renders from the same `get_commit_file_stats` list.
+   Unit tests: a linear 5-commit fixture → exactly 1 lane throughout and zero connectors; the one-merge fixture → 2 lanes between fork and merge, converged after (the original check); an octopus fixture (3 parents) → 3 connectors into the merge row; a repo where two branches re-merge twice → no lane duplicates (R1); and a 250-commit fixture loaded as `200 + 50` → identical lane indices to a single 250-commit load (the (c)-recompute contract).
+2. FR-2.3: search/filter over the log (ref: `ui-planning.md` §4.6). **Two-mechanism split — the earlier wording contradicted itself here** (it told you both to pass the filter into `get_log` *and* to dim non-matching commits; narrowed results can't be dimmed, they just vanish):
+   a. **Graph filtering is client-side highlighting.** A pure predicate `matches_filter(commit, filter: LogFilter) -> bool` — implemented in `ui/commit_graph/layout.py` alongside the layout logic, since both operate on `list[Commit]` — is evaluated over the currently loaded window. Matches render normally; non-matches render dimmed; structure and lanes are untouched (ui-planning §4.6). `Enter`/`F3` cycles to the next match. The `filter=` parameter on `get_log` (Phase 1's API, §4.1) is **not** the mechanism for this tab — leave it for future callers that genuinely want a narrowed list, and don't wire the search box to it.
+   b. **Field semantics** (same rules for `matches_filter` and `get_log`): plain case-insensitive substring for `author` and `message_substring` (not regex — regex is a v2 nicety, not a v1 requirement); `date_from`/`date_to` are lexicographic compares against `Commit.author_date`, which is only valid because `read_ops` normalizes every timestamp to UTC ISO-8601 (`datetime.fromtimestamp(tz=utc).isoformat()`) — keep that normalization invariant or filtering silently corrupts.
+   c. **Close a Phase 1 gap while here: `filter.path` is currently silently ignored by `read_ops.get_log`** (author/message/date are implemented; path isn't). Implement it now, semantics: a commit matches iff `path` appears in its diff against its first parent (`commit.tree.diff_to_tree(commit.parents[0].tree)` deltas; roots diff against the empty tree). It's O(diff) per commit, so path filtering runs inside `run_in_background` and applies only over the loaded window — a documented v1 limitation; full-history path filtering via `git log --follow -- path` is a v2 optimization, noted here and not built.
+   d. **Author dropdown** populates from the distinct authors of the loaded window (sufficient for v1), refreshed per repo. Debounce the search box with the 300ms single-shot `QTimer` pattern from §5 Phase 1 step 7.
+3. `core/engine.py::merge()`: FR-3.1 — `run_git(["merge", source_branch])`. Outcome derivation stays as originally specified: exit 0 with "Already up to date" in stdout → `MergeResult(status="up_to_date")`; exit 0 otherwise → `MergeResult(status="merged", commit_sha=...)`; nonzero exit with `<<<<<<<` conflict markers in the working tree → `MergeResult(status="conflict", conflicted_files=[...])` from index conflicts, **not raised as an exception** — a merge conflict is an expected, routine outcome the UI routes into the merge tool, not an error state. New specifics the original text left implicit:
+   - **That stdout sniffing now has a hard precondition**: §4.2 mandates `LC_ALL=C` in `run_git`'s environment for exactly this parsing. If the Phase 2 implementer finds that rule missing in code, fix §4.2 first — do not write regexes against localized output.
+   - **Dirty-tree precondition, checked not parsed.** Before invoking git, if `get_status` reports staged or unstaged changes, raise `DirtyTreeError` (new in `core/exceptions.py`) with the affected paths — git refuses with "Your local changes..." anyway; a typed precheck is a testable branch instead of stderr string-matching. Untracked files alone don't block unless git reports "untracked working tree files would be overwritten" — keep one stderr→`DirtyTreeError` fallback mapping for exactly that message.
+   - **Snapshot first:** `take_snapshot(repo, "pre_risky_op")` runs at the top of the function, before any `run_git` call (step 6 explains why trigger wiring lives in the engine, not the UI).
+   - **Record the state, not just the outcome.** `get_status` learns `merge_in_progress`/`rebase_in_progress` here (§4.1), read from `repo.pygit2_repo.state()` (`GIT_REPOSITORY_STATE_MERGE` / `GIT_REPOSITORY_STATE_REBASE_MERGE` / `_REBASE_APPLY`). This is what keeps the Changes-tab banner alive after the *last* conflict is resolved — `has_conflicts` goes false the moment the final file is staged, but the merge is still open until its commit. A banner that vanishes at that moment is a UI lie that strands users mid-merge with no visible way to finish.
+   - `merge_abort(repo)` (§4.1): `run_git(["merge", "--abort"])`; nonzero exit → `GitCommandError`. Aborting on a repo that isn't mid-merge *is* a real failure — don't swallow it.
+4. `ui/merge_tool/merge_dialog.py`: FR-3.2 (ref: `ui-planning.md` §6.6) — 3-pane top layout (Ours / Base / Theirs synchronized diff panes) + editable Result pane at the bottom. Core reading as originally specified: iterate `repo.pygit2_repo.index.conflicts` — `(ancestor, ours, theirs)` `IndexEntry` tuples, any of which may be `None` for add/delete conflicts — and read blob content via `repo.pygit2_repo[entry.id].data.decode("utf-8", errors="replace")`. Resolution actions: "Accept Current (Ours)", "Accept Incoming (Theirs)", "Accept Both (Ours ➔ Theirs)", "Accept Both (Theirs ➔ Ours)", plus direct manual editing; navigation `◀ Prev Conflict` / `Next Conflict ▶` with "Conflict N of Total". New specifics the original text left implicit:
+   - **Launch paths:** (1) the Changes tab conflict banner's "Resolve Conflicts" button, gated on `merge_in_progress`/`rebase_in_progress`/`has_conflicts`; (2) double-clicking a `⚠`-flagged conflicted file row; (3) programmatically from step 5's rebase loop.
+   - **Mode parameter and the rebase inversion trap:** `MergeDialog(repo, *, mode: "merge" | "rebase")`. During a *rebase*, git's stage-entry semantics invert: "ours" is the upstream you're replaying onto, "theirs" is *your* commit being replayed. The dialog must label panes accordingly — e.g. "Upstream (base of rebase)" / "Your commit (being replayed)" — with a one-line explainer banner, instead of the merge-mode "Ours (current branch)" / "Theirs (incoming)". Treat labels as a correctness issue: a merge tool that teaches users to resolve backwards during rebases is worse than no tool.
+   - **Binary conflicts:** "Keep ours / keep theirs" only. "Keep both" is ill-defined for binary content without inventing a rename convention — v1 doesn't (noted, not built). Detection rule: UTF-8 decode attempt on the blob; failure → binary UI.
+   - **Never stage markers.** Before `stage_file`, rescan the Result text for remaining `<<<<<<<` / `=======` / `>>>>>>>` lines; if any remain, refuse to stage and highlight them. Users resolving hunks across a long file *will* save a stray marker eventually without this guard.
+   - **Completion flow:** when every conflicted file is resolved and staged, close the dialog and leave the repo in merge state — the **Changes tab** completes the merge with a normal commit, pre-filling its message from `.git/MERGE_MSG` when present (git already writes "Merge branch 'x'…" there) while `merge_in_progress` is true. The dialog never creates the merge commit itself.
+   - **Abort:** confirmation dialog → `engine.merge_abort()` (`engine.rebase_abort()` in rebase mode) → close → refresh status.
+   - Threading: everything here is local index/working-tree work, well under the NFR's responsiveness budget — §4.8's background rule does not apply inside this dialog.
+5. `core/engine.py::rebase()`: FR-3.3, deliberately **non-interactive only** in v1 (no commit reordering/squashing UI — that's FR-2.4, deferred to v2). `run_git(["rebase", onto])`; conflict detection identical to `merge()`'s. Detailing the loop the original text only described in prose:
+   - Same `DirtyTreeError` precondition and the same **one-time** `pre_risky_op` snapshot at entry — `--continue`ing a rebase is resuming the *already snapshotted* risky operation, not a new one; snapshotting per step would flood the rolling window with one snapshot per replayed-and-conflicted commit.
+   - **Facade trio and their contract:** `rebase_continue(repo)` → `run_git(["rebase", "--continue"])`; a nonzero exit code *with* conflict markers means "next conflict, keep looping" — a routine result, not an exception (only raise `GitCommandError` on nonzero exits *without* conflicts). `rebase_abort(repo)` → `run_git(["rebase", "--abort"])`.
+   - **UI loop:** conflict result → open the merge dialog in `mode="rebase"` → user resolves all listed files, they get staged → call `rebase_continue()` → repeat until git reports the rebase complete; `rebase_abort()` is reachable from both the dialog and the Changes-tab banner (which shows for `rebase_in_progress` exactly as it does for merges) at every iteration.
+   - **Guard clause:** `rebase_continue`/`rebase_abort` verify `repo.pygit2_repo.state()` reports a rebase before running, raising `GitCommandError` otherwise — keeps the UI loop stateless: it never has to guess whether git still considers the rebase open.
+   - **Threading:** `rebase_continue` is `rebase --continue` — it can replay thousands of commits on the next leg. It falls under §4.8's background rule exactly as `rebase` itself does; only the dialog's index/working-tree work (step 4) is exempt.
+6. Complete snapshot trigger wiring (FR-10.2), plus the browse/restore surface:
+   - **`pre_risky_op` now lives in the engine**: `take_snapshot(repo, "pre_risky_op")` is called at the top of `engine.merge()`, `engine.rebase()`, and (already, since Phase 1) `delete_branch()` — engine-level, not UI-level, so *any* future caller of these façade functions inherits the safety net automatically.
+   - **Timer lifecycle after the 1.5 redesign:** Phase 1.5 moved repo switching into the Changes tab dropdown, which means the old "main window owns it" note needs an explicit update path: `main_window.py` owns a single snapshot `QTimer` (alongside its existing autosave timer); on `changes_tab.repo_changed` the timer is **stopped and re-created** from the newly active repo's `SnapshotSettings` — `interval = timer_interval_minutes * 60_000`, running only if `trigger_on_timer` is set; on repo close it stops; on app quit it stops. Expose `restart_snapshot_timer()` as a public slot on `MainWindow` and call it wherever snapshot settings get saved (today: directly after `update_snapshot_settings` succeeds) so settings changes take effect without a repo switch. Timer fire → `take_snapshot(repo, "timer")` — synchronous is fine: the command it's built on is local and fast, and the idempotency check makes idle ticks near-free.
+    - **`ui/snapshots_panel/`** (ui-planning §6.4): list snapshots for the active repo (icon for manual vs. auto, label or trigger type, relative timestamp), a Restore action (`snapshots.restore_snapshot` behind the destructive-action confirmation from §4.6: "Replace working tree with snapshot from {timestamp}?"), a Delete action (extra confirmation when `is_manual`), and the empty state ("No snapshots yet…"). The skeleton on disk already created this as a package — the panel implementation lives in `ui/snapshots_panel/__init__.py`.
+   - **New guard — never restore into a merge/rebase in progress:** `restore_snapshot` raises a typed `RepoBusyError` (new in `core/exceptions.py`) when `merge_in_progress` or `rebase_in_progress` is true; `read-tree --reset -u` mid-merge silently scrambles the index/conflict state, exactly at the moment the user thinks they're being rescued. The panel disables Restore with a tooltip when `get_status` reports either state, and the same guard applies to `reflog.restore_to_ref` (FR-1.10's `reset --hard` is equally destructive mid-merge).
+7. **Acceptance check**: `pytest -v` all green, which must now specifically include: `tests/unit/core/test_merge.py` — fast-forward merge, up-to-date (proving the `LC_ALL=C` parse path), dirty-tree raises `DirtyTreeError` *before* git is invoked, conflict → `MergeResult(conflict)` with `merge_in_progress` true, `merge_abort()` returns status to clean; `tests/unit/core/test_rebase.py` — conflict → merge-tool-resolve → `rebase_continue()` loop completes the rebase, and `rebase_abort()` mid-conflict restores the original branch tip; `tests/unit/core/test_snapshots.py` — the original checks (a `pre_risky_op` snapshot exists before a merge/rebase; restoring via `read-tree --reset -u` never moves `repo.head.target`) plus restore-while-merging raising `RepoBusyError`; `tests/unit/core/test_read_ops.py` — a new case asserting `filter.path` actually narrows results (regression coverage for the silent-no-op gap); `tests/unit/ui/commit_graph/test_layout.py` (or the `tests/unit/ui/` equivalent location used by the repo) — step 1's lane cases, including the cross-batch lane-index equality case; plus a `run_git` test asserting `LC_ALL=C` is present in the spawned environment. Manual QA: a real two-parent merge with a conflict, resolved through the merge tool to a correct commit (verified with `git log` external to the app); a rebase conflict round-trip; the timer trigger visibly producing a snapshot during idle (log line); restoring a snapshot with uncommitted changes pending; the graph rendering two branches with correct lane colors and label pills; and the accessible tree fallback toggling over the same data.
 
 ### Phase 3 — Remote Operations
 **Prerequisites:** Phase 2's acceptance check passed (commit graph, merge, non-interactive rebase, and the built-in merge tool all working).
@@ -1627,6 +1725,14 @@ Every row below is detailed in full where cited — this table exists so none of
 | Submodules | Not a `repos` row, so multi-account disambiguation can't target it specifically | §5 Phase 5 step 2 — documented v1 gap, not solved |
 | Packaging | Flatpak build sandbox has no network access — plain `pip install` in a build step fails | §6.1 — `flatpak-pip-generator`, regenerated whenever dependencies change, never hand-edited |
 | Packaging | Flathub distribution isn't something CI can automate end-to-end | §7 stage 7 — initial listing is a one-time manual PR + human review; only later updates auto-build |
+| Locale | Git output parsing matches English strings ("Already up to date", "rejected") and silently stops matching for users with localized git | §4.2 — `LC_ALL=C` in `run_git`'s env; stderr/stdout decoded with `errors="replace"` |
+| Git state | Merge fully resolved but not yet committed — `has_conflicts` is already false while the merge is still open, and a banner keyed on conflicts alone vanishes early | §4.1 `merge_in_progress`/`rebase_in_progress`; §5 Phase 2 step 3 |
+| Merge/rebase | "Ours"/"theirs" stage entries invert during a rebase — resolving with merge-mode labels taught to the user resolves conflicts backwards | §5 Phase 2 step 4 — `mode`-aware pane labels in the merge dialog |
+| Merge tool | User stages a file that still contains `<<<<<<<`/`>>>>>>>` markers | §5 Phase 2 step 4 — rescan for markers, refuse to stage |
+| Snapshots | Restoring a snapshot (or reflog `reset --hard`) while a merge/rebase is open scrambles index/conflict state | §5 Phase 2 step 6 — `RepoBusyError` + disabled Restore |
+| History | `LogFilter.path` silently ignored (Phase 1 shipped it as a no-op) | §5 Phase 2 step 2c — implemented plus regression test |
+| History | Lane indices drift when commits arrive in pagination batches | §5 Phase 2 step 1c — full-window recompute per batch, never incremental state |
+| History | HEAD-only log walk can never draw a multi-branch graph (FR-2.2) | §5 Phase 2 step 1a — `all_refs=True` walk |
 
 ---
 
@@ -1732,13 +1838,14 @@ Flattened, in strict execution order, across every phase — the literal path th
 - [x] 1.5.13 **CHECK**: `pytest tests/ -v` all green; manual QA — tab toggle, repo dropdown, tri-state checkboxes, amend, History placeholder, repo switch refreshes all tabs, geometry/tab persistence, quit guard dialog
 
 **Phase 2 — Commit Graph & Merge Tooling** *(prerequisites: 1.5.13 checked)*
-- [ ] 2.1 `ui/commit_graph/`: simplified lane-assignment algorithm per §5 Phase 2 step 1 — not a full DAG-layout attempt
-- [ ] 2.2 Log search/filter (`LogFilter` dataclass)
-- [ ] 2.3 `core.engine.merge()`: FF/3-way/conflict detection
-- [ ] 2.4 `ui/merge_tool/`: 3-pane conflict resolution
-- [ ] 2.5 `core.engine.rebase()`: non-interactive, reuses merge tool for conflicts
-- [ ] 2.6 Complete snapshot trigger wiring: `pre_risky_op` calls in `merge()`/`rebase()`, the per-repo `timer` `QTimer`, and a minimal `ui/snapshots_panel/` (list + restore)
-- [ ] 2.7 **CHECK**: merge/rebase/snapshot unit tests green (including: restoring a snapshot doesn't move `repo.head.target`); manual conflict-resolution QA plus a timer-triggered-snapshot restore QA pass
+- [x] 2.1 `ui/commit_graph/`: lane-assignment rules R1–R5 + ten-color `GRAPH_COLORS` per §5 Phase 2 step 1 (not a full DAG-layout attempt); `get_log(all_refs=True)` walk; `get_ref_labels`; accessible `QTreeView` fallback; placeholder swap + detail panel wiring in `history_tab`
+- [x] 2.2 Log search/filter: client-side `matches_filter` highlight/dim predicate per §5 Phase 2 step 2 — **and** the `filter.path` implementation in `read_ops.get_log` (Phase 1 shipped it as a silent no-op)
+- [x] 2.3 `core.engine.merge()`: FF/3-way/conflict detection + `DirtyTreeError` precheck + `merge_in_progress` state + `merge_abort()` (§5 Phase 2 step 3; relies on §4.2's `LC_ALL=C`)
+- [x] 2.4 `ui/merge_tool/`: 3-pane conflict resolution with `mode="merge"|"rebase"` pane labeling, marker rescan before staging, completion handed back to the Changes tab via `.git/MERGE_MSG` prefill
+- [x] 2.5 `core.engine.rebase()`: non-interactive; `rebase_continue()`/`rebase_abort()` façade; conflict loop reuses the merge tool in rebase mode
+- [x] 2.6 Complete snapshot trigger wiring: `pre_risky_op` at engine level in `merge()`/`rebase()`; per-repo `timer` `QTimer` in `main_window` recreated on `repo_changed`; `RepoBusyError` guard on restore; panel per ui-planning §6.4 in `ui/snapshots_panel/__init__.py`
+- [x] 2.7 **CHECK**: `pytest -v` green including merge/rebase/snapshot/graph-layout/path-filter/`LC_ALL` cases per §5 Phase 2 step 7 (restoring a snapshot doesn't move `repo.head.target`; restore mid-merge raises `RepoBusyError`); manual QA per the same step's list
+
 
 **Phase 3 — Remote Operations** *(prerequisites: 2.7 checked)*
 - [ ] 3.1 `credentials/backend.py` (`CredentialBackend` ABC + `CredentialBackendUnavailableError`) + `credentials/secret_service.py` (shared `SecretServiceBackend` + `FlatpakSecretServiceBackend`/`AppImageSecretServiceBackend`) + `credentials/__init__.py` (`get_backend()` + `_detect_packaging_context()`) — §4.7

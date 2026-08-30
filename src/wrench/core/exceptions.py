@@ -61,3 +61,24 @@ class GitCommandError(WrenchGitError):
             f"git command failed (exit {returncode}): {cmd_str}{error_detail}",
             stderr=stderr,
         )
+
+
+class DirtyTreeError(WrenchGitError):
+    """Raised when an operation (e.g. merge, rebase) requires a clean working tree."""
+
+    def __init__(self, dirty_files: list[str], *, stderr: str | None = None):
+        self.dirty_files = dirty_files
+        files_str = ", ".join(dirty_files) if dirty_files else "uncommitted changes"
+        super().__init__(f"Working tree has uncommitted changes: {files_str}", stderr=stderr)
+
+
+class RepoBusyError(WrenchGitError):
+    """Raised when snapshot restore or reflog reset is attempted mid-merge or mid-rebase."""
+
+    def __init__(self, operation: str, state: str, *, stderr: str | None = None):
+        self.operation = operation
+        self.state = state
+        super().__init__(
+            f"Cannot perform {operation} while repository is in {state} state.",
+            stderr=stderr,
+        )

@@ -80,3 +80,24 @@ class TestSnapshots:
         snapshots.prune_snapshots(repo, conn=db_conn, repo_id=repo_id)
         snaps = snapshots.list_snapshots(repo, conn=db_conn, repo_id=repo_id)
         assert len(snaps) == 2
+
+    def test_restore_snapshot_does_not_move_head(self, registered_repo, db_conn):
+        repo, repo_id = registered_repo
+        head_before = str(repo.pygit2_repo.head.target)
+        (repo.path / "hello.txt").write_text("modified\n")
+        snap = snapshots.take_snapshot(repo, "manual", conn=db_conn, repo_id=repo_id)
+
+        (repo.path / "hello.txt").write_text("overwritten\n")
+        snapshots.restore_snapshot(repo, snap.id, conn=db_conn)
+
+        head_after = str(repo.pygit2_repo.head.target)
+        assert head_before == head_after
+        assert (repo.path / "hello.txt").read_text() == "modified\n"
+
+    def test_restore_snapshot_mid_merge_raises_repo_busy_error(self, conflict_repo):
+        from wrench.core import engine
+        from wrench.core.exceptions import RepoBusyError
+
+        engine.merge(conflict_repo, "feature")
+        with pytest.raises(RepoBusyError):
+            snapshots.restore_snapshot(conflict_repo, 12345)

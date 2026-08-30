@@ -34,6 +34,8 @@ class RepoStatus:
     has_conflicts: bool
     detached_head_sha: str | None = None
     head_sha: str | None = None
+    merge_in_progress: bool = False
+    rebase_in_progress: bool = False
 
     @property
     def branch_name(self) -> str | None:
@@ -42,6 +44,24 @@ class RepoStatus:
     @property
     def is_detached_head(self) -> bool:
         return self.is_detached
+
+
+@dataclass
+class FileStat:
+    """Per-file change stats for a commit (+N/-M)."""
+
+    path: str
+    change_type: str  # 'added' | 'modified' | 'deleted' | 'renamed'
+    additions: int
+    deletions: int
+
+
+@dataclass
+class RefLabel:
+    """A badge rendered on the commit graph (branch, tag, or head)."""
+
+    name: str  # 'main', 'feature/x', 'v1.0.0', 'HEAD'
+    kind: str  # 'branch' | 'tag' | 'head'
 
 
 @dataclass
@@ -195,8 +215,25 @@ def get_log(
     *,
     limit: int = 100,
     offset: int = 0,
+    all_refs: bool = False,
 ) -> list[Commit]:
-    return read_ops.get_log(repo, filter, limit=limit, offset=offset)
+    return read_ops.get_log(repo, filter, limit=limit, offset=offset, all_refs=all_refs)
+
+
+def iter_commits(repo: RepoHandle, *, all_refs: bool = False):
+    return read_ops.iter_commits(repo, all_refs=all_refs)
+
+
+def get_commit_diff(repo: RepoHandle, sha: str, path: str | None = None) -> Diff:
+    return read_ops.get_commit_diff(repo, sha, path=path)
+
+
+def get_commit_file_stats(repo: RepoHandle, sha: str) -> list[FileStat]:
+    return read_ops.get_commit_file_stats(repo, sha)
+
+
+def get_ref_labels(repo: RepoHandle) -> dict[str, list[RefLabel]]:
+    return read_ops.get_ref_labels(repo)
 
 
 def blame(repo: RepoHandle, path: str) -> list[BlameLine]:
@@ -354,6 +391,9 @@ def switch_branch(repo: RepoHandle, name: str) -> None:
 
 
 def delete_branch(repo: RepoHandle, name: str, *, force: bool = False) -> None:
+    from . import snapshots
+
+    snapshots.take_snapshot(repo, "pre_risky_op")
     write_ops.delete_branch(repo.path, name, force=force)
 
 
@@ -418,8 +458,26 @@ def fetch(repo: RepoHandle, remote: str) -> None:
 
 
 def merge(repo: RepoHandle, source_branch: str) -> MergeResult:
-    raise NotImplementedError
+    return write_ops.merge(repo.path, source_branch)
+
+
+def merge_abort(repo: RepoHandle) -> None:
+    write_ops.merge_abort(repo.path)
+    repo.pygit2_repo.index.read()
 
 
 def rebase(repo: RepoHandle, onto: str) -> RebaseResult:
-    raise NotImplementedError
+    return write_ops.rebase(repo.path, onto)
+
+
+def rebase_continue(repo: RepoHandle) -> RebaseResult:
+    return write_ops.rebase_continue(repo.path)
+
+
+def rebase_abort(repo: RepoHandle) -> None:
+    write_ops.rebase_abort(repo.path)
+    repo.pygit2_repo.index.read()
+
+
+def create_tag(repo: RepoHandle, name: str, target: str = "HEAD") -> None:
+    write_ops.create_tag(repo.path, name, target=target)

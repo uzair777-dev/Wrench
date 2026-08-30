@@ -8,6 +8,7 @@ import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
+from wrench.storage import repo_registry as storage_repo_registry
 from wrench.storage import snapshots as storage_snapshots
 
 from .engine import RepoHandle
@@ -37,6 +38,24 @@ class SnapshotSettings:
     untracked_total_cap_mb: int
 
 
+def _resolve_repo_id(
+    repo: RepoHandle,
+    conn: sqlite3.Connection | None,
+    repo_id: int | None,
+) -> int | None:
+    if repo_id is not None:
+        return repo_id
+    if conn is not None:
+        try:
+            row = conn.execute("SELECT id FROM repos WHERE path = ?", (str(repo.path),)).fetchone()
+            if row:
+                return row["id"]
+            return storage_repo_registry.add_repo(conn, str(repo.path))
+        except Exception:
+            pass
+    return None
+
+
 def take_snapshot(
     repo: RepoHandle,
     trigger_type: str,
@@ -62,11 +81,12 @@ def take_snapshot(
 
     is_manual = trigger_type == "manual"
     now_iso = datetime.now(timezone.utc).isoformat()
+    resolved_repo_id = _resolve_repo_id(repo, conn, repo_id)
 
-    if conn is not None and repo_id is not None:
+    if conn is not None and resolved_repo_id is not None:
         snap_id = storage_snapshots.insert_snapshot(
             conn,
-            repo_id=repo_id,
+            repo_id=resolved_repo_id,
             ref_name="refs/wrench/snapshots/temp",
             trigger_type=trigger_type,
             is_manual=is_manual,
@@ -100,10 +120,11 @@ def list_snapshots(
     repo_id: int | None = None,
 ) -> list[Snapshot]:
     """List snapshots for the given repository."""
-    if conn is None or repo_id is None:
+    resolved_repo_id = _resolve_repo_id(repo, conn, repo_id)
+    if conn is None or resolved_repo_id is None:
         return []
 
-    records = storage_snapshots.list_snapshots(conn, repo_id)
+    records = storage_snapshots.list_snapshots(conn, resolved_repo_id)
     return [
         Snapshot(
             id=r.id,
@@ -123,9 +144,17 @@ def restore_snapshot(
     *,
     conn: sqlite3.Connection | None = None,
 ) -> None:
-    """Restore a snapshot by resetting to its reference."""
+    """Restore a snapshot by resetting index and working tree without moving HEAD."""
+    from . import exceptions, read_ops
+
+    status = read_ops.get_status(repo)
+    if getattr(status, "merge_in_progress", False):
+        raise exceptions.RepoBusyError("snapshot restore", "merge")
+    if getattr(status, "rebase_in_progress", False):
+        raise exceptions.RepoBusyError("snapshot restore", "rebase")
+
     ref_name = f"refs/wrench/snapshots/{snapshot_id}"
-    run_git(repo.path, ["reset", "--hard", ref_name])
+    run_git(repo.path, ["read-tree", "--reset", "-u", ref_name])
     repo.pygit2_repo.index.read()
 
 
@@ -134,22 +163,26 @@ def prune_snapshots(
     *,
     conn: sqlite3.Connection | None = None,
     repo_id: int | None = None,
-) -> None:
-    """Prune oldest non-manual snapshots when count exceeds max_count."""
-    if conn is None or repo_id is None:
-        return
+) -> int:
+    """Prune oldest non-manual snapshots when count exceeds max_count. Returns count pruned."""
+    resolved_repo_id = _resolve_repo_id(repo, conn, repo_id)
+    if conn is None or resolved_repo_id is None:
+        return 0
 
-    settings = get_snapshot_settings(repo, conn=conn, repo_id=repo_id)
-    all_snaps = storage_snapshots.list_snapshots(conn, repo_id)
+    settings = get_snapshot_settings(repo, conn=conn, repo_id=resolved_repo_id)
+    all_snaps = storage_snapshots.list_snapshots(conn, resolved_repo_id)
 
     # Filter non-manual snapshots for pruning
     auto_snaps = [s for s in all_snaps if not s.is_manual]
+    pruned_count = 0
     if len(auto_snaps) > settings.max_count:
         to_prune = auto_snaps[settings.max_count :]
         for s in to_prune:
             # Delete git ref
             run_git(repo.path, ["update-ref", "-d", s.ref_name], check=False)
             storage_snapshots.delete_snapshot(conn, s.id)
+            pruned_count += 1
+    return pruned_count
 
 
 def get_snapshot_settings(
@@ -158,7 +191,8 @@ def get_snapshot_settings(
     conn: sqlite3.Connection | None = None,
     repo_id: int | None = None,
 ) -> SnapshotSettings:
-    if conn is None or repo_id is None:
+    resolved_repo_id = _resolve_repo_id(repo, conn, repo_id)
+    if conn is None or resolved_repo_id is None:
         return SnapshotSettings(
             trigger_on_commit=True,
             trigger_on_timer=True,
@@ -171,7 +205,7 @@ def get_snapshot_settings(
             untracked_total_cap_mb=500,
         )
 
-    rec = storage_snapshots.ensure_snapshot_settings(conn, repo_id)
+    rec = storage_snapshots.ensure_snapshot_settings(conn, resolved_repo_id)
     return SnapshotSettings(
         trigger_on_commit=rec.trigger_on_commit,
         trigger_on_timer=rec.trigger_on_timer,
@@ -192,7 +226,8 @@ def update_snapshot_settings(
     conn: sqlite3.Connection | None = None,
     repo_id: int | None = None,
 ) -> None:
-    if conn is None or repo_id is None:
+    resolved_repo_id = _resolve_repo_id(repo, conn, repo_id)
+    if conn is None or resolved_repo_id is None:
         return
 
     conn.execute(
@@ -211,7 +246,7 @@ def update_snapshot_settings(
             settings.untracked_capture_mode,
             settings.untracked_per_file_cap_mb,
             settings.untracked_total_cap_mb,
-            repo_id,
+            resolved_repo_id,
         ),
     )
     conn.commit()

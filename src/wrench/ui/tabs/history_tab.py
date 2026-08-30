@@ -1,9 +1,10 @@
-"""History Tab Component — Skeleton (ui-planning.md §4, Phase 1.5).
+"""History Tab Component (ui-planning.md §4, Phase 2).
 
 Provides:
-- Search & filter bar (message, author, path, date range)
-- Placeholder container for Phase 2 CommitGraphWidget
-- Detail panel slot (hidden until Phase 2)
+- Search & filter bar (message, author, path, date range, all branches toggle)
+- Visual branch graph (CommitGraphWidget) with custom bezier connectors
+- Accessible fallback list mode
+- Commit detail panel (CommitDetailPanel) with file list, stats, and diff viewer
 - Zero commits empty state (unborn branch)
 """
 
@@ -13,6 +14,7 @@ import logging
 
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QFrame,
     QHBoxLayout,
@@ -25,16 +27,22 @@ from PySide6.QtWidgets import (
 )
 
 from wrench.core import engine
-from wrench.core.engine import RepoHandle
+from wrench.core.engine import Commit, LogFilter, RepoHandle
+from wrench.ui.commit_graph.detail_panel import CommitDetailPanel
+from wrench.ui.commit_graph.graph_widget import CommitGraphWidget
 
 logger = logging.getLogger(__name__)
 
 
 class HistoryTab(QWidget):
-    """Skeleton History tab for Phase 1.5 (scaffolding graph and detail panel slots)."""
+    """Full Phase 2 History tab with CommitGraphWidget, Search/Filter, and Detail Panel."""
 
     commit_hovered = Signal(str)  # sha
     commit_clicked = Signal(str)  # sha
+    rebase_requested = Signal(str)
+    merge_requested = Signal(str)
+    create_branch_requested = Signal(str)
+    create_tag_requested = Signal(str)
 
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
@@ -77,6 +85,12 @@ class HistoryTab(QWidget):
         self.path_input.textChanged.connect(self._on_search_text_changed)
         filter_bar.addWidget(self.path_input, 1)
 
+        # All branches checkbox
+        self.all_branches_cb = QCheckBox(self.tr("All branches"), self)
+        self.all_branches_cb.setChecked(True)
+        self.all_branches_cb.toggled.connect(self._on_all_branches_toggled)
+        filter_bar.addWidget(self.all_branches_cb)
+
         # Clear filters button
         self.clear_btn = QToolButton(self)
         self.clear_btn.setText("× " + self.tr("Clear"))
@@ -92,9 +106,9 @@ class HistoryTab(QWidget):
         main_layout.addWidget(line)
 
         # -------------------------------------------------------------
-        # 2. Main Content Splitter (Graph Area + Detail Panel Slot)
+        # 2. Main Content Splitter (Vertical: Graph on top, Detail on bottom)
         # -------------------------------------------------------------
-        self.content_splitter = QSplitter(Qt.Horizontal, self)
+        self.content_splitter = QSplitter(Qt.Vertical, self)
         main_layout.addWidget(self.content_splitter, 1)
 
         # Graph Container
@@ -102,29 +116,15 @@ class HistoryTab(QWidget):
         self.graph_layout = QVBoxLayout(self.graph_container)
         self.graph_layout.setContentsMargins(0, 0, 0, 0)
 
-        # Placeholder widget (to be replaced by CommitGraphWidget in Phase 2)
-        self.graph_placeholder = QWidget(self.graph_container)
-        placeholder_layout = QVBoxLayout(self.graph_placeholder)
-        placeholder_layout.setAlignment(Qt.AlignCenter)
-        placeholder_layout.setSpacing(8)
-
-        self.placeholder_title = QLabel(self.tr("Commit Graph"), self.graph_placeholder)
-        self.placeholder_title.setStyleSheet("font-size: 16px; font-weight: bold; color: gray;")
-        self.placeholder_title.setAlignment(Qt.AlignCenter)
-        placeholder_layout.addWidget(self.placeholder_title)
-
-        self.placeholder_sub = QLabel(
-            self.tr(
-                "The visual branch graph and merge visualizations will appear here in Phase 2."
-            ),
-            self.graph_placeholder,
-        )
-        self.placeholder_sub.setStyleSheet("font-size: 12px; color: #888888;")
-        self.placeholder_sub.setAlignment(Qt.AlignCenter)
-        placeholder_layout.addWidget(self.placeholder_sub)
-
-        self.graph_layout.addWidget(self.graph_placeholder)
-        self.content_splitter.addWidget(self.graph_container)
+        # Commit Graph Widget
+        self.graph_widget = CommitGraphWidget(self.graph_container)
+        self.graph_placeholder = self.graph_widget  # Backwards-compatible alias
+        self.graph_widget.commit_selected.connect(self._on_commit_selected)
+        self.graph_widget.rebase_requested.connect(self.rebase_requested)
+        self.graph_widget.merge_requested.connect(self.merge_requested)
+        self.graph_widget.create_branch_requested.connect(self.create_branch_requested)
+        self.graph_widget.create_tag_requested.connect(self.create_tag_requested)
+        self.graph_layout.addWidget(self.graph_widget)
 
         # Empty state (no commits / unborn branch)
         self.empty_state_widget = QWidget(self)
@@ -148,16 +148,18 @@ class HistoryTab(QWidget):
         self.empty_state_widget.setVisible(False)
         self.graph_layout.addWidget(self.empty_state_widget)
 
-        # Detail panel slot (hidden in Phase 1.5, wired in Phase 2)
-        self.detail_panel_slot = QWidget(self)
-        self.detail_panel_slot.setVisible(False)
-        self.content_splitter.addWidget(self.detail_panel_slot)
+        self.content_splitter.addWidget(self.graph_container)
 
-        self.content_splitter.setStretchFactor(0, 7)
-        self.content_splitter.setStretchFactor(1, 3)
+        # Detail panel
+        self.detail_panel = CommitDetailPanel(self)
+        self.content_splitter.addWidget(self.detail_panel)
+
+        self.content_splitter.setStretchFactor(0, 3)
+        self.content_splitter.setStretchFactor(1, 2)
 
     def set_repo(self, repo: RepoHandle | None) -> None:
         self._repo = repo
+        self.detail_panel.set_repo(repo)
         self.refresh()
 
     def refresh(self) -> None:
@@ -171,21 +173,24 @@ class HistoryTab(QWidget):
             is_unborn = not bool(status.head_sha)
 
             if is_unborn:
-                self.graph_placeholder.setVisible(False)
+                self.graph_widget.setVisible(False)
                 self.empty_state_widget.setVisible(True)
+                self.detail_panel.set_commit(None)
             else:
                 self.empty_state_widget.setVisible(False)
-                self.graph_placeholder.setVisible(True)
+                self.graph_widget.setVisible(True)
+                self.graph_widget.set_repo(self._repo)
 
             self._populate_authors()
         except Exception as e:
             logger.error("Failed to refresh history tab: %s", e)
 
     def _show_no_repo_state(self) -> None:
-        self.graph_placeholder.setVisible(False)
+        self.graph_widget.setVisible(False)
         self.empty_state_widget.setVisible(True)
         self.empty_title.setText(self.tr("No repository open"))
         self.empty_sub.setText(self.tr("Open or clone a repository to view history."))
+        self.detail_panel.set_commit(None)
 
     def _populate_authors(self) -> None:
         if not self._repo:
@@ -196,8 +201,8 @@ class HistoryTab(QWidget):
         self.author_combo.addItem(self.tr("Author: All"))
 
         try:
-            commits = engine.get_log(self._repo, limit=100)
-            authors = sorted({c.author for c in commits if c.author})
+            commits = engine.get_log(self._repo, limit=100, all_refs=True)
+            authors = sorted({c.author_name for c in commits if c.author_name})
             for a in authors:
                 self.author_combo.addItem(a)
         except Exception as e:
@@ -218,17 +223,31 @@ class HistoryTab(QWidget):
     def _on_filter_changed(self) -> None:
         self._debounce_timer.start()
 
+    def _on_all_branches_toggled(self, checked: bool) -> None:
+        self.graph_widget.set_all_refs_mode(checked)
+
+    def _on_commit_selected(self, commit: Commit | None) -> None:
+        self.detail_panel.set_commit(commit)
+        if commit:
+            self.commit_clicked.emit(commit.sha)
+
     def _on_search_debounced(self) -> None:
-        # Debounced trigger for Phase 2 search/filter integration
-        logger.debug(
-            "Filter query: search='%s', author='%s', path='%s'",
-            self.search_input.text(),
-            self.author_combo.currentText(),
-            self.path_input.text(),
+        search_text = self.search_input.text().strip()
+        author_text = self.author_combo.currentText()
+        author = author_text if author_text != self.tr("Author: All") else ""
+        path = self.path_input.text().strip()
+
+        log_filter = LogFilter(
+            message_substring=search_text or None,
+            author=author or None,
+            path=path or None,
         )
+        self.graph_widget.apply_filter(log_filter)
 
     def clear_filters(self) -> None:
         self.search_input.clear()
         self.path_input.clear()
         if self.author_combo.count() > 0:
             self.author_combo.setCurrentIndex(0)
+        self.all_branches_cb.setChecked(True)
+        self.graph_widget.apply_filter(None)

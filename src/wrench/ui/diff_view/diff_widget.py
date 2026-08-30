@@ -1,4 +1,4 @@
-"""FR-2.1: High-performance syntax-highlighted diff viewer with hunk staging."""
+"""Diff viewer widget with hunk staging and read-only mode."""
 
 import html
 import logging
@@ -21,64 +21,89 @@ from wrench.core.engine import Diff, RepoHandle
 logger = logging.getLogger(__name__)
 
 
-class DiffView(QWidget):
-    hunk_staged = Signal(str, str)  # (path, hunk_id)
-    file_staged = Signal(str, bool)  # (path, staged)
+class DiffWidget(QWidget):
+    """Shows diff for a selected file with options to stage/unstage whole file or hunks."""
 
-    def __init__(self, parent=None):
+    file_staged = Signal(str, bool)  # path, is_staged
+    hunk_staged = Signal(str, str)  # path, hunk_id
+
+    def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
         self._repo: RepoHandle | None = None
         self._current_path: str | None = None
         self._staged: bool = False
         self._diff: Diff | None = None
+        self._read_only: bool = False
 
+        self._init_ui()
+
+    def _init_ui(self):
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
 
         # Header toolbar
-        header = QHBoxLayout()
-        self.title_label = QLabel("No file selected", self)
-        self.title_label.setStyleSheet("font-weight: bold; font-size: 13px;")
-        header.addWidget(self.title_label)
+        self.toolbar = QWidget(self)
+        tb_layout = QHBoxLayout(self.toolbar)
+        tb_layout.setContentsMargins(4, 4, 4, 4)
 
-        header.addStretch()
+        self.title_label = QLabel("No file selected", self)
+        self.title_label.setStyleSheet("font-weight: bold;")
+        tb_layout.addWidget(self.title_label)
+
+        tb_layout.addStretch()
 
         self.hunk_combo = QComboBox(self)
         self.hunk_combo.setVisible(False)
-        header.addWidget(self.hunk_combo)
+        tb_layout.addWidget(self.hunk_combo)
 
         self.stage_hunk_btn = QPushButton("Stage Hunk", self)
         self.stage_hunk_btn.setVisible(False)
         self.stage_hunk_btn.clicked.connect(self._on_stage_hunk_clicked)
-        header.addWidget(self.stage_hunk_btn)
+        tb_layout.addWidget(self.stage_hunk_btn)
 
         self.file_action_btn = QPushButton("Stage File", self)
         self.file_action_btn.setVisible(False)
         self.file_action_btn.clicked.connect(self._on_file_action_clicked)
-        header.addWidget(self.file_action_btn)
+        tb_layout.addWidget(self.file_action_btn)
 
-        layout.addLayout(header)
+        layout.addWidget(self.toolbar)
 
-        # Main Diff Editor
+        # Main text view
         self.editor = QTextEdit(self)
         self.editor.setReadOnly(True)
-        font = QFont("monospace", 10)
-        font.setStyleHint(QFont.StyleHint.Monospace)
-        self.editor.setFont(font)
+        self.editor.setFont(QFont("Monospace", 10))
+        self.editor.setLineWrapMode(QTextEdit.NoWrap)
         layout.addWidget(self.editor)
 
     def set_repo(self, repo: RepoHandle):
         self._repo = repo
 
     def set_file(self, path: str, *, staged: bool):
+        self._read_only = False
         self._current_path = path
         self._staged = staged
         self.refresh()
+
+    def set_diff_model(self, diff: Diff, *, title: str = "", read_only: bool = True):
+        """Display an explicit Diff model directly (used for historical commits)."""
+        self._diff = diff
+        self._read_only = read_only
+        self._current_path = diff.path
+        self.title_label.setText(title or f"Diff: {diff.path}")
+        self.hunk_combo.setVisible(False)
+        self.stage_hunk_btn.setVisible(False)
+        self.file_action_btn.setVisible(False)
+        self._render_diff()
 
     def hunk_count(self) -> int:
         return len(self._diff.hunks) if self._diff else 0
 
     def refresh(self):
+        if self._read_only and self._diff:
+            self._render_diff()
+            return
+
         if not self._repo or not self._current_path:
             self.title_label.setText("No file selected")
             self.editor.clear()
@@ -99,6 +124,13 @@ class DiffView(QWidget):
         except Exception as e:
             logger.exception("Failed to get diff for %s: %s", self._current_path, e)
             self.editor.setPlainText(f"Error loading diff:\n{e}")
+            return
+
+        self._render_diff()
+
+    def _render_diff(self):
+        if not self._diff:
+            self.editor.clear()
             return
 
         # Detect if palette is dark or light
@@ -148,18 +180,19 @@ class DiffView(QWidget):
             self.stage_hunk_btn.setVisible(False)
             return
 
-        # Populate hunks combo
-        self.hunk_combo.blockSignals(True)
-        self.hunk_combo.clear()
-        for i, hunk in enumerate(self._diff.hunks, start=1):
-            hunk_info = f"-{hunk.old_start},{hunk.old_count} +{hunk.new_start},{hunk.new_count}"
-            label = f"Hunk {i} (@@ {hunk_info} @@)"
-            self.hunk_combo.addItem(label, hunk.id)
-        self.hunk_combo.blockSignals(False)
+        # Populate hunks combo only if interactive
+        if not self._read_only:
+            self.hunk_combo.blockSignals(True)
+            self.hunk_combo.clear()
+            for i, hunk in enumerate(self._diff.hunks, start=1):
+                hunk_info = f"-{hunk.old_start},{hunk.old_count} +{hunk.new_start},{hunk.new_count}"
+                label = f"Hunk {i} (@@ {hunk_info} @@)"
+                self.hunk_combo.addItem(label, hunk.id)
+            self.hunk_combo.blockSignals(False)
 
-        self.hunk_combo.setVisible(True)
-        self.stage_hunk_btn.setText("Unstage Hunk" if self._staged else "Stage Hunk")
-        self.stage_hunk_btn.setVisible(True)
+            self.hunk_combo.setVisible(True)
+            self.stage_hunk_btn.setText("Unstage Hunk" if self._staged else "Stage Hunk")
+            self.stage_hunk_btn.setVisible(True)
 
         # Build colored diff HTML
         text_color = "#d4d4d4" if is_dark else "#1f2937"
@@ -186,7 +219,7 @@ class DiffView(QWidget):
         self.editor.setHtml("".join(html_lines))
 
     def _on_stage_hunk_clicked(self):
-        if not self._repo or not self._current_path or not self._diff:
+        if self._read_only or not self._repo or not self._current_path or not self._diff:
             return
         idx = self.hunk_combo.currentIndex()
         if idx < 0 or idx >= len(self._diff.hunks):
@@ -201,7 +234,7 @@ class DiffView(QWidget):
             logger.exception("Failed to stage hunk %s: %s", hunk_id, e)
 
     def _on_file_action_clicked(self):
-        if not self._repo or not self._current_path:
+        if self._read_only or not self._repo or not self._current_path:
             return
         try:
             if self._staged:
@@ -212,3 +245,6 @@ class DiffView(QWidget):
             self.file_staged.emit(self._current_path, not self._staged)
         except Exception as e:
             logger.exception("Failed to stage/unstage file %s: %s", self._current_path, e)
+
+
+DiffView = DiffWidget

@@ -120,3 +120,51 @@ def binary_file_repo(tmp_path: Path) -> RepoHandle:
     pygit2_repo.set_head("refs/heads/main")
 
     return RepoHandle(pygit2_repo, repo_path)
+
+
+@pytest.fixture
+def conflict_repo(tmp_path: Path) -> RepoHandle:
+    """A repo with two branches ('main' and 'feature') with conflicting changes."""
+    repo_path = tmp_path / "conflict-repo"
+    repo_path.mkdir()
+    pygit2_repo = pygit2.init_repository(str(repo_path))
+    pygit2_repo.config["user.name"] = "Test User"
+    pygit2_repo.config["user.email"] = "test@example.com"
+    sig = pygit2.Signature("Test User", "test@example.com")
+
+    # Base commit on main
+    test_file = repo_path / "shared.txt"
+    test_file.write_text("line 1\nbase content\nline 3\n")
+    pygit2_repo.index.add("shared.txt")
+    pygit2_repo.index.write()
+    c1 = pygit2_repo.create_commit(
+        "refs/heads/main", sig, sig, "Initial commit", pygit2_repo.index.write_tree(), []
+    )
+    pygit2_repo.set_head("refs/heads/main")
+
+    # Branch 'feature'
+    pygit2_repo.create_branch("feature", pygit2_repo[c1])
+
+    # Commit on main
+    test_file.write_text("line 1\nmain branch modification\nline 3\n")
+    pygit2_repo.index.add("shared.txt")
+    pygit2_repo.index.write()
+    pygit2_repo.create_commit(
+        "refs/heads/main", sig, sig, "Main modification", pygit2_repo.index.write_tree(), [c1]
+    )
+
+    # Commit on feature
+    pygit2_repo.set_head("refs/heads/feature")
+    pygit2_repo.checkout_head(strategy=pygit2.GIT_CHECKOUT_FORCE)
+    test_file.write_text("line 1\nfeature branch modification\nline 3\n")
+    pygit2_repo.index.add("shared.txt")
+    pygit2_repo.index.write()
+    pygit2_repo.create_commit(
+        "refs/heads/feature", sig, sig, "Feature modification", pygit2_repo.index.write_tree(), [c1]
+    )
+
+    # Switch back to main
+    pygit2_repo.set_head("refs/heads/main")
+    pygit2_repo.checkout_head(strategy=pygit2.GIT_CHECKOUT_FORCE)
+
+    return RepoHandle(pygit2_repo, repo_path)

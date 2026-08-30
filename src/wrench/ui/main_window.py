@@ -29,10 +29,11 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from wrench.core import engine
+from wrench.core import engine, snapshots
 from wrench.core.engine import RepoHandle
 from wrench.storage import repo_registry, settings
 from wrench.storage.db import get_connection
+from wrench.ui.snapshots_panel import SnapshotsPanel
 from wrench.ui.tabs.changes_tab import ChangesTab
 from wrench.ui.tabs.history_tab import HistoryTab
 from wrench.ui.tabs.tab_bar import TabContainer
@@ -62,6 +63,12 @@ class MainWindow(QMainWindow):
         self._auto_save_timer.setInterval(1000)
         self._auto_save_timer.timeout.connect(self._save_session_state)
 
+        # Snapshot timer (every 5 minutes / 300_000ms)
+        self._snapshot_timer = QTimer(self)
+        self._snapshot_timer.setInterval(300_000)
+        self._snapshot_timer.timeout.connect(self._on_snapshot_timer)
+        self._snapshot_timer.start()
+
         self._init_ui()
         self._restore_settings()
 
@@ -87,12 +94,19 @@ class MainWindow(QMainWindow):
 
         # 2. History tab (Index 1, closable)
         self.history_tab = HistoryTab(self)
+        self.history_tab.rebase_requested.connect(self._on_history_rebase)
+        self.history_tab.merge_requested.connect(self._on_history_merge)
+        self.history_tab.create_branch_requested.connect(self._on_history_create_branch)
+        self.history_tab.create_tag_requested.connect(self._on_history_create_tag)
         self.tab_container.add_tab(
             widget=self.history_tab,
             label=self.tr("History"),
             tab_type="history",
             closable=True,
         )
+
+        # 3. Snapshots panel instance
+        self.snapshots_panel = SnapshotsPanel(self._conn, self)
 
         # Connect add category tab request from (+) menu
         self.tab_container.add_category_tab_requested.connect(self._on_add_category_tab)
@@ -293,6 +307,15 @@ class MainWindow(QMainWindow):
                                 closable=closable,
                                 is_pinned=is_pinned,
                             )
+                        elif t_type == "snapshots":
+                            self.tab_container.add_tab(
+                                widget=self.snapshots_panel,
+                                label=label or self.tr("Snapshots"),
+                                tab_type="snapshots",
+                                closable=closable,
+                                is_pinned=is_pinned,
+                            )
+
                         else:
                             placeholder = QWidget(self)
                             layout = QVBoxLayout(placeholder)
@@ -414,6 +437,7 @@ class MainWindow(QMainWindow):
         try:
             self._current_repo = engine.open_repo(path)
             self.history_tab.set_repo(self._current_repo)
+            self.snapshots_panel.set_repo(self._current_repo)
 
             # Start inotify watcher
             self._watcher = RepoWatcher(
@@ -422,6 +446,7 @@ class MainWindow(QMainWindow):
                 parent=self,
             )
             self._watcher.status_changed.connect(self.history_tab.refresh)
+            self._watcher.status_changed.connect(self.snapshots_panel.refresh)
             self._watcher.start()
 
             status = engine.get_status(self._current_repo)
@@ -516,6 +541,7 @@ class MainWindow(QMainWindow):
                 self._watcher = None
             self.changes_tab.set_repo(None)
             self.history_tab.set_repo(None)
+            self.snapshots_panel.set_repo(None)
             self.status_label.setText(self.tr("Repository closed"))
 
     def _on_stash_changes(self) -> None:
@@ -607,6 +633,14 @@ class MainWindow(QMainWindow):
                     tab_type="history",
                     closable=True,
                 )
+        elif tab_type == "snapshots":
+            if self.tab_container.find_tab("snapshots", "") is None:
+                self.tab_container.add_tab(
+                    widget=self.snapshots_panel,
+                    label=self.tr("Snapshots"),
+                    tab_type="snapshots",
+                    closable=True,
+                )
         else:
             # Placeholder for PR / Issues in Phase 4
             placeholder = QWidget(self)
@@ -623,11 +657,126 @@ class MainWindow(QMainWindow):
             )
 
     def _on_resolve_conflicts(self) -> None:
-        QMessageBox.information(
+        self.changes_tab._resolve_conflicts()
+
+    def _on_snapshot_timer(self) -> None:
+        if self._current_repo:
+            try:
+                snapshots.take_snapshot(self._current_repo, "timer", conn=self._conn)
+            except Exception as e:
+                logger.debug("Automatic periodic snapshot skipped: %s", e)
+
+    def _on_history_rebase(self, target_ref: str) -> None:
+        if not self._current_repo:
+            return
+        reply = QMessageBox.question(
             self,
-            self.tr("3-Way Merge Tool"),
-            self.tr("The 3-Way Merge Tool will be integrated in Phase 2."),
+            self.tr("Rebase Branch"),
+            self.tr(f"Rebase current branch onto '{target_ref}'?"),
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.Yes,
         )
+        if reply != QMessageBox.Yes:
+            return
+
+        try:
+            res = engine.rebase(self._current_repo, target_ref)
+            if res.status == "conflict":
+                n_conflicts = len(res.conflicted_files)
+                QMessageBox.warning(
+                    self,
+                    self.tr("Rebase Conflict"),
+                    self.tr(
+                        f"Rebase encountered conflicts in {n_conflicts} file(s). "
+                        "Please resolve them in the Changes tab."
+                    ),
+                )
+                idx = self.tab_container.find_tab("changes", "")
+                if idx is not None:
+                    self.tab_container.set_current_index(idx)
+            else:
+                self.status_label.setText(self.tr("Rebase completed successfully."))
+            self.changes_tab.refresh()
+            self.history_tab.refresh()
+        except Exception as e:
+            logger.exception("Rebase failed: %s", e)
+            QMessageBox.critical(self, self.tr("Rebase Failed"), str(e))
+
+    def _on_history_merge(self, source_ref: str) -> None:
+        if not self._current_repo:
+            return
+        reply = QMessageBox.question(
+            self,
+            self.tr("Merge Branch"),
+            self.tr(f"Merge '{source_ref}' into current branch?"),
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.Yes,
+        )
+        if reply != QMessageBox.Yes:
+            return
+
+        try:
+            res = engine.merge(self._current_repo, source_ref)
+            if res.status == "conflict":
+                n_conflicts = len(res.conflicted_files)
+                QMessageBox.warning(
+                    self,
+                    self.tr("Merge Conflict"),
+                    self.tr(
+                        f"Merge encountered conflicts in {n_conflicts} file(s). "
+                        "Please resolve them in the Changes tab."
+                    ),
+                )
+
+                idx = self.tab_container.find_tab("changes", "")
+                if idx is not None:
+                    self.tab_container.set_current_index(idx)
+            elif res.status == "up_to_date":
+                self.status_label.setText(self.tr("Already up to date."))
+            else:
+                self.status_label.setText(self.tr("Merged successfully."))
+            self.changes_tab.refresh()
+            self.history_tab.refresh()
+        except Exception as e:
+            logger.exception("Merge failed: %s", e)
+            QMessageBox.critical(self, self.tr("Merge Failed"), str(e))
+
+    def _on_history_create_branch(self, from_sha: str) -> None:
+        if not self._current_repo:
+            return
+        name, ok = QInputDialog.getText(
+            self,
+            self.tr("Create Branch"),
+            self.tr(f"Create new branch from '{from_sha[:8]}':\nBranch name:"),
+        )
+        if not ok or not name.strip():
+            return
+
+        try:
+            engine.create_branch(self._current_repo, name.strip(), from_ref=from_sha)
+            self.history_tab.refresh()
+            self.changes_tab.refresh()
+        except Exception as e:
+            logger.exception("Create branch failed: %s", e)
+            QMessageBox.critical(self, self.tr("Create Branch Failed"), str(e))
+
+    def _on_history_create_tag(self, from_sha: str) -> None:
+        if not self._current_repo:
+            return
+        name, ok = QInputDialog.getText(
+            self,
+            self.tr("Create Tag"),
+            self.tr(f"Create tag pointing to '{from_sha[:8]}':\nTag name:"),
+        )
+        if not ok or not name.strip():
+            return
+
+        try:
+            engine.create_tag(self._current_repo, name.strip(), target=from_sha)
+            self.history_tab.refresh()
+        except Exception as e:
+            logger.exception("Create tag failed: %s", e)
+            QMessageBox.critical(self, self.tr("Create Tag Failed"), str(e))
 
     def _on_about(self) -> None:
         QMessageBox.about(

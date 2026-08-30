@@ -45,6 +45,7 @@ from wrench.core import engine
 from wrench.core.engine import RepoHandle, RepoStatus
 from wrench.storage import repo_registry
 from wrench.ui.diff_view.diff_widget import DiffView
+from wrench.ui.merge_tool.merge_dialog import MergeDialog
 from wrench.ui.widgets.branch_switcher import BranchSwitcherWidget
 
 logger = logging.getLogger(__name__)
@@ -126,8 +127,27 @@ class FileListItemWidget(QWidget):
     def is_checked(self) -> bool:
         return self.checkbox.isChecked()
 
-    def set_checked(self, checked: bool) -> None:
-        self.checkbox.setChecked(checked)
+    def set_checked(self, checked: bool, emit_signal: bool = False) -> None:
+        if not emit_signal:
+            self.checkbox.blockSignals(True)
+            self.checkbox.setChecked(checked)
+            self.checkbox.blockSignals(False)
+        else:
+            self.checkbox.setChecked(checked)
+
+
+class SelectAllCheckBox(QCheckBox):
+    """Tri-state checkbox for selecting/unselecting all changed files.
+
+    Clicking when PartiallyChecked or Unchecked transitions to Checked (selects all).
+    Clicking when Checked transitions to Unchecked (deselects all).
+    """
+
+    def nextCheckState(self) -> None:
+        if self.checkState() == Qt.Checked:
+            self.setCheckState(Qt.Unchecked)
+        else:
+            self.setCheckState(Qt.Checked)
 
 
 class ChangedFilesList(QListWidget):
@@ -139,7 +159,7 @@ class ChangedFilesList(QListWidget):
             if item:
                 w = self.itemWidget(item)
                 if isinstance(w, FileListItemWidget):
-                    w.set_checked(not w.is_checked())
+                    w.set_checked(not w.is_checked(), emit_signal=True)
                     return
         super().keyPressEvent(event)
 
@@ -213,7 +233,7 @@ class ChangesTab(QWidget):
         self.conflict_label.setStyleSheet("color: #ff8888; font-weight: bold; font-size: 11px;")
         conflict_layout.addWidget(self.conflict_label)
         self.conflict_btn = QPushButton(self.tr("Resolve…"), self.conflict_banner)
-        self.conflict_btn.clicked.connect(self.resolve_conflicts_requested.emit)
+        self.conflict_btn.clicked.connect(self._on_conflict_btn_clicked)
         conflict_layout.addWidget(self.conflict_btn)
         self.conflict_banner.setVisible(False)
         left_layout.addWidget(self.conflict_banner)
@@ -226,8 +246,9 @@ class ChangesTab(QWidget):
 
         # Changed files header (Select-all checkbox + Count badge)
         files_header = QHBoxLayout()
-        self.select_all_cb = QCheckBox(self)
+        self.select_all_cb = SelectAllCheckBox(self)
         self.select_all_cb.setTristate(True)
+        self.select_all_cb.setToolTip(self.tr("Select all / Deselect all"))
         self.select_all_cb.stateChanged.connect(self._on_select_all_toggled)
         files_header.addWidget(self.select_all_cb)
 
@@ -456,14 +477,120 @@ class ChangesTab(QWidget):
             self._update_conflict_banner()
             self._populate_files_list()
             self._update_commit_button()
+
+            # Check MERGE_MSG prefill
+            if self._current_status and self._current_status.merge_in_progress:
+                if not self.commit_msg_input.text().strip():
+                    merge_msg_file = Path(self._repo.path) / ".git" / "MERGE_MSG"
+                    if merge_msg_file.exists():
+                        try:
+                            content = merge_msg_file.read_text(
+                                encoding="utf-8", errors="replace"
+                            ).strip()
+                            if content:
+                                lines = content.split("\n", 1)
+                                self.commit_msg_input.setText(lines[0].strip())
+                                if len(lines) > 1:
+                                    self.commit_desc_input.setPlainText(lines[1].strip())
+                        except Exception as e:
+                            logger.debug("Failed to read MERGE_MSG: %s", e)
         except Exception as e:
             logger.error("Failed to refresh status: %s", e)
 
     def _update_conflict_banner(self) -> None:
-        if self._current_status and self._current_status.has_conflicts:
+        if not self._current_status:
+            self.conflict_banner.setVisible(False)
+            return
+
+        if self._current_status.has_conflicts:
             self.conflict_banner.setVisible(True)
+            self.conflict_label.setText(
+                self.tr("⚠️ Merge conflict in progress — resolve conflicts before committing")
+            )
+            self.conflict_btn.setText(self.tr("Resolve Conflicts…"))
+            self.conflict_btn.setVisible(True)
+        elif self._current_status.merge_in_progress:
+            self.conflict_banner.setVisible(True)
+            self.conflict_label.setText(
+                self.tr("Merge in progress — all conflicts resolved. Commit to conclude merge.")
+            )
+            self.conflict_btn.setVisible(False)
+        elif self._current_status.rebase_in_progress:
+            self.conflict_banner.setVisible(True)
+            self.conflict_label.setText(
+                self.tr("Rebase in progress — all conflicts resolved. Continue rebase.")
+            )
+            self.conflict_btn.setText(self.tr("Continue Rebase"))
+            self.conflict_btn.setVisible(True)
         else:
             self.conflict_banner.setVisible(False)
+
+    def _on_conflict_btn_clicked(self) -> None:
+        if not self._current_status:
+            return
+        if self._current_status.rebase_in_progress and not self._current_status.has_conflicts:
+            self._continue_rebase()
+        else:
+            self._resolve_conflicts()
+
+    def _continue_rebase(self) -> None:
+        if not self._repo:
+            return
+        try:
+            res = engine.rebase_continue(self._repo)
+            if res.status == "conflict":
+                QMessageBox.warning(
+                    self,
+                    self.tr("Rebase Conflict"),
+                    self.tr(
+                        "More conflicts occurred while continuing rebase. Please resolve them."
+                    ),
+                )
+            self.refresh()
+        except Exception as e:
+            logger.error("Failed to continue rebase: %s", e)
+            QMessageBox.critical(self, self.tr("Rebase Error"), str(e))
+
+    def _resolve_conflicts(self, target_path: str | None = None) -> None:
+        if not self._repo:
+            return
+        mode = (
+            "rebase"
+            if (self._current_status and self._current_status.rebase_in_progress)
+            else "merge"
+        )
+
+        if target_path:
+            dialog = MergeDialog(self._repo, target_path, mode=mode, parent=self)
+            if dialog.exec():
+                self.refresh()
+            return
+
+        conflicts: list[str] = []
+        try:
+            r = self._repo.pygit2_repo
+            r.index.read()
+            if r.index.conflicts is not None:
+                for entry_tuple in r.index.conflicts:
+                    for entry in entry_tuple:
+                        if entry is not None and entry.path not in conflicts:
+                            conflicts.append(entry.path)
+        except Exception as e:
+            logger.debug("Could not read conflicts: %s", e)
+
+        if not conflicts:
+            QMessageBox.information(
+                self,
+                self.tr("No Conflicts"),
+                self.tr("No unresolved conflicts were found in the index."),
+            )
+            return
+
+        for p in conflicts:
+            dialog = MergeDialog(self._repo, p, mode=mode, parent=self)
+            if not dialog.exec():
+                break
+        self.refresh()
 
     def _populate_files_list(self) -> None:
         if not self._current_status:
@@ -567,7 +694,9 @@ class ChangesTab(QWidget):
     def _update_select_all_state(self) -> None:
         total = self.files_list.count()
         if total == 0:
+            self.select_all_cb.blockSignals(True)
             self.select_all_cb.setCheckState(Qt.Unchecked)
+            self.select_all_cb.blockSignals(False)
             return
 
         checked_count = sum(
@@ -588,12 +717,13 @@ class ChangesTab(QWidget):
         self.select_all_cb.blockSignals(False)
 
     def _on_select_all_toggled(self, state: int) -> None:
-        target_checked = state == Qt.Checked
+        target_checked = state == Qt.Checked or state == 2 or self.select_all_cb.isChecked()
         for i in range(self.files_list.count()):
             item = self.files_list.item(i)
             w = self.files_list.itemWidget(item)
             if isinstance(w, FileListItemWidget):
-                w.set_checked(target_checked)
+                w.set_checked(target_checked, emit_signal=False)
+        self._update_select_all_state()
         self._update_commit_button()
         self.state_changed.emit()
 
@@ -722,6 +852,29 @@ class ChangesTab(QWidget):
 
         path = item.data(Qt.UserRole)
         menu = QMenu(self)
+
+        # Check if file has conflict
+        has_conflict = False
+        try:
+            r = self._repo.pygit2_repo
+            r.index.read()
+            if r.index.conflicts is not None:
+                for ancestor, ours, theirs in r.index.conflicts:
+                    ep = (
+                        (ours.path if ours else None)
+                        or (theirs.path if theirs else None)
+                        or (ancestor.path if ancestor else None)
+                    )
+                    if ep == path:
+                        has_conflict = True
+                        break
+        except Exception:
+            pass
+
+        if has_conflict:
+            act_resolve = menu.addAction(self.tr("Resolve Conflict in 3-Way Tool…"))
+            act_resolve.triggered.connect(lambda: self._resolve_conflicts(path))
+            menu.addSeparator()
 
         act_stage = menu.addAction(self.tr("Stage File"))
         act_stage.triggered.connect(lambda: self._stage_single_file(path))

@@ -74,3 +74,37 @@ class TestBlame:
         assert lines[0].line_content == "line1"
         assert lines[1].line_content == "line2"
         assert lines[2].line_content == "line3"
+
+
+class TestCommitDetailsAndFilters:
+    def test_get_commit_file_stats_and_diff(self, multi_commit_repo):
+        commits = read_ops.get_log(multi_commit_repo)
+        top_commit = commits[0]
+        stats = read_ops.get_commit_file_stats(multi_commit_repo, top_commit.sha)
+        assert len(stats) == 1
+        assert stats[0].path == "file.txt"
+        assert stats[0].additions > 0
+
+        diff = read_ops.get_commit_diff(multi_commit_repo, top_commit.sha, "file.txt")
+        assert diff.path == "file.txt"
+        assert len(diff.hunks) >= 1
+
+    def test_get_ref_labels(self, multi_commit_repo):
+        labels = read_ops.get_ref_labels(multi_commit_repo)
+        commits = read_ops.get_log(multi_commit_repo)
+        top_sha = commits[0].sha
+        assert top_sha in labels
+        assert any(lbl.kind in ("branch", "head") for lbl in labels[top_sha])
+
+    def test_get_log_path_filter(self, multi_commit_repo):
+        from wrench.core.engine import LogFilter
+
+        # file.txt exists in all commits
+        commits = read_ops.get_log(multi_commit_repo, filter=LogFilter(path="file.txt"))
+        assert len(commits) == 3
+
+        # nonexistent.txt does not exist
+        empty_commits = read_ops.get_log(
+            multi_commit_repo, filter=LogFilter(path="nonexistent.txt")
+        )
+        assert len(empty_commits) == 0

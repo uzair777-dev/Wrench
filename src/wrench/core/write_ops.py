@@ -11,9 +11,13 @@ import shutil
 import subprocess
 from pathlib import Path
 
+import pygit2
+
+from .engine import MergeResult, RebaseResult
 from .exceptions import (
     BranchAlreadyExistsError,
     BranchNotFullyMergedError,
+    DirtyTreeError,
     EmptyCommitMessageError,
     GitCommandError,
 )
@@ -33,6 +37,7 @@ def run_git(
     logger.debug("[git] Executing in '%s': git %s", p, " ".join(args))
     env = os.environ.copy()
     env["GIT_TERMINAL_PROMPT"] = "0"
+    env["LC_ALL"] = "C"
 
     cmd = ["git"] + args
     try:
@@ -67,6 +72,34 @@ def run_git(
         logger.debug("[git] Succeeded (exit 0): git %s", " ".join(args))
 
     return result
+
+
+def _check_clean_working_tree(repo_path: Path) -> None:
+    """Raise DirtyTreeError if staged or unstaged changes exist."""
+    try:
+        r = pygit2.Repository(str(repo_path))
+        status = r.status()
+        dirty_files = [f for f, flags in status.items() if not (flags & pygit2.GIT_STATUS_WT_NEW)]
+        if dirty_files:
+            raise DirtyTreeError(dirty_files)
+    except pygit2.GitError:
+        pass
+
+
+def _extract_conflicts(repo_path: Path) -> list[str]:
+    """Extract list of conflicted file paths from index."""
+    conflicts: list[str] = []
+    try:
+        r = pygit2.Repository(str(repo_path))
+        r.index.read()
+        if r.index.conflicts is not None:
+            for entry_tuple in r.index.conflicts:
+                for entry in entry_tuple:
+                    if entry is not None and entry.path not in conflicts:
+                        conflicts.append(entry.path)
+    except Exception:
+        pass
+    return sorted(conflicts)
 
 
 def commit(repo_path: Path, message: str, *, amend: bool = False) -> str:
@@ -120,6 +153,11 @@ def delete_branch(repo_path: Path, name: str, *, force: bool = False) -> None:
 def rename_branch(repo_path: Path, old: str, new: str) -> None:
     """Rename a branch."""
     run_git(repo_path, ["branch", "-m", old, new])
+
+
+def create_tag(repo_path: Path | str, name: str, target: str = "HEAD") -> None:
+    """Create a tag pointing to target ref/SHA."""
+    run_git(repo_path, ["tag", name, target])
 
 
 def stash_push(repo_path: Path, message: str | None = None) -> str:
@@ -187,3 +225,117 @@ def clone_repo(
         ["clone", url, str(d.name)],
         timeout=timeout,
     )
+
+
+# --- Phase 2: Merge & Rebase Operations ---
+
+
+def merge(repo_path: Path | str, source_branch: str) -> MergeResult:
+    """Merge a branch into current HEAD.
+
+    Checks clean working tree first, takes pre_risky_op snapshot, runs git merge.
+    Returns MergeResult (conflict is a status, not an exception).
+    """
+    p = Path(repo_path)
+    _check_clean_working_tree(p)
+
+    # Snapshot first
+    from . import engine, snapshots
+
+    try:
+        handle = engine.open_repo(p)
+        snapshots.take_snapshot(handle, "pre_risky_op")
+    except Exception:
+        pass
+
+    result = run_git(p, ["merge", source_branch], check=False)
+
+    if result.returncode == 0:
+        stdout = result.stdout.strip()
+        if "Already up to date." in stdout or "Already up-to-date." in stdout:
+            return MergeResult(status="up_to_date")
+        rev_res = run_git(p, ["rev-parse", "HEAD"])
+        return MergeResult(status="merged", commit_sha=rev_res.stdout.strip())
+
+    # Non-zero exit code: check if conflict or dirty tree error
+    if "would be overwritten by merge" in result.stderr or "Your local changes" in result.stderr:
+        raise DirtyTreeError([], stderr=result.stderr)
+
+    conflicts = _extract_conflicts(p)
+    if (
+        conflicts
+        or "Automatic merge failed; fix conflicts" in result.stdout
+        or "CONFLICT" in result.stdout
+    ):
+        return MergeResult(status="conflict", conflicted_files=conflicts)
+
+    raise GitCommandError(["merge", source_branch], result.returncode, result.stderr)
+
+
+def merge_abort(repo_path: Path | str) -> None:
+    """Abort an in-progress merge."""
+    p = Path(repo_path)
+    run_git(p, ["merge", "--abort"])
+
+
+def rebase(repo_path: Path | str, onto: str) -> RebaseResult:
+    """Rebase current branch onto the given ref.
+
+    Checks clean working tree, takes pre_risky_op snapshot, runs git rebase.
+    Returns RebaseResult.
+    """
+    p = Path(repo_path)
+    _check_clean_working_tree(p)
+
+    from . import engine, snapshots
+
+    try:
+        handle = engine.open_repo(p)
+        snapshots.take_snapshot(handle, "pre_risky_op")
+    except Exception:
+        pass
+
+    result = run_git(p, ["rebase", onto], check=False)
+
+    if result.returncode == 0:
+        return RebaseResult(status="complete")
+
+    if "would be overwritten by merge" in result.stderr or "Your local changes" in result.stderr:
+        raise DirtyTreeError([], stderr=result.stderr)
+
+    conflicts = _extract_conflicts(p)
+    if (
+        conflicts
+        or "Could not apply" in result.stdout
+        or "CONFLICT" in result.stdout
+        or "resolve all conflicts" in result.stderr
+    ):
+        return RebaseResult(status="conflict", conflicted_files=conflicts)
+
+    raise GitCommandError(["rebase", onto], result.returncode, result.stderr)
+
+
+def rebase_continue(repo_path: Path | str) -> RebaseResult:
+    """Continue an in-progress rebase after conflict resolution."""
+    p = Path(repo_path)
+    result = run_git(p, ["rebase", "--continue"], check=False)
+
+    if result.returncode == 0:
+        return RebaseResult(status="complete")
+
+    conflicts = _extract_conflicts(p)
+    if (
+        conflicts
+        or "Could not apply" in result.stdout
+        or "CONFLICT" in result.stdout
+        or "resolve all conflicts" in result.stderr
+    ):
+        return RebaseResult(status="conflict", conflicted_files=conflicts)
+
+    raise GitCommandError(["rebase", "--continue"], result.returncode, result.stderr)
+
+
+def rebase_abort(repo_path: Path | str) -> None:
+    """Abort an in-progress rebase."""
+    p = Path(repo_path)
+    run_git(p, ["rebase", "--abort"])

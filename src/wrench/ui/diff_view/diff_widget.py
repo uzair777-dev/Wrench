@@ -174,7 +174,7 @@ class DiffWidget(QWidget):
 
         if not self._diff.hunks:
             self.editor.setHtml(
-                "<p style='color: #888888; padding: 10px;'>" "<i>No changes in this file.</i></p>"
+                "<p style='color: #888888; padding: 10px;'><i>No changes in this file.</i></p>"
             )
             self.hunk_combo.setVisible(False)
             self.stage_hunk_btn.setVisible(False)
@@ -203,7 +203,7 @@ class DiffWidget(QWidget):
         html_lines = [pre_tag]
         for hunk in self._diff.hunks:
             hunk_hdr = (
-                f"@@ -{hunk.old_start},{hunk.old_count} " f"+{hunk.new_start},{hunk.new_count} @@"
+                f"@@ -{hunk.old_start},{hunk.old_count} +{hunk.new_start},{hunk.new_count} @@"
             )
             html_lines.append(f"<div style='{hunk_style}'>{html.escape(hunk_hdr)}</div>")
             for line in hunk.lines:

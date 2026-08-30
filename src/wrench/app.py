@@ -66,6 +66,13 @@ def main():
     conn = get_connection()
     logger.debug("Connected to SQLite database.")
 
+    # 1b. Validate database integrity
+    from wrench.storage.health import check_database_health
+
+    health = check_database_health(conn)
+    if health.get("status") != "ok":
+        logger.warning("Database health check warning: %s", health)
+
     # 2. Check for stale locks across all registered repos on startup (FR-1.9)
     stale_locks = lock_recovery.check_all_repos(conn)
     if stale_locks:
@@ -74,9 +81,11 @@ def main():
         reply = QMessageBox.question(
             None,
             "Stale Git Locks Detected",
-            f"Stale git index lock files were detected in the following repositories:\n\n"
-            f"{repo_names}\n\n"
-            f"Would you like Wrench to clean them up now?",
+            (
+                "Stale git index lock files were detected in the following repositories:\n\n"
+                f"{repo_names}\n\n"
+                "Would you like Wrench to clean them up now?"
+            ),
             QMessageBox.Yes | QMessageBox.No,
         )
         if reply == QMessageBox.Yes:
@@ -85,6 +94,12 @@ def main():
 
     # 3. Create and show main window
     window = MainWindow(conn=conn)
+
+    # 3b. Install global crash handler and session preserver
+    from wrench.core.crash_handler import install_crash_handler
+
+    install_crash_handler(window)
+
     if args.repo_path:
         target = Path(args.repo_path).resolve()
         if target.exists():

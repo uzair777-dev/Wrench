@@ -356,6 +356,7 @@ class RepoRecord:
     is_missing: bool
     created_at: str
 
+
 @dataclass
 class ForgeAccountRecord:
     id: int
@@ -368,6 +369,7 @@ class ForgeAccountRecord:
     # need it (the credential helper, account removal) read it directly from the
     # forge_accounts table, so it never travels through a generic list_accounts()
     # result that UI code might log or display
+
 
 @dataclass
 class RepoForgeLink:
@@ -610,49 +612,53 @@ def rebase_abort(repo: "RepoHandle") -> None: ...      # run_git(["rebase", "--a
 ```python
 from dataclasses import dataclass
 
+
 @dataclass
 class PullRequest:
-    id: str                # provider's native ID as a string — GitHub's are ints, GitLab/Forgejo
-                            # vary, normalize to str here so callers never branch on adapter identity
+    id: str  # provider's native ID as a string — GitHub's are ints, GitLab/Forgejo
+    # vary, normalize to str here so callers never branch on adapter identity
     title: str
     description: str
     source_branch: str
     target_branch: str
-    state: str              # normalized: 'open' | 'merged' | 'closed' — each adapter maps its own
-                             # vocabulary onto this set (e.g. GitLab's 'opened' → 'open') internally
+    state: str  # normalized: 'open' | 'merged' | 'closed' — each adapter maps its own
+    # vocabulary onto this set (e.g. GitLab's 'opened' → 'open') internally
     url: str
     author: str
-    created_at: str          # ISO 8601
+    created_at: str  # ISO 8601
+
 
 @dataclass
 class Issue:
     id: str
     title: str
     description: str
-    state: str                # normalized: 'open' | 'closed'
+    state: str  # normalized: 'open' | 'closed'
     url: str
     author: str
     created_at: str
 
+
 @dataclass
 class CIStatus:
-    state: str                 # normalized: 'success' | 'failure' | 'pending' | 'unknown' — the
-                                # 'unknown' value matters: it's the correct result when a ref has no
-                                # CI configured at all, which must render differently in the UI than
-                                # 'pending' (CI configured but still running)
-    url: str | None             # link to the CI provider's own detail page, when available
-    description: str | None      # short human-readable status text, e.g. "3/3 checks passed"
+    state: str  # normalized: 'success' | 'failure' | 'pending' | 'unknown' — the
+    # 'unknown' value matters: it's the correct result when a ref has no
+    # CI configured at all, which must render differently in the UI than
+    # 'pending' (CI configured but still running)
+    url: str | None  # link to the CI provider's own detail page, when available
+    description: str | None  # short human-readable status text, e.g. "3/3 checks passed"
+
 
 @dataclass
 class ForgeAccount:
     id: int
-    provider: str                 # 'github' | 'gitlab' | 'forgejo' | 'bitbucket'
+    provider: str  # 'github' | 'gitlab' | 'forgejo' | 'bitbucket'
     instance_url: str
     label: str
     username: str | None
-    secret_service_key: str        # unlike ForgeAccountRecord (§3.1) — this full ForgeAccount type,
-                                    # with the key included, is only ever passed to adapter.authenticate()
-                                    # and secret_service.py, never to UI code
+    secret_service_key: str  # unlike ForgeAccountRecord (§3.1) — this full ForgeAccount type,
+    # with the key included, is only ever passed to adapter.authenticate()
+    # and secret_service.py, never to UI code
 ```
 
 ```python
@@ -660,11 +666,13 @@ from abc import ABC, abstractmethod
 from enum import Flag, auto
 from .models import PullRequest, Issue, CIStatus, ForgeAccount
 
+
 class ForgeCapability(Flag):
     PULL_REQUESTS = auto()
     ISSUES = auto()
     CI_STATUS = auto()
     ISSUE_LINKING = auto()
+
 
 class ForgeAdapter(ABC):
     """One instance per configured forge_account row."""
@@ -683,9 +691,16 @@ class ForgeAdapter(ABC):
     def list_pull_requests(self, owner: str, repo: str) -> list[PullRequest]: ...
 
     @abstractmethod
-    def create_pull_request(self, owner: str, repo: str, *, title: str,
-                             source_branch: str, target_branch: str,
-                             description: str = "") -> PullRequest: ...
+    def create_pull_request(
+        self,
+        owner: str,
+        repo: str,
+        *,
+        title: str,
+        source_branch: str,
+        target_branch: str,
+        description: str = "",
+    ) -> PullRequest: ...
 
     @abstractmethod
     def get_ci_status(self, owner: str, repo: str, ref: str) -> CIStatus: ...
@@ -706,6 +721,7 @@ from .capability import ForgeAdapter
 
 _ENTRY_POINT_GROUP = "wrench.forge_adapters"
 
+
 def discover_adapters() -> dict[str, type[ForgeAdapter]]:
     """Returns {provider_id: AdapterClass} for every registered adapter,
     including the four built-in ones (which register themselves the same way
@@ -715,6 +731,7 @@ def discover_adapters() -> dict[str, type[ForgeAdapter]]:
         cls = ep.load()
         adapters[cls.provider_id] = cls
     return adapters
+
 
 def get_adapter_for_account(account: "ForgeAccount") -> ForgeAdapter:
     adapters = discover_adapters()
@@ -747,6 +764,7 @@ from .backend import CredentialBackend, CredentialBackendUnavailableError
 
 _ATTR_APP = "wrench"
 
+
 class SecretServiceBackend(CredentialBackend):
     """Base class holding all the real D-Bus logic. Never instantiate this directly —
     use FlatpakSecretServiceBackend or AppImageSecretServiceBackend (below) via
@@ -761,9 +779,9 @@ class SecretServiceBackend(CredentialBackend):
             raise CredentialBackendUnavailableError(self.unavailable_help_text()) from e
         if collection.is_locked():
             try:
-                collection.unlock()   # typically triggers the OS's own keyring-unlock
-                                        # prompt (GNOME Keyring/KWallet) — this call blocks
-                                        # until the user responds to that prompt or cancels
+                collection.unlock()  # typically triggers the OS's own keyring-unlock
+                # prompt (GNOME Keyring/KWallet) — this call blocks
+                # until the user responds to that prompt or cancels
             except LockedException as e:
                 raise CredentialBackendUnavailableError(self.unavailable_help_text()) from e
         return collection
@@ -776,7 +794,7 @@ class SecretServiceBackend(CredentialBackend):
     def get_secret(self, key: str) -> str | None:
         items = self._collection().search_items({"application": _ATTR_APP, "key": key})
         for item in items:
-            return item.get_secret().decode("utf-8")   # first match; keys are unique by construction
+            return item.get_secret().decode("utf-8")  # first match; keys are unique by construction
         return None
 
     def delete_secret(self, key: str) -> None:
@@ -813,14 +831,16 @@ class AppImageSecretServiceBackend(SecretServiceBackend):
 ```python
 from dataclasses import dataclass
 
+
 @dataclass
 class Snapshot:
     id: int
     created_at: str
-    trigger_type: str        # 'commit' | 'timer' | 'pre_risky_op' | 'manual'
+    trigger_type: str  # 'commit' | 'timer' | 'pre_risky_op' | 'manual'
     is_manual: bool
     label: str | None
     ref_name: str
+
 
 @dataclass
 class SnapshotSettings:
@@ -830,11 +850,14 @@ class SnapshotSettings:
     trigger_before_risky_op: bool
     max_count: int
     max_age_days: int | None
-    untracked_capture_mode: str   # 'none' | 'capped' | 'unlimited'
+    untracked_capture_mode: str  # 'none' | 'capped' | 'unlimited'
     untracked_per_file_cap_mb: int
     untracked_total_cap_mb: int
 
-def take_snapshot(repo: "RepoHandle", trigger_type: str, *, label: str | None = None) -> Snapshot | None: ...
+
+def take_snapshot(
+    repo: "RepoHandle", trigger_type: str, *, label: str | None = None
+) -> Snapshot | None: ...
 def list_snapshots(repo: "RepoHandle") -> list[Snapshot]: ...
 def restore_snapshot(repo: "RepoHandle", snapshot_id: int) -> None: ...
 def prune_snapshots(repo: "RepoHandle") -> None: ...
@@ -880,10 +903,12 @@ The Flatpak manifest (§6.1, Phase 0 step 6) targets the `org.kde.Platform` runt
 ```python
 from abc import ABC, abstractmethod
 
+
 class CredentialBackendUnavailableError(Exception):
     """Raised when no secret storage provider could be reached. The message is
     always context-specific remediation text, not a generic failure — see
     SecretServiceBackend._collection() and each subclass's unavailable_help_text()."""
+
 
 class CredentialBackend(ABC):
     @abstractmethod
@@ -905,6 +930,7 @@ import os
 import sys
 from .backend import CredentialBackend
 
+
 def _detect_packaging_context() -> str:
     """Returns 'flatpak', 'appimage', or 'bare'. Checked in this order because a
     Flatpak sandbox could in principle still see an inherited APPIMAGE env var from
@@ -913,19 +939,22 @@ def _detect_packaging_context() -> str:
         return "flatpak"
     if os.environ.get("APPIMAGE"):
         return "appimage"
-    return "bare"   # plain `pip install` / running from source, not packaged at all
+    return "bare"  # plain `pip install` / running from source, not packaged at all
+
 
 def get_backend() -> CredentialBackend:
     if sys.platform.startswith("linux") or sys.platform.startswith("freebsd"):
         context = _detect_packaging_context()
         if context == "flatpak":
             from .secret_service import FlatpakSecretServiceBackend
+
             return FlatpakSecretServiceBackend()
         # 'appimage' and 'bare' share a backend: both are unsandboxed, and both fail
         # the same way (no Secret Service *provider* running) — there's no separate
         # permission system to give 'bare' its own remediation text, so a third class
         # would just duplicate AppImage's, which is why v1 ships exactly two, not three
         from .secret_service import AppImageSecretServiceBackend
+
         return AppImageSecretServiceBackend()
     raise NotImplementedError(
         f"No CredentialBackend for platform {sys.platform!r} yet — see SRS §7.3"
@@ -941,13 +970,16 @@ import platformdirs
 
 APP_NAME = "wrench"
 
+
 def data_dir() -> "Path":
     return Path(platformdirs.user_data_dir(APP_NAME))
+
 
 def config_dir() -> "Path":
     return Path(platformdirs.user_config_dir(APP_NAME))
 
-def state_dir() -> "Path":       # used by FR-9.2's log file
+
+def state_dir() -> "Path":  # used by FR-9.2's log file
     return Path(platformdirs.user_state_dir(APP_NAME))
 ```
 
@@ -957,6 +989,7 @@ def state_dir() -> "Path":       # used by FR-9.2's log file
 
 ```python
 import os
+
 
 def get_ssh_auth_socket() -> str | None:
     """Linux/BSD: reads $SSH_AUTH_SOCK directly. A Windows implementation would
@@ -976,14 +1009,16 @@ def get_ssh_auth_socket() -> str | None:
 # ui/workers.py — one shared helper, used by every UI call site that invokes core.engine
 from PySide6.QtCore import QObject, QThread, Signal
 
+
 class GitOperationWorker(QObject):
     """Runs exactly one core.engine call on a background thread. Create a new
     instance per operation — do not reuse one worker across multiple calls."""
-    finished = Signal(object)      # emits the function's return value on success
-    failed = Signal(Exception)     # emits the exception on failure — connect this to
-                                     # the same error-dialog code core.engine's typed
-                                     # exceptions (§5 Phase 1 step 5) already feed
-    progress = Signal(int)         # 0-100; only emitted by clone/push/pull/fetch
+
+    finished = Signal(object)  # emits the function's return value on success
+    failed = Signal(Exception)  # emits the exception on failure — connect this to
+    # the same error-dialog code core.engine's typed
+    # exceptions (§5 Phase 1 step 5) already feed
+    progress = Signal(int)  # 0-100; only emitted by clone/push/pull/fetch
 
     def __init__(self, fn, *args, **kwargs):
         super().__init__()
@@ -998,7 +1033,9 @@ class GitOperationWorker(QObject):
             self.failed.emit(e)
 
 
-def run_in_background(fn, *args, on_finished=None, on_failed=None, on_progress=None, **kwargs) -> QThread:
+def run_in_background(
+    fn, *args, on_finished=None, on_failed=None, on_progress=None, **kwargs
+) -> QThread:
     """Standard call pattern. Returns the QThread — the caller MUST keep a reference
     to it (e.g. as self._active_thread on the widget) for as long as it might be
     running. A QThread that gets garbage-collected mid-run is a real, silently-crashing
@@ -1008,9 +1045,12 @@ def run_in_background(fn, *args, on_finished=None, on_failed=None, on_progress=N
     worker = GitOperationWorker(fn, *args, **kwargs)
     worker.moveToThread(thread)
     thread.started.connect(worker.run)
-    if on_finished: worker.finished.connect(on_finished)
-    if on_failed: worker.failed.connect(on_failed)
-    if on_progress: worker.progress.connect(on_progress)
+    if on_finished:
+        worker.finished.connect(on_finished)
+    if on_failed:
+        worker.failed.connect(on_failed)
+    if on_progress:
+        worker.progress.connect(on_progress)
     worker.finished.connect(thread.quit)
     worker.failed.connect(thread.quit)
     thread.start()
@@ -1663,10 +1703,12 @@ jobs:
   ```python
   import pygit2, pytest
 
+
   @pytest.fixture
   def empty_repo(tmp_path):
       repo = pygit2.init_repository(str(tmp_path))
       return repo
+
 
   @pytest.fixture
   def repo_with_commit(empty_repo, tmp_path):
@@ -1679,11 +1721,15 @@ jobs:
   import responses
   from wrench.forge.adapters.github import GitHubAdapter
 
+
   @responses.activate
   def test_list_pull_requests():
-      responses.add(responses.GET,
+      responses.add(
+          responses.GET,
           "https://api.github.com/repos/owner/repo/pulls",
-          json=load_fixture("github/list_prs.json"), status=200)
+          json=load_fixture("github/list_prs.json"),
+          status=200,
+      )
       adapter = GitHubAdapter()
       prs = adapter.list_pull_requests("owner", "repo")
       assert len(prs) == 2

@@ -481,3 +481,16 @@ def rebase_abort(repo: RepoHandle) -> None:
 
 def create_tag(repo: RepoHandle, name: str, target: str = "HEAD") -> None:
     write_ops.create_tag(repo.path, name, target=target)
+
+
+# Recovery & Contention Facade
+def check_repo_guard(repo: RepoHandle, timeout: float = 3.0):
+    from .recovery import acquire_repo_guard
+
+    return acquire_repo_guard(repo.path, timeout=timeout)
+
+
+def sweep_repo_debris(repo: RepoHandle) -> list[str]:
+    from .recovery import sweep_debris
+
+    return sweep_debris(repo.path)

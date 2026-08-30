@@ -90,7 +90,7 @@ class TestGraphLayout:
 
     def test_cross_batch_recompute_consistency(self):
         # 10 commits loaded all at once vs simulating scroll batches
-        commits = [_make_commit(f"c{i}", [f"c{i-1}"] if i > 0 else []) for i in range(10, 0, -1)]
+        commits = [_make_commit(f"c{i}", [f"c{i - 1}"] if i > 0 else []) for i in range(10, 0, -1)]
         full_rows = compute_graph_layout(commits)
         partial_rows = compute_graph_layout(commits[:6])
 

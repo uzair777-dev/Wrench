@@ -811,6 +811,18 @@ class ChangesTab(QWidget):
         full_msg = f"{summary}\n\n{desc}".strip() if desc else summary
         is_amend = self.amend_cb.isChecked()
 
+        # 1. Process contention & lock guard check
+        from wrench.core.recovery.classifier import diagnose_error
+        from wrench.core.recovery.process_guard import acquire_repo_guard
+        from wrench.ui.recovery.busy_dialog import BusyDialog
+        from wrench.ui.recovery.recovery_dialog import RecoveryDialog
+
+        guard = acquire_repo_guard(self._repo.path, timeout=1.5)
+        if guard.status == "busy":
+            busy_dlg = BusyDialog(self._repo.path, guard, parent=self)
+            if busy_dlg.exec() != BusyDialog.Accepted:
+                return
+
         try:
             staged_paths = (
                 {f.path for f in self._current_status.staged} if self._current_status else set()
@@ -831,7 +843,7 @@ class ChangesTab(QWidget):
 
             engine.commit(self._repo, full_msg, amend=is_amend)
 
-            # Clear inputs
+            # Clear inputs upon successful commit
             self.commit_msg_input.clear()
             self.commit_desc_input.clear()
             self.amend_cb.setChecked(False)
@@ -839,11 +851,28 @@ class ChangesTab(QWidget):
             self.refresh()
         except Exception as e:
             logger.error("Commit failed: %s", e)
-            QMessageBox.critical(
-                self,
-                self.tr("Commit Failed"),
-                self.tr(f"Could not commit changes: {e}"),
+            report = diagnose_error(
+                e,
+                repo_path=self._repo.path,
+                stderr=getattr(e, "stderr", None) or str(e),
+                command=["git", "commit", "-m", full_msg],
             )
+            recovery_dlg = RecoveryDialog(
+                report,
+                repo_path=self._repo.path,
+                context={"message": full_msg, "lock_path": getattr(guard, "lock_path", None)},
+                parent=self,
+            )
+
+            def _on_recovery_done(action_id: str) -> None:
+                if action_id in ("commit_no_verify", "auto_format_and_retry"):
+                    self.commit_msg_input.clear()
+                    self.commit_desc_input.clear()
+                    self.amend_cb.setChecked(False)
+                self.refresh()
+
+            recovery_dlg.action_completed.connect(_on_recovery_done)
+            recovery_dlg.exec()
 
     def _show_file_context_menu(self, pos: QPoint) -> None:
         item = self.files_list.itemAt(pos)
@@ -913,7 +942,7 @@ class ChangesTab(QWidget):
             self,
             self.tr("Discard Changes"),
             self.tr(
-                f"Are you sure you want to discard changes in '{path}'?\n" f"This cannot be undone."
+                f"Are you sure you want to discard changes in '{path}'?\nThis cannot be undone."
             ),
             QMessageBox.Yes | QMessageBox.No,
         )

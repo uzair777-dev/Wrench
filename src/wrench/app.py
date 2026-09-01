@@ -73,29 +73,10 @@ def main():
     if health.get("status") != "ok":
         logger.warning("Database health check warning: %s", health)
 
-    # 2. Check for stale locks across all registered repos on startup (FR-1.9)
-    stale_locks = lock_recovery.check_all_repos(conn)
-    if stale_locks:
-        repo_names = ", ".join([name for _, name, _ in stale_locks])
-        logger.warning("Stale git index locks detected: %s", repo_names)
-        reply = QMessageBox.question(
-            None,
-            "Stale Git Locks Detected",
-            (
-                "Stale git index lock files were detected in the following repositories:\n\n"
-                f"{repo_names}\n\n"
-                "Would you like Wrench to clean them up now?"
-            ),
-            QMessageBox.Yes | QMessageBox.No,
-        )
-        if reply == QMessageBox.Yes:
-            for _, _, lock_path in stale_locks:
-                lock_recovery.remove_lock(Path(lock_path).parent.parent)
-
-    # 3. Create and show main window
+    # 2. Create and show main window (Instant UI < 200ms)
     window = MainWindow(conn=conn)
 
-    # 3b. Install global crash handler and session preserver
+    # 2b. Install global crash handler and session preserver
     from wrench.core.crash_handler import install_crash_handler
 
     install_crash_handler(window)
@@ -108,6 +89,30 @@ def main():
 
     window.show()
     logger.info("Wrench application initialized.")
+
+    # 3. Asynchronously inspect stale locks across registered repos post-launch (FR-1.9)
+    from PySide6.QtCore import QTimer
+
+    def _check_stale_locks():
+        stale_locks = lock_recovery.check_all_repos(conn)
+        if stale_locks:
+            repo_names = ", ".join([name for _, name, _ in stale_locks])
+            logger.warning("Stale git index locks detected: %s", repo_names)
+            reply = QMessageBox.question(
+                window,
+                "Stale Git Locks Detected",
+                (
+                    "Stale git index lock files were detected in the following repositories:\n\n"
+                    f"{repo_names}\n\n"
+                    "Would you like Wrench to clean them up now?"
+                ),
+                QMessageBox.Yes | QMessageBox.No,
+            )
+            if reply == QMessageBox.Yes:
+                for _, _, lock_path in stale_locks:
+                    lock_recovery.remove_lock(Path(lock_path).parent.parent)
+
+    QTimer.singleShot(150, _check_stale_locks)
 
     sys.exit(app.exec())
 

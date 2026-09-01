@@ -148,16 +148,36 @@ graph TD
   - Searchable branch picker popup listing local and remote tracking branches.
   - Uncommitted changes prompt: `Stash & Switch`, `Switch Anyway`, or `Cancel`.
   - Right-click context actions: `Create New Branch…`, `Rename Branch…`, `Delete Branch…`.
-- **`HistoryTab` (`ui/tabs/history_tab.py`)**: Git log and history visualization skeleton.
-  - Top search and filter bar (search input, author filter, path filter, clear button) with 300ms debouncing.
-  - Swappable graph placeholder container (wired to `CommitGraphWidget` in Phase 2).
+- **`HistoryTab` (`ui/tabs/history_tab.py`)**: Git log and history visualization workspace.
+  - Top search and filter bar (search input, dynamic author filter from active commits, path filter, clear button) with 300ms debouncing.
+  - Hosts `CommitGraphWidget` with infinite scroll pagination, selection synchronization, and detail panel display.
+  - Full UI state persistence: saves/restores table header column widths (`save_header_state()` / `restore_header_state()`) and vertical content splitter position (`save_splitter_state()` / `restore_splitter_state()`) in SQLite `ui.session_state`.
   - Unborn branch empty state (`"No history yet"`).
-  - Hidden detail panel slot.
+- **`CommitGraphWidget` (`ui/commit_graph/graph_widget.py`)**: Custom table view for Git DAG commit graph.
+  - Custom `CommitTableModel` supporting `Qt.DisplayRole`, `Qt.UserRole` (`GraphRow`), and rich `Qt.ToolTipRole` across all columns:
+    - Column 0 (Graph): summary and 8-character commit SHA.
+    - Column 1 (Message): full multi-line commit message with active ref badges (`[branch] [tag]`), safe empty handling, and 2,000-char graceful truncation.
+    - Column 2 (Author): author name and email (`Name <email>`).
+    - Column 3 (Date): formatted ISO commit timestamp.
+    - Column 4 (SHA): full 40-character commit hash.
+  - Pinned Column 0 horizontal scrollbar (`_graph_scrollbar`) styled identically to the main scrollbar with dynamic height matching and off-screen viewport panning (`_graph_scroll_x`).
+  - Interactive column resizing across all header sections with boundary clipping and auto-save triggering on resize.
+  - Auto-scrolling to selected commit nodes with glowing halo accent rings (`NODE_RADIUS + 3.0`).
+
+- **`Topological Layout Calculator` (`ui/commit_graph/layout.py`)**:
+  - Computes `(col, row)` coordinates and directional `Connector` segments (`PASS_THROUGH`, `FORK_DOWN`, `MERGE_UP`, `JOIN_TOP`).
+  - 10-color deterministic color persistence and slot recycling algorithm preventing lane explosion.
+- **`MergeDialog` (`ui/dialogs/merge_dialog.py`)**: 3-Way visual merge conflict resolution tool.
+  - Side-by-side Ours, Base, and Theirs diff viewers with block-level conflict acceptance and index staging.
+- **`RecoveryDialog` & `BusyOperationDialog` (`ui/dialogs/recovery_dialog.py`)**:
+  - Modal operation tracking with cancelable background tasks and progress feedback.
+  - Automated detection and recovery workflows for stale locks, interrupted rebases, detached HEADs, and reflogs.
 - **`DiffView` (`ui/diff_view/diff_widget.py`)**: Syntax-highlighted diff viewer.
   - Renders diff lines with line-number metadata and theme-adaptive light/dark mode contrast.
   - Provides hunk dropdown controls and whole-file / hunk staging action buttons.
   - Binary file detection and exception safety.
 - **`workers.py`**: Background thread runner using `QThread` and a thread-safe `_Dispatcher` `QObject` via `Qt.ConnectionType.QueuedConnection` to ensure callbacks execute strictly on the main GUI thread.
+
 
 ### 3.2 Core Git Engine (`src/wrench/core/`)
 - **`engine.py`**: Public façade exposing unified, typed functions. Converts all internal exceptions into typed `WrenchGitError` derivatives (`WrenchRepoNotFoundError`, `GitCommandError`, `StagingError`, etc.).
@@ -355,7 +375,8 @@ wrench/
 │       ├── implementation-plan.md
 │       ├── ui-planning.md
 │       ├── phase-1.md
-│       └── phase-1.5.md
+│       ├── phase-1.5.md
+│       └── phase-2.md
 ├── packaging/
 │   └── flatpak/                  # Flatpak packaging manifests
 ├── src/wrench/
@@ -381,10 +402,17 @@ wrench/
 │   │   ├── tabs/                 # Hybrid tab navigation system
 │   │   │   ├── tab_bar.py        # TabContainer & TabButton widgets
 │   │   │   ├── changes_tab.py    # Primary Changes workspace
-│   │   │   └── history_tab.py    # History / Commit graph skeleton
+│   │   │   └── history_tab.py    # History / Commit graph workspace
+│   │   ├── commit_graph/         # Topological DAG layout & custom table view
+│   │   │   ├── layout.py         # S-curve calculation & slot recycling
+│   │   │   └── graph_widget.py   # CommitGraphWidget & custom delegate
+│   │   ├── dialogs/              # Interactive dialogs & recovery panels
+│   │   │   ├── merge_dialog.py   # 3-Way visual merge conflict resolution tool
+│   │   │   └── recovery_dialog.py# Busy operation tracking & repo diagnostics
 │   │   ├── widgets/              # Reusable UI widgets
 │   │   │   └── branch_switcher.py# Interactive branch selector & popup
 │   │   └── diff_view/            # Syntax-highlighted diff viewer & staging
 │   └── watcher/                  # Inotify filesystem watching & debouncing
 └── tests/                        # Comprehensive test suite (unit, integration, UI)
 ```
+

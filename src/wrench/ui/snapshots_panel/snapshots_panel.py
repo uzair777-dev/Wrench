@@ -89,7 +89,16 @@ class SnapshotsPanel(QWidget):
 
     def set_repo(self, repo: RepoHandle | None) -> None:
         self._repo = repo
-        self.refresh()
+        if self.isVisible():
+            self.refresh()
+        else:
+            self._needs_refresh = True
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if getattr(self, "_needs_refresh", False):
+            self._needs_refresh = False
+            self.refresh()
 
     def refresh(self) -> None:
         if not self._repo:

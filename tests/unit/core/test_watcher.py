@@ -18,6 +18,7 @@ class TestRepoWatcher:
 
         watcher.status_changed.connect(lambda: events_received.append(True))
         watcher.start()
+        watcher.wait_until_ready()
 
         # Touch a file in the repo
         (repo_dir / "new.txt").write_text("hello\n")

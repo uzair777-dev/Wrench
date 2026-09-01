@@ -111,12 +111,20 @@ class MainWindow(QMainWindow):
         # Connect add category tab request from (+) menu
         self.tab_container.add_category_tab_requested.connect(self._on_add_category_tab)
 
-        # Connect auto-save signals on tab changes
+        # Connect auto-save signals on tab changes and UI layout adjustments
         self.tab_container.current_changed.connect(lambda *_: self._schedule_auto_save())
         self.tab_container.tabs_mutated.connect(lambda *_: self._schedule_auto_save())
         self.tab_container.orientation_changed.connect(lambda *_: self._schedule_auto_save())
+        self.changes_tab.splitter.splitterMoved.connect(lambda *_: self._schedule_auto_save())
+        self.history_tab.graph_widget.horizontalHeader().sectionResized.connect(
+            lambda *_: self._schedule_auto_save()
+        )
+        self.history_tab.content_splitter.splitterMoved.connect(
+            lambda *_: self._schedule_auto_save()
+        )
 
         # Menu bar
+
         self._create_menu_bar()
 
         # Status bar
@@ -271,7 +279,18 @@ class MainWindow(QMainWindow):
             if splitter_hex:
                 self.changes_tab.restore_splitter_state(splitter_hex)
 
+            # History tab column sizes and splitter position
+            hist_data = session_data.get("history_tab", {})
+            hist_header_hex = hist_data.get("header_hex")
+            if hist_header_hex:
+                self.history_tab.restore_header_state(hist_header_hex)
+
+            hist_splitter_hex = hist_data.get("splitter_hex")
+            if hist_splitter_hex:
+                self.history_tab.restore_splitter_state(hist_splitter_hex)
+
             # Active repository
+
             saved_repo_path = session_data.get("active_repo_path")
             self.changes_tab.load_repos(select_path=saved_repo_path)
 
@@ -389,6 +408,10 @@ class MainWindow(QMainWindow):
                 "changes_tab": {
                     "splitter_hex": self.changes_tab.save_splitter_state(),
                 },
+                "history_tab": {
+                    "header_hex": self.history_tab.save_header_state(),
+                    "splitter_hex": self.history_tab.save_splitter_state(),
+                },
                 "repos_state": self._repos_state,
             }
 
@@ -449,8 +472,16 @@ class MainWindow(QMainWindow):
             self._watcher.status_changed.connect(self.snapshots_panel.refresh)
             self._watcher.start()
 
-            status = engine.get_status(self._current_repo)
-            branch = status.branch_name or "detached"
+            status = getattr(self.changes_tab, "_current_status", None)
+            if status:
+                branch = status.branch_name or "detached"
+            elif self._current_repo.pygit2_repo.head_is_detached:
+                branch = "detached"
+            else:
+                try:
+                    branch = self._current_repo.pygit2_repo.head.shorthand
+                except Exception:
+                    branch = "main"
             self.status_label.setText(self.tr(f"Opened: {Path(path).name} ({branch})"))
 
             # Restore cached draft/selections if available for this repo

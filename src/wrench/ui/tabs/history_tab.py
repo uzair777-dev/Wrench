@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import logging
 
-from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtCore import QByteArray, Qt, QTimer, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QScrollBar,
     QSplitter,
     QToolButton,
     QVBoxLayout,
@@ -53,6 +54,11 @@ class HistoryTab(QWidget):
         self._debounce_timer.timeout.connect(self._on_search_debounced)
 
         self._init_ui()
+
+    @property
+    def graph_scrollbar(self) -> QScrollBar:
+        """Accesses the graph horizontal scrollbar from the graph widget."""
+        return self.graph_widget.graph_scrollbar
 
     def _init_ui(self) -> None:
         main_layout = QVBoxLayout(self)
@@ -169,9 +175,7 @@ class HistoryTab(QWidget):
             return
 
         try:
-            status = engine.get_status(self._repo)
-            is_unborn = not bool(status.head_sha)
-
+            is_unborn = self._repo.pygit2_repo.head_is_unborn
             if is_unborn:
                 self.graph_widget.setVisible(False)
                 self.empty_state_widget.setVisible(True)
@@ -201,7 +205,9 @@ class HistoryTab(QWidget):
         self.author_combo.addItem(self.tr("Author: All"))
 
         try:
-            commits = engine.get_log(self._repo, limit=100, all_refs=True)
+            commits = self.graph_widget._all_commits
+            if not commits:
+                commits = engine.get_log(self._repo, limit=50, all_refs=True)
             authors = sorted({c.author_name for c in commits if c.author_name})
             for a in authors:
                 self.author_combo.addItem(a)
@@ -251,3 +257,31 @@ class HistoryTab(QWidget):
             self.author_combo.setCurrentIndex(0)
         self.all_branches_cb.setChecked(True)
         self.graph_widget.apply_filter(None)
+
+    def save_header_state(self) -> str:
+        """Exports commit graph column sizes and header state as hex string."""
+        return self.graph_widget.horizontalHeader().saveState().toHex().data().decode("utf-8")
+
+    def restore_header_state(self, hex_str: str) -> None:
+        """Restores commit graph column sizes and header state from hex string."""
+        if hex_str:
+            try:
+                byte_array = QByteArray.fromHex(hex_str.encode("utf-8"))
+                self.graph_widget.horizontalHeader().restoreState(byte_array)
+                self.graph_widget._update_scrollbar_range()
+                self.graph_widget._update_graph_scrollbar_geom()
+            except Exception as e:
+                logger.warning("Could not restore history table header state: %s", e)
+
+    def save_splitter_state(self) -> str:
+        """Exports history content splitter position as hex string."""
+        return self.content_splitter.saveState().toHex().data().decode("utf-8")
+
+    def restore_splitter_state(self, hex_str: str) -> None:
+        """Restores history content splitter position from hex string."""
+        if hex_str:
+            try:
+                byte_array = QByteArray.fromHex(hex_str.encode("utf-8"))
+                self.content_splitter.restoreState(byte_array)
+            except Exception as e:
+                logger.warning("Could not restore history splitter state: %s", e)

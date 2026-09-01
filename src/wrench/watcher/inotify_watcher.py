@@ -8,6 +8,7 @@ Follows implementation plan §1013:
 """
 
 import logging
+import threading
 from pathlib import Path
 
 from PySide6.QtCore import QObject, Qt, QTimer, Signal, Slot
@@ -65,6 +66,10 @@ class RepoWatcher(QObject):
         self._repo_path = Path(repo_path)
         self._observer: Observer | None = None
         self._fallback: PollingFallback | None = None
+        self._is_stopped = False
+        self._lock = threading.Lock()
+        self._start_thread: threading.Thread | None = None
+        self._ready_event = threading.Event()
 
         if on_change:
             self.status_changed.connect(on_change)
@@ -93,23 +98,58 @@ class RepoWatcher(QObject):
         self._raw_event_signal.emit()
 
     def start(self) -> None:
-        try:
-            self._observer = Observer()
-            handler = _WatchdogHandler(self._on_watchdog_event)
-            self._observer.schedule(handler, str(self._repo_path), recursive=True)
-            self._observer.start()
-            logger.debug("[watcher] Started watchdog inotify observer for %s", self._repo_path)
-        except OSError as e:
-            logger.warning(
-                "Inotify observer failed (%s); falling back to polling for %s",
-                e,
-                self._repo_path,
-            )
-            self._fallback = PollingFallback(self._repo_path, self.status_changed)
-            self._fallback.start()
+        """Starts the filesystem observer in a background daemon thread to avoid blocking UI."""
+        with self._lock:
+            self._is_stopped = False
+            self._ready_event.clear()
+
+        def _async_start():
+            try:
+                observer = Observer()
+                handler = _WatchdogHandler(self._on_watchdog_event)
+                observer.schedule(handler, str(self._repo_path), recursive=True)
+                with self._lock:
+                    if self._is_stopped:
+                        return
+                    self._observer = observer
+                    self._observer.start()
+                logger.debug(
+                    "[watcher] Started watchdog inotify observer for %s",
+                    self._repo_path,
+                )
+            except (OSError, Exception) as e:
+                with self._lock:
+                    if self._is_stopped:
+                        return
+                logger.warning(
+                    "Inotify observer failed (%s); falling back to polling for %s",
+                    e,
+                    self._repo_path,
+                )
+                fallback = PollingFallback(self._repo_path, self.status_changed)
+                with self._lock:
+                    if self._is_stopped:
+                        return
+                    self._fallback = fallback
+                    self._fallback.start()
+            finally:
+                self._ready_event.set()
+
+        self._start_thread = threading.Thread(
+            target=_async_start,
+            name=f"RepoWatcher-{self._repo_path.name}",
+            daemon=True,
+        )
+        self._start_thread.start()
+
+    def wait_until_ready(self, timeout: float = 3.0) -> bool:
+        """Waits until the background watcher initialization completes."""
+        return self._ready_event.wait(timeout)
 
     @Slot()
     def stop(self) -> None:
+        with self._lock:
+            self._is_stopped = True
         self._debounce_timer.stop()
         if self._observer:
             try:

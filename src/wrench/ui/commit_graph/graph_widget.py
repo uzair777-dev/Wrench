@@ -22,6 +22,7 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import (
     QHeaderView,
     QMenu,
+    QScrollBar,
     QStyle,
     QStyledItemDelegate,
     QTableView,
@@ -32,6 +33,7 @@ from wrench.core import engine
 from wrench.core.engine import Commit, LogFilter, RepoHandle
 from wrench.ui.commit_graph.layout import (
     GRAPH_COLORS,
+    ConnectorKind,
     GraphRow,
     compute_graph_layout,
 )
@@ -59,25 +61,32 @@ class GraphItemDelegate(QStyledItemDelegate):
 
         painter.save()
         painter.setRenderHint(QPainter.Antialiasing, True)
+        painter.setClipRect(option.rect)
+
+        graph_scroll_x = getattr(self.parent(), "_graph_scroll_x", 0)
 
         rect = option.rect
-        x_offset = rect.x() + 10
+        x_offset = rect.x() + 10 - graph_scroll_x
         y_center = rect.y() + rect.height() / 2.0
         y_top = float(rect.y())
         y_bottom = float(rect.y() + rect.height())
 
         lane_idx = row_data.lane_index
-        node_color = QColor(GRAPH_COLORS[lane_idx % len(GRAPH_COLORS)])
+        node_color = QColor(row_data.node_color)
 
         # 1. Paint vertical pass-through rails for other active lanes
-        for active_lane in row_data.active_lanes:
+        active_lane_colors = getattr(row_data, "active_lane_colors", None) or [
+            (lane_num, GRAPH_COLORS[lane_num % len(GRAPH_COLORS)])
+            for lane_num in row_data.active_lanes
+        ]
+        for active_lane, color_hex in active_lane_colors:
             if active_lane != lane_idx:
-                rail_color = QColor(GRAPH_COLORS[active_lane % len(GRAPH_COLORS)])
+                rail_color = QColor(color_hex)
                 painter.setPen(QPen(rail_color, 2.0))
                 lx = x_offset + active_lane * LANE_WIDTH
                 painter.drawLine(QPointF(lx, y_top), QPointF(lx, y_bottom))
 
-        # 2. Paint incoming/outgoing connectors (curves)
+        # 2. Paint incoming/outgoing connectors (directional smooth cubic S-curves)
         for conn in row_data.connectors:
             conn_color = QColor(conn.color)
             painter.setPen(QPen(conn_color, 2.0))
@@ -85,25 +94,64 @@ class GraphItemDelegate(QStyledItemDelegate):
 
             x_from = x_offset + conn.from_lane * LANE_WIDTH
             x_to = x_offset + conn.to_lane * LANE_WIDTH
+            conn_kind = getattr(conn, "kind", ConnectorKind.MERGE_UP)
 
             path = QPainterPath()
-            path.moveTo(x_from, y_bottom)
-            # Cubic bezier curve connecting from bottom of from_lane into center of to_lane
-            c1 = QPointF(x_from, y_center + (y_bottom - y_center) * 0.5)
-            c2 = QPointF(x_to, y_center)
-            path.cubicTo(c1, c2, QPointF(x_to, y_center))
+
+            if conn_kind == ConnectorKind.FORK_DOWN:
+                # Leaves node at y_center downward, enters parent rail at y_bottom
+                path.moveTo(x_from, y_center)
+                dy = y_bottom - y_center
+                c1 = QPointF(x_from, y_center + dy * 0.5)
+                c2 = QPointF(x_to, y_bottom - dy * 0.5)
+                path.cubicTo(c1, c2, QPointF(x_to, y_bottom))
+            elif conn_kind == ConnectorKind.JOIN_TOP:
+                # Enters from y_top downward, joins commit node at y_center
+                path.moveTo(x_from, y_top)
+                dy = y_center - y_top
+                c1 = QPointF(x_from, y_top + dy * 0.5)
+                c2 = QPointF(x_to, y_center - dy * 0.5)
+                path.cubicTo(c1, c2, QPointF(x_to, y_center))
+            else:  # MERGE_UP
+                # Leaves branch rail at y_bottom upward, enters merge node at y_center
+                path.moveTo(x_from, y_bottom)
+                dy = y_bottom - y_center
+                c1 = QPointF(x_from, y_bottom - dy * 0.5)
+                c2 = QPointF(x_to, y_center + dy * 0.5)
+                path.cubicTo(c1, c2, QPointF(x_to, y_center))
+
             painter.drawPath(path)
 
         # 3. Paint top-half and bottom-half rail for the occupied lane
-        # Top-half rail (connects to commit row above if lane was active)
         painter.setPen(QPen(node_color, 2.0))
         node_x = x_offset + lane_idx * LANE_WIDTH
-        painter.drawLine(QPointF(node_x, y_top), QPointF(node_x, y_center))
-        # Bottom-half rail if this lane continues to parents
-        if row_data.commit.parent_shas:
-            painter.drawLine(QPointF(node_x, y_center), QPointF(node_x, y_bottom))
 
-        # 4. Paint commit node circle
+        # Top-half rail (only if this lane was active/expected from row above)
+        if getattr(row_data, "has_top_rail", True):
+            painter.drawLine(QPointF(node_x, y_top), QPointF(node_x, y_center))
+
+        # Bottom-half rail (if this lane continues straight down to parents)
+        if row_data.commit.parent_shas:
+            has_deflecting_fork = any(
+                conn.from_lane == lane_idx
+                and conn.to_lane != lane_idx
+                and getattr(conn, "kind", ConnectorKind.MERGE_UP) == ConnectorKind.FORK_DOWN
+                for conn in row_data.connectors
+            )
+            if not has_deflecting_fork:
+                painter.drawLine(QPointF(node_x, y_center), QPointF(node_x, y_bottom))
+
+        is_selected = bool(option.state & QStyle.StateFlag.State_Selected)
+
+        # 4. Paint selected node halo glow
+        if is_selected:
+            halo_r = NODE_RADIUS + 3.0
+            halo_brush = QBrush(QColor(node_color.red(), node_color.green(), node_color.blue(), 80))
+            painter.setPen(QPen(QColor(255, 255, 255, 220), 1.8))
+            painter.setBrush(halo_brush)
+            painter.drawEllipse(QPointF(node_x, y_center), halo_r, halo_r)
+
+        # 5. Paint commit node circle
         painter.setPen(QPen(node_color.darker(120), 1.5))
         painter.setBrush(QBrush(node_color))
 
@@ -113,6 +161,10 @@ class GraphItemDelegate(QStyledItemDelegate):
 
         if is_merge:
             # Draw inner white dot for merge commits
+            painter.setBrush(QBrush(Qt.white))
+            painter.drawEllipse(QPointF(node_x, y_center), 1.5, 1.5)
+        elif is_selected:
+            # High-contrast center dot for selected regular commit
             painter.setBrush(QBrush(Qt.white))
             painter.drawEllipse(QPointF(node_x, y_center), 1.5, 1.5)
 
@@ -136,11 +188,17 @@ class RefLabelDelegate(QStyledItemDelegate):
 
         painter.save()
         painter.setRenderHint(QPainter.Antialiasing, True)
+        painter.setClipRect(option.rect)
 
-        # Draw selection background if selected
+        # Draw selection background or solid row background to prevent bleed
         is_selected = bool(option.state & QStyle.StateFlag.State_Selected)
         if is_selected:
             painter.fillRect(option.rect, option.palette.highlight())
+        else:
+            bg_brush = (
+                option.palette.alternateBase() if (index.row() % 2 == 1) else option.palette.base()
+            )
+            painter.fillRect(option.rect, bg_brush)
 
         rect = option.rect
         x = rect.x() + 4
@@ -227,6 +285,34 @@ class CommitTableModel(QAbstractTableModel):
         if role == Qt.UserRole:
             return row
 
+        if role == Qt.ToolTipRole:
+
+            if col == 0:
+                msg_first = row.commit.message.splitlines()[0] if row.commit.message else ""
+                return (
+                    f"{msg_first} ({row.commit.sha[:8]})"
+                    if msg_first
+                    else (row.commit.sha[:8] if row.commit.sha else None)
+                )
+            elif col == 1:
+                if not row.commit.message:
+                    return None
+                msg = row.commit.message.strip()
+                if len(msg) > 2000:
+                    msg = msg[:2000] + "\n\n... [message truncated]"
+                if row.ref_labels:
+                    badges = " ".join(f"[{lbl.name}]" for lbl in row.ref_labels)
+                    return f"{badges}\n\n{msg}"
+                return msg
+            elif col == 2:
+                if row.commit.author_name and row.commit.author_email:
+                    return f"{row.commit.author_name} <{row.commit.author_email}>"
+                return row.commit.author_name or None
+            elif col == 3:
+                return f"Committed: {row.commit.author_date}" if row.commit.author_date else None
+            elif col == 4:
+                return f"Commit SHA: {row.commit.sha}" if row.commit.sha else None
+
         if role == Qt.DisplayRole:
             if col == 0:
                 return ""
@@ -251,6 +337,7 @@ class CommitGraphWidget(QTableView):
     merge_requested = Signal(str)  # emits source sha/ref
     create_branch_requested = Signal(str)
     create_tag_requested = Signal(str)
+    graph_scroll_changed = Signal(int, int)  # emits (current_scroll_x, max_scroll_x)
 
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
@@ -262,6 +349,10 @@ class CommitGraphWidget(QTableView):
         self._has_more: bool = True
         self._offset: int = 0
         self._batch_size: int = 100
+        self._is_initial_load: bool = True
+
+        self._graph_scroll_x: int = 0
+        self._max_graph_scroll_x: int = 0
 
         self._model = CommitTableModel(self)
         self.setModel(self._model)
@@ -273,6 +364,11 @@ class CommitGraphWidget(QTableView):
 
         self._init_ui()
 
+    @property
+    def graph_scrollbar(self) -> QScrollBar:
+        """Exposes the internal graph column horizontal scrollbar."""
+        return self._graph_scrollbar
+
     def _init_ui(self):
         self.setSelectionBehavior(QTableView.SelectRows)
         self.setSelectionMode(QTableView.SingleSelection)
@@ -280,22 +376,137 @@ class CommitGraphWidget(QTableView):
         self.verticalHeader().setVisible(False)
         self.setShowGrid(False)
         self.setAlternatingRowColors(True)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+
+        # Graph column dedicated scrollbar (sharing exact same style as main horizontal scrollbar)
+        self._graph_scrollbar = QScrollBar(Qt.Horizontal, self)
+        bar_h = self.horizontalScrollBar().sizeHint().height() or 12
+        self._graph_scrollbar.setFixedHeight(bar_h)
+        self._graph_scrollbar.valueChanged.connect(self.set_graph_scroll_x)
+        self._graph_scrollbar.setToolTip(self.tr("Graph lane horizontal pan (or Shift+Scroll)"))
+        self._graph_scrollbar.setVisible(False)
 
         header = self.horizontalHeader()
+        header.setMinimumSectionSize(60)
         header.setSectionResizeMode(0, QHeaderView.Interactive)
-        header.resizeSection(0, 80)
-        header.setSectionResizeMode(1, QHeaderView.Stretch)
+        header.resizeSection(0, 100)
+        header.setSectionResizeMode(1, QHeaderView.Interactive)
+        header.resizeSection(1, 300)
         header.setSectionResizeMode(2, QHeaderView.Interactive)
         header.resizeSection(2, 140)
         header.setSectionResizeMode(3, QHeaderView.Interactive)
         header.resizeSection(3, 140)
         header.setSectionResizeMode(4, QHeaderView.Interactive)
         header.resizeSection(4, 90)
+        header.setStretchLastSection(False)
 
+        header.sectionResized.connect(self._on_section_resized)
         self.selectionModel().selectionChanged.connect(self._on_selection_changed)
         self.verticalScrollBar().valueChanged.connect(self._on_scroll)
+        self.verticalScrollBar().valueChanged.connect(self._update_graph_scrollbar_geom)
+        self.horizontalScrollBar().valueChanged.connect(self._update_graph_scrollbar_geom)
         self.setContextMenuPolicy(Qt.CustomContextMenu)
         self.customContextMenuRequested.connect(self._show_context_menu)
+
+    def bind_horizontal_scrollbar(self, scrollbar: QScrollBar) -> None:
+        """Backwards compatibility hook for external scrollbar binding."""
+        scrollbar.valueChanged.connect(self.set_graph_scroll_x)
+        self.graph_scroll_changed.connect(
+            lambda cur, max_val: (
+                scrollbar.blockSignals(True),
+                scrollbar.setRange(0, max_val),
+                scrollbar.setValue(cur),
+                scrollbar.setVisible(max_val > 0),
+                scrollbar.blockSignals(False),
+            )
+        )
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._update_graph_scrollbar_geom()
+
+    def _update_graph_scrollbar_geom(self) -> None:
+        if not hasattr(self, "_graph_scrollbar") or not self._graph_scrollbar:
+            return
+        col_0_width = self.horizontalHeader().sectionSize(0)
+        col_0_x = self.horizontalHeader().sectionPosition(0) - self.horizontalScrollBar().value()
+
+        h_scroll_h = (
+            self.horizontalScrollBar().height() if self.horizontalScrollBar().isVisible() else 0
+        )
+        v_scroll_w = self.verticalScrollBar().width() if self.verticalScrollBar().isVisible() else 0
+
+        bar_h = self.horizontalScrollBar().sizeHint().height() or 12
+        self._graph_scrollbar.setFixedHeight(bar_h)
+        y = max(0, self.height() - h_scroll_h - bar_h)
+
+        actual_x = max(0, col_0_x)
+        max_w = self.width() - v_scroll_w - actual_x
+        actual_w = max(0, min(col_0_width - (actual_x - col_0_x), max_w))
+        self._graph_scrollbar.setGeometry(actual_x, y, actual_w, bar_h)
+        self._graph_scrollbar.setVisible(self._max_graph_scroll_x > 0 and actual_w > 10)
+        self._graph_scrollbar.raise_()
+
+    def set_graph_scroll_x(self, val: int) -> None:
+        """Sets horizontal scroll offset in pixels and repaints graph column."""
+        clamped = max(0, min(val, self._max_graph_scroll_x))
+        if clamped != self._graph_scroll_x:
+            self._graph_scroll_x = clamped
+            if self._graph_scrollbar.value() != clamped:
+                self._graph_scrollbar.blockSignals(True)
+                if self._graph_scrollbar.maximum() != self._max_graph_scroll_x:
+                    self._graph_scrollbar.setRange(0, self._max_graph_scroll_x)
+                self._graph_scrollbar.setValue(clamped)
+                self._graph_scrollbar.blockSignals(False)
+            self.viewport().update()
+            self.graph_scroll_changed.emit(self._graph_scroll_x, self._max_graph_scroll_x)
+
+    def _on_section_resized(self, logical_index: int, old_size: int, new_size: int) -> None:
+        if logical_index == 0:
+            self._update_scrollbar_range()
+        self._update_graph_scrollbar_geom()
+
+    def _update_scrollbar_range(self) -> None:
+        col_0_width = self.horizontalHeader().sectionSize(0)
+        if not self._model._rows:
+            self._max_graph_scroll_x = 0
+        else:
+            max_lane = max(
+                (max(r.active_lanes, default=0) for r in self._model._rows),
+                default=0,
+            )
+            max_graph_width = 10 + (max_lane + 1) * LANE_WIDTH + 30
+            self._max_graph_scroll_x = max(0, max_graph_width - col_0_width)
+
+        self._graph_scroll_x = max(0, min(self._graph_scroll_x, self._max_graph_scroll_x))
+
+        self._graph_scrollbar.blockSignals(True)
+        self._graph_scrollbar.setRange(0, self._max_graph_scroll_x)
+        self._graph_scrollbar.setValue(self._graph_scroll_x)
+        self._graph_scrollbar.setPageStep(col_0_width)
+        self._graph_scrollbar.setSingleStep(LANE_WIDTH)
+        self._graph_scrollbar.blockSignals(False)
+
+        self._update_graph_scrollbar_geom()
+        self.graph_scroll_changed.emit(self._graph_scroll_x, self._max_graph_scroll_x)
+
+    def _auto_scroll_to_node(self, lane_index: int) -> None:
+        """Pans the graph horizontally with hysteresis deadzone to make node visible."""
+        col_width = self.horizontalHeader().sectionSize(0)
+        node_x = 10 + lane_index * LANE_WIDTH
+        screen_x = node_x - self._graph_scroll_x
+
+        left_threshold = 24
+        right_threshold = col_width - 32
+
+        target_scroll = self._graph_scroll_x
+        if screen_x > right_threshold:
+            target_scroll = node_x - (col_width // 2)
+        elif screen_x < left_threshold:
+            target_scroll = max(0, node_x - 32)
+
+        self.set_graph_scroll_x(target_scroll)
 
     def set_repo(self, repo: RepoHandle | None):
         self._repo = repo
@@ -311,6 +522,7 @@ class CommitGraphWidget(QTableView):
         self.reload_commits()
 
     def reload_commits(self):
+        self._is_initial_load = True
         self._all_commits = []
         self._offset = 0
         self._has_more = True
@@ -321,6 +533,9 @@ class CommitGraphWidget(QTableView):
             return
 
         self._is_loading_batch = True
+        scroll_pos = self.verticalScrollBar().value()
+        selected_rows = [i.row() for i in self.selectionModel().selectedRows()]
+
         try:
             new_commits = engine.get_log(
                 self._repo,
@@ -338,14 +553,21 @@ class CommitGraphWidget(QTableView):
             ref_labels = engine.get_ref_labels(self._repo)
             rows = compute_graph_layout(self._all_commits, ref_labels)
             self._model.set_rows(rows)
+            self._update_scrollbar_range()
 
-            # Adjust column 0 width based on maximum lanes
-            max_lanes = max((r.lane_index for r in rows), default=0) + 1
-            calculated_width = max(60, 20 + max_lanes * LANE_WIDTH)
-            self.horizontalHeader().resizeSection(0, calculated_width)
-
-            if rows and not self.selectionModel().hasSelection():
-                self.selectRow(0)
+            if self._is_initial_load:
+                self._is_initial_load = False
+                if rows and not self.selectionModel().hasSelection():
+                    self.selectRow(0)
+            else:
+                # Maintain smooth continuous scrolling and preserve selection across batch fetches
+                self.verticalScrollBar().setValue(scroll_pos)
+                if selected_rows:
+                    target_row = selected_rows[0]
+                    if target_row < len(rows):
+                        self.selectionModel().blockSignals(True)
+                        self.selectRow(target_row)
+                        self.selectionModel().blockSignals(False)
 
         except Exception as e:
             logger.exception("Failed to fetch commit batch: %s", e)
@@ -357,6 +579,23 @@ class CommitGraphWidget(QTableView):
         if max_val > 0 and value >= max_val - 20:
             self._fetch_next_batch()
 
+    def wheelEvent(self, event):
+        """Allows horizontal Shift+Wheel or trackpad horizontal pan over Column 0."""
+        cursor_col = self.columnAt(int(event.position().x()))
+        is_over_graph = cursor_col == 0
+
+        is_shift = bool(event.modifiers() & Qt.ShiftModifier)
+        h_delta = event.pixelDelta().x() if event.pixelDelta().x() != 0 else event.angleDelta().x()
+        v_delta = event.pixelDelta().y() if event.pixelDelta().y() != 0 else event.angleDelta().y()
+
+        if is_over_graph and (is_shift or h_delta != 0) and self._max_graph_scroll_x > 0:
+            step = -h_delta if h_delta != 0 else -v_delta
+            self.set_graph_scroll_x(self._graph_scroll_x + step // 2)
+            event.accept()
+            return
+
+        super().wheelEvent(event)
+
     def _on_selection_changed(self):
         selected_indexes = self.selectionModel().selectedRows()
         if not selected_indexes:
@@ -365,8 +604,9 @@ class CommitGraphWidget(QTableView):
 
         row_idx = selected_indexes[0].row()
         if 0 <= row_idx < len(self._model._rows):
-            commit = self._model._rows[row_idx].commit
-            self.commit_selected.emit(commit)
+            row_data = self._model._rows[row_idx]
+            self.commit_selected.emit(row_data.commit)
+            self._auto_scroll_to_node(row_data.lane_index)
 
     def _show_context_menu(self, pos):
         index = self.indexAt(pos)

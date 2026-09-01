@@ -319,8 +319,16 @@ def get_ref_labels(repo: RepoHandle) -> dict[str, list[RefLabel]]:
             tag_name = ref_name.removeprefix("refs/tags/")
             ref = r.references[ref_name]
             try:
-                target_commit = ref.peel(pygit2.Commit)
-                add_label(str(target_commit.id), RefLabel(name=tag_name, kind="tag"))
+                obj = r.get(ref.target)
+                if isinstance(obj, pygit2.Commit):
+                    add_label(str(obj.id), RefLabel(name=tag_name, kind="tag"))
+                elif isinstance(obj, pygit2.Tag):
+                    peeled = obj.peel(pygit2.Commit)
+                    add_label(str(peeled.id), RefLabel(name=tag_name, kind="tag"))
+                else:
+                    target_commit = ref.peel(pygit2.Commit)
+                    add_label(str(target_commit.id), RefLabel(name=tag_name, kind="tag"))
+
             except Exception:
                 pass
 
@@ -341,7 +349,7 @@ def get_ref_labels(repo: RepoHandle) -> dict[str, list[RefLabel]]:
 def iter_commits(repo: RepoHandle, *, all_refs: bool = False) -> Iterator[Commit]:
     """Yield commits in topological/time order.
 
-    When all_refs=True, seeds from sorted local branches, tags, and HEAD for determinism.
+    When all_refs=True, seeds from local branches and HEAD for fast, deterministic DAG traversal.
     """
     r = repo.pygit2_repo
     if r.head_is_unborn:
@@ -352,22 +360,11 @@ def iter_commits(repo: RepoHandle, *, all_refs: bool = False) -> Iterator[Commit
     if all_refs:
         # Push HEAD first
         pushed_oids: set[pygit2.Oid] = {r.head.target}
-        # Push sorted branch targets
-        branch_refs = sorted([ref for ref in r.references if ref.startswith("refs/heads/")])
-        for b_ref in branch_refs:
+        # Push all local branches
+        for branch_name in r.branches.local:
             try:
-                target = r.references[b_ref].peel(pygit2.Commit).id
-                if target not in pushed_oids:
-                    walker.push(target)
-                    pushed_oids.add(target)
-            except Exception:
-                pass
-
-        # Push sorted tag targets
-        tag_refs = sorted([ref for ref in r.references if ref.startswith("refs/tags/")])
-        for t_ref in tag_refs:
-            try:
-                target = r.references[t_ref].peel(pygit2.Commit).id
+                b = r.branches.local[branch_name]
+                target = b.peel(pygit2.Commit).id
                 if target not in pushed_oids:
                     walker.push(target)
                     pushed_oids.add(target)

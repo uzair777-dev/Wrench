@@ -1,7 +1,11 @@
 """Unit tests for pure Python commit graph layout (layout.py, Phase 2)."""
 
 from wrench.core.engine import Commit, LogFilter
-from wrench.ui.commit_graph.layout import compute_graph_layout, matches_filter
+from wrench.ui.commit_graph.layout import (
+    ConnectorKind,
+    compute_graph_layout,
+    matches_filter,
+)
 
 
 def _make_commit(
@@ -51,6 +55,10 @@ class TestGraphLayout:
         assert rows[0].lane_index == 0
         assert len(rows[0].connectors) == 1  # connector to secondary parent c2
         assert rows[0].connectors[0].to_lane == 0
+        assert rows[0].connectors[0].kind == ConnectorKind.MERGE_UP
+
+        # At c2 (in lane 1 connecting to parent c1 in lane 0), it emits a FORK_DOWN connector
+        assert any(c.kind == ConnectorKind.FORK_DOWN for c in rows[2].connectors)
 
         # After merge, at c1 both lanes converge
         assert rows[3].lane_index == 0
@@ -98,8 +106,28 @@ class TestGraphLayout:
             assert full_rows[i].lane_index == partial_rows[i].lane_index
             assert full_rows[i].active_lanes == partial_rows[i].active_lanes
 
+    def test_has_top_rail_and_color_persistence(self):
+        # c3 (branch tip in lane 0) -> c2 (in lane 0) -> c1 (in lane 0)
+        commits = [
+            _make_commit("c3", ["c2"]),
+            _make_commit("c2", ["c1"]),
+            _make_commit("c1", []),
+        ]
+        rows = compute_graph_layout(commits)
+        # Topmost commit has no child above it -> has_top_rail is False
+        assert rows[0].has_top_rail is False
+        # Intermediate commit was expected by c3 -> has_top_rail is True
+        assert rows[1].has_top_rail is True
+        assert rows[2].has_top_rail is True
+
+        # Node color and active lane colors are populated
+        assert rows[0].node_color == "#4C9EEB"
+        assert len(rows[0].active_lane_colors) == 1
+        assert rows[0].active_lane_colors[0] == (0, "#4C9EEB")
+
 
 class TestMatchesFilter:
+
     def test_matches_author_and_message(self):
         c = _make_commit(
             "c1", [], msg="Fix login issue", author="Uzair", date="2026-08-30T10:00:00Z"

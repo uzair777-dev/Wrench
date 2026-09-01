@@ -7,6 +7,7 @@ a list of commits without any Qt dependencies. Fully testable without a display 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from enum import Enum
 
 from wrench.core.engine import Commit, LogFilter, RefLabel
 
@@ -24,6 +25,14 @@ GRAPH_COLORS = [
 ]
 
 
+class ConnectorKind(str, Enum):
+    """Directional flow of a branch connector in the commit DAG."""
+
+    FORK_DOWN = "fork_down"  # Node at y_center curving down to parent at y_bottom
+    MERGE_UP = "merge_up"  # Branch from y_bottom curving up into merge node at y_center
+    JOIN_TOP = "join_top"  # Branch from y_top curving down into node at y_center
+
+
 @dataclass
 class Lane:
     expected_sha: str | None
@@ -36,6 +45,7 @@ class Connector:
     from_lane: int
     to_lane: int
     color: str
+    kind: ConnectorKind = ConnectorKind.MERGE_UP
 
 
 @dataclass
@@ -43,6 +53,9 @@ class GraphRow:
     commit: Commit
     lane_index: int
     active_lanes: list[int]
+    active_lane_colors: list[tuple[int, str]] = field(default_factory=list)
+    node_color: str = GRAPH_COLORS[0]
+    has_top_rail: bool = False
     connectors: list[Connector] = field(default_factory=list)
     ref_labels: list[RefLabel] = field(default_factory=list)
 
@@ -86,6 +99,8 @@ def compute_graph_layout(
             if lane is not None and lane.expected_sha == commit.sha
         ]
 
+        has_top_rail = bool(matching_indices)
+
         if matching_indices:
             occupied_lane = matching_indices[0]
             # Close any duplicate lanes expecting the same SHA, emit connectors into occupied lane
@@ -97,6 +112,7 @@ def compute_graph_layout(
                             from_lane=dup_idx,
                             to_lane=occupied_lane,
                             color=dup_lane.color,
+                            kind=ConnectorKind.JOIN_TOP,
                         )
                     )
                     lanes[dup_idx] = None
@@ -107,8 +123,9 @@ def compute_graph_layout(
         curr_lane = lanes[occupied_lane]
         curr_lane_color = curr_lane.color if curr_lane is not None else GRAPH_COLORS[0]
 
-        # Record active lanes for this row BEFORE processing parents for next rows
+        # Record active lanes and exact colors for this row BEFORE processing parents for next rows
         active_lanes_for_row = [i for i, lane in enumerate(lanes) if lane is not None]
+        active_lane_colors = [(i, lane.color) for i, lane in enumerate(lanes) if lane is not None]
 
         # R3: Process parents
         parents = commit.parent_shas
@@ -130,6 +147,7 @@ def compute_graph_layout(
                         from_lane=occupied_lane,
                         to_lane=target_lane,
                         color=curr_lane_color,
+                        kind=ConnectorKind.FORK_DOWN,
                     )
                 )
                 lanes[occupied_lane] = None
@@ -155,6 +173,7 @@ def compute_graph_layout(
                             from_lane=target_lane,
                             to_lane=occupied_lane,
                             color=target_color,
+                            kind=ConnectorKind.MERGE_UP,
                         )
                     )
                 else:
@@ -165,6 +184,7 @@ def compute_graph_layout(
                             from_lane=new_idx,
                             to_lane=occupied_lane,
                             color=new_color,
+                            kind=ConnectorKind.MERGE_UP,
                         )
                     )
 
@@ -173,6 +193,9 @@ def compute_graph_layout(
                 commit=commit,
                 lane_index=occupied_lane,
                 active_lanes=active_lanes_for_row,
+                active_lane_colors=active_lane_colors,
+                node_color=curr_lane_color,
+                has_top_rail=has_top_rail,
                 connectors=connectors,
                 ref_labels=ref_map.get(commit.sha, []),
             )

@@ -27,23 +27,19 @@ Wrench is engineered around four non-negotiable architectural tenets:
    - Heavy write operations, network calls, and repository clones run in dedicated background threads (`ui.workers.run_in_background`).
    - Callback execution is marshalled back to the main GUI thread using Qt queued signals (`_Dispatcher`) to avoid thread race conditions and UI crashes.
 4. **Local-First & Non-Destructive Safety**:
-   - Every potentially destructive action is protected by safety systems (automatic pre-operation snapshots, stale lock recovery, and reflog recovery).
-
----
-
-## 2. System Component Diagram
-
-```mermaid
+   - Every potentially destructive action is protected by safety```mermaid
 graph TD
     subgraph UI ["UI Layer (PySide6)"]
         MW[MainWindow]
         TC[TabContainer / TabButton]
         CT[ChangesTab]
-        HT[HistoryTab - Skeleton]
+        HT[HistoryTab - Commit Graph]
         BW[BranchSwitcherWidget]
         DV[DiffView]
-        CG[CommitGraph - Phase 2]
-        MT[MergeTool - Phase 2]
+        CG[CommitGraphWidget]
+        MT[MergeDialog]
+        RD[RemotesDialog - Phase 3]
+        BD[BusyOperationDialog - Phase 3]
         FP[ForgePanel - Phase 4]
         WKR[Worker Thread Pool & Dispatcher]
     end
@@ -52,11 +48,13 @@ graph TD
         ENG[engine.py Façade]
         READ[read_ops.py - pygit2]
         WRITE[write_ops.py - git subprocess]
+        STREAM[run_git_streaming - pipe drainer]
         STG[Staging Patch Synthesizer]
         SNP[snapshots.py]
         LCK[lock_recovery.py]
         RFL[reflog.py]
         IDN[identity.py]
+        SSH[ssh_agent.py - platform guard]
     end
 
     subgraph Watcher ["Filesystem Watcher (src/wrench/watcher)"]
@@ -69,11 +67,12 @@ graph TD
         REG[repo_registry.py]
         SET[settings.py]
         SNPREG[snapshots.py]
+        FACC[forge_accounts.py]
     end
 
     subgraph Credentials ["Credentials & Forges"]
-        CRED[credentials.backend]
-        SS[Secret Service D-Bus]
+        CRED[credentials.get_backend()]
+        SS[SecretServiceBackend D-Bus]
         GCH[git-credential-wrench]
         FORGE[forge.capability / adapters]
     end
@@ -84,6 +83,8 @@ graph TD
     CT --> BW
     CT --> DV
     MW --> ENG
+    MW --> RD
+    MW --> BD
     CT --> ENG
     HT --> ENG
     BW --> ENG
@@ -92,6 +93,8 @@ graph TD
     MW --> SET
     ENG --> READ
     ENG --> WRITE
+    WRITE --> STREAM
+    WRITE --> SSH
     ENG --> STG
     ENG --> SNP
     ENG --> LCK
@@ -101,7 +104,8 @@ graph TD
     SNP --> DB
     REG --> DB
     SET --> DB
-    WRITE --> GCH
+    FACC --> DB
+    GCH --> FACC
     GCH --> CRED
     CRED --> SS
     WKR -.->|Main-Thread Queued Signal| MW
@@ -113,13 +117,28 @@ graph TD
 
 ### 3.1 UI Layer (`src/wrench/ui/`)
 - **`MainWindow` (`ui/main_window.py`)**: Root `QMainWindow` and lifecycle coordinator.
-  - Native `QMenuBar` with **File**, **Edit**, **View**, and **Help** menus.
+  - Native `QMenuBar` with **File**, **Edit**, **View**, **Repository**, and **Help** menus.
+  - **Repository Menu (Phase 3)**: Exposes `Fetch` (`Ctrl+Shift+F`), `Pull` (`Ctrl+Shift+L`), `Push` (`Ctrl+Shift+U`), and `Remotes…` actions wired through `run_in_background` with `BusyOperationDialog` tracking.
+  - **Error Routing Engine (Phase 3)**: Routes remote operation failures to actionable dialogs:
+    - `AuthRequiredError`: Guides users when credentials are missing for a remote host.
+    - `AuthFailedError`: Informs users when stored credentials were rejected by the remote.
+    - `PushRejectedError`: Offers actionable choices between "Fetch & Retry", "Force Push (with lease)", and "Cancel".
+    - `MergeRequiredError`: Offers actionable choices between "Merge" and "Rebase" using Phase 2 tools.
+    - `RemoteNotFoundError`: Prompts and opens the Remotes configuration dialog.
+  - **Asynchronous Clone (Phase 3)**: Routes repository cloning through `run_in_background` with cancellable `BusyOperationDialog` and atomic filesystem placement.
   - Hosts the central `TabContainer`.
   - **GUI Session Persistence Engine**: Runs a continuous 1000ms debounced auto-save timer (`_auto_save_timer`) coalescing window geometry, splitter ratios, tab list/order/pinning, active repo, and per-repo selections/drafts into `app_settings` key `ui.session_state`.
   - Synchronous flush on `closeEvent(event)` ensures state is never lost on shutdown or unexpected termination.
   - Startup restoration guard `_is_restoring` prevents initialization noise from wiping saved drafts and checkbox selections.
   - Enforces quit guards when unsaved commit message drafts exist or background workers are busy.
   - Owns the active `RepoHandle` and `RepoWatcher`.
+- **`RemotesDialog` (`ui/dialogs/remotes_dialog.py`)**: Repository remotes management interface (Phase 3).
+  - Displays all configured remotes with columns: `Name`, `URL`, `Last Fetch`, and `Reachability`.
+  - Color-coded reachability indicators: `● Reachable` (green), `● Unreachable` (red), `● Unknown` (gray).
+  - Modal operations for `Add Remote` (with name regex & URL validation), `Edit Remote`, `Remove Remote` (with destructive confirmation), and `Refresh Status` (reachability probe).
+- **`BusyOperationDialog` (`ui/recovery/busy_dialog.py`)**: Progress & cancellation modal dialog (Phase 3).
+  - Real-time percentage progress bar or animated indeterminate spinner.
+  - Interactive "Cancel" button setting a `threading.Event` to abort in-flight git operations.
 - **`TabContainer`, `TabStripWidget`, & `TabButton` (`ui/tabs/tab_bar.py`)**: Custom hybrid tab system.
   - Supports dynamic switching between **Vertical** (left sidebar, default) and **Horizontal** (top bar) orientations.
   - **Dynamic Tab Model & Pinning**: All tabs are dynamic. Right-click context menu provides `Pin Tab` / `Unpin Tab`, `Close Tab`, `Close Other Tabs`, and `Close Tabs to the Right/Below`. Pinned tabs show a `📌` badge prefix and hide the `×` close button.
@@ -154,35 +173,35 @@ graph TD
   - Full UI state persistence: saves/restores table header column widths (`save_header_state()` / `restore_header_state()`) and vertical content splitter position (`save_splitter_state()` / `restore_splitter_state()`) in SQLite `ui.session_state`.
   - Unborn branch empty state (`"No history yet"`).
 - **`CommitGraphWidget` (`ui/commit_graph/graph_widget.py`)**: Custom table view for Git DAG commit graph.
-  - Custom `CommitTableModel` supporting `Qt.DisplayRole`, `Qt.UserRole` (`GraphRow`), and rich `Qt.ToolTipRole` across all columns:
-    - Column 0 (Graph): summary and 8-character commit SHA.
-    - Column 1 (Message): full multi-line commit message with active ref badges (`[branch] [tag]`), safe empty handling, and 2,000-char graceful truncation.
-    - Column 2 (Author): author name and email (`Name <email>`).
-    - Column 3 (Date): formatted ISO commit timestamp.
-    - Column 4 (SHA): full 40-character commit hash.
+  - Custom `CommitTableModel` supporting `Qt.DisplayRole`, `Qt.UserRole` (`GraphRow`), and rich `Qt.ToolTipRole` across all columns.
   - Pinned Column 0 horizontal scrollbar (`_graph_scrollbar`) styled identically to the main scrollbar with dynamic height matching and off-screen viewport panning (`_graph_scroll_x`).
   - Interactive column resizing across all header sections with boundary clipping and auto-save triggering on resize.
   - Auto-scrolling to selected commit nodes with glowing halo accent rings (`NODE_RADIUS + 3.0`).
-
 - **`Topological Layout Calculator` (`ui/commit_graph/layout.py`)**:
   - Computes `(col, row)` coordinates and directional `Connector` segments (`PASS_THROUGH`, `FORK_DOWN`, `MERGE_UP`, `JOIN_TOP`).
   - 10-color deterministic color persistence and slot recycling algorithm preventing lane explosion.
 - **`MergeDialog` (`ui/dialogs/merge_dialog.py`)**: 3-Way visual merge conflict resolution tool.
   - Side-by-side Ours, Base, and Theirs diff viewers with block-level conflict acceptance and index staging.
-- **`RecoveryDialog` & `BusyOperationDialog` (`ui/dialogs/recovery_dialog.py`)**:
-  - Modal operation tracking with cancelable background tasks and progress feedback.
-  - Automated detection and recovery workflows for stale locks, interrupted rebases, detached HEADs, and reflogs.
+- **`RecoveryDialog` (`ui/dialogs/recovery_dialog.py`)**:
+  - Actionable diagnostics and recovery workflows for stale locks, interrupted rebases, detached HEADs, and reflogs.
 - **`DiffView` (`ui/diff_view/diff_widget.py`)**: Syntax-highlighted diff viewer.
   - Renders diff lines with line-number metadata and theme-adaptive light/dark mode contrast.
   - Provides hunk dropdown controls and whole-file / hunk staging action buttons.
   - Binary file detection and exception safety.
-- **`workers.py`**: Background thread runner using `QThread` and a thread-safe `_Dispatcher` `QObject` via `Qt.ConnectionType.QueuedConnection` to ensure callbacks execute strictly on the main GUI thread.
+- **`workers.py`**: Background thread runner using `QThread` and a thread-safe `_Dispatcher` `QObject` via `Qt.ConnectionType.QueuedConnection` to ensure callbacks execute strictly on the main GUI thread. Adapted in Phase 3 to support multi-parameter `progress_cb(pct, stage)` and cooperative cancellation via `threading.Event`.
 
 
 ### 3.2 Core Git Engine (`src/wrench/core/`)
-- **`engine.py`**: Public façade exposing unified, typed functions. Converts all internal exceptions into typed `WrenchGitError` derivatives (`WrenchRepoNotFoundError`, `GitCommandError`, `StagingError`, etc.).
-- **`read_ops.py`**: `pygit2`-backed status, diffs, log traversal, and line-by-line blame.
-- **`write_ops.py`**: Subprocess helper `run_git` managing process execution, environment sanitation (`GIT_TERMINAL_PROMPT=0`), timeouts, and command logging.
+- **`engine.py`**: Public façade exposing unified, typed functions. Converts internal errors into typed `WrenchGitError` derivatives.
+  - Remote operations (Phase 3): `push(repo, remote, branch, force=False)` (enforces `--force-with-lease`), `pull(repo, remote, branch)` (enforces `--ff-only`), `fetch(repo, remote)` (with `--prune` and timestamp storage), and `clone_repo(url, dest)` (atomic staging via tempdir with automated rollback).
+  - Remotes façade (Phase 3): `list_remotes(repo)`, `add_remote(repo, name, url)`, `remove_remote(repo, name)`, `set_remote_url(repo, name, url)`, and `_probe_reachability(repo_path, remote_name)`.
+- **`read_ops.py`**: `pygit2`-backed status, diffs, log traversal, branch enumeration, and line-by-line blame.
+- **`write_ops.py`**: Subprocess helpers managing Git CLI execution:
+  - `run_git`: Standard synchronous runner with timeout and sanitized environment (`GIT_TERMINAL_PROMPT=0`).
+  - `run_git_streaming`: Deadlock-free streaming execution using concurrent dual-pipe reader threads for `stdout` and `stderr`. Parses carriage-return `\r` and `\n` progress lines, routes live percentage and stage callbacks, and terminates gracefully on `cancel_event` (`SIGTERM` ➔ 3s grace ➔ `SIGKILL`). Deterministically classifies non-zero exits into typed exceptions (`PushRejectedError`, `MergeRequiredError`, `AuthFailedError`, `AuthRequiredError`, `CLITimeoutError`).
+- **`git_credential_helper.py`**: Standalone executable (`git-credential-wrench`) implementing Git's standard credential helper protocol. Reads credentials from SQLite `wrench.db` in read-only WAL mode, resolving repo-specific bindings from `repo_forge_links` before falling back to unique host matches in `forge_accounts`. Strictly fails closed when multiple accounts share a host without explicit repository association.
+- **`ssh_agent.py`**: Encapsulates platform `SSH_AUTH_SOCK` discovery and environment configuration behind the Platform-Abstraction Guard (FR-11.1–11.3).
+- **`exceptions.py`**: Typed domain exceptions for Git errors, network operations, merge conflicts, and authentication failures.
 - **`lock_recovery.py`**: Manages `.git/index.lock` detection with a 5-second grace window to differentiate active operations from stale crash locks.
 - **`snapshots.py`**: Captures working directory states into dangling Git commit objects (`git stash create`) and compresses untracked files into `.tar.gz` archives without altering working directory status.
 - **`reflog.py`**: Reflog inspection and branch restoration.
@@ -203,7 +222,16 @@ graph TD
   - Automated corrupt database quarantine and recovery.
 - **`repo_registry.py`**: Repository CRUD operations, tracking last opened times, missing states, and relocated paths.
 - **`settings.py`**: App-level and per-repository key-value configuration storage.
+- **`forge_accounts.py`**: Forge account metadata storage and repository-to-account bindings (`repo_forge_links`).
 - **`schema.sql`**: Normalized relational schema with foreign key cascading deletes.
+
+### 3.5 Credentials & Platform Layer (`src/wrench/credentials/`)
+- **`backend.py`**: Abstract base class `CredentialBackend` defining `get_secret(key)`, `store_secret(key, secret)`, and `delete_secret(key)`.
+- **`secret_service.py`**: `SecretServiceBackend` implementing the Freedesktop Secret Service D-Bus specification via `secretstorage`.
+  - Automatically handles collection unlocking via `collection.unlock()`.
+  - Formats user-actionable diagnostics tailored to runtime environments: Flatpak sandboxes, desktop keyrings (GNOME Keyring / KWallet), and headless systems.
+  - Strict compliance with Platform-Abstraction Guard (FR-11.1–11.3): all Secret Service imports are strictly encapsulated here.
+- **`__init__.py`**: Caching factory function `get_backend()` and packaging context detection `detect_packaging_context()` (`flatpak`, `snap`, `appimage`, `system`).
 
 ---
 
@@ -318,6 +346,68 @@ ui.workers.run_in_background(fn, *args, on_finished=cb, on_failed=err_cb)
         └── On Close: MainWindow.closeEvent() executes immediate synchronous flush
 ```
 
+### 4.5 Deadlock-Free Streaming & Remote Operations Workflow
+```
+[User triggers Fetch / Pull / Push / Clone]
+        │
+        ▼
+[MainWindow] runs operation in background via ui.workers.run_in_background
+        │
+        ├── Instantiates BusyOperationDialog (modal progress & cancellation)
+        ├── Passes cancel_event (threading.Event) and progress_cb(pct, stage)
+        │
+        ▼
+[core.engine: push / pull / fetch / clone_repo]
+        │
+        ▼
+[core.write_ops.run_git_streaming]
+        │
+        ├── Injects SSH_AUTH_SOCK via core.ssh_agent.configure_ssh_env
+        ├── Sets GIT_TERMINAL_PROMPT=0 and LC_ALL=C
+        ├── Spawns subprocess.Popen(stdout=PIPE, stderr=PIPE)
+        │
+        ├── Thread 1: Drains stdout line-by-line concurrently
+        ├── Thread 2: Drains stderr line-by-line concurrently
+        │       ├── Parses \r and \n progress lines: "Counting objects: 45% (9/20)"
+        │       └── Invokes progress_cb(pct, stage) -> Worker -> Main Thread GUI Dialog
+        │
+        ├── Monitors cancel_event:
+        │       └── If set: SIGTERM -> 3s grace period -> SIGKILL
+        │
+        ├── Joins stdout and stderr reader threads (0 OS pipe buffer deadlocks)
+        └── Classifies non-zero exits into typed WrenchGitError subclasses:
+                PushRejectedError, MergeRequiredError, AuthFailedError, AuthRequiredError
+```
+
+### 4.6 Git Credential Helper Protocol & Disambiguation Workflow
+```
+[git CLI triggers remote transport (e.g., https://github.com/...)]
+        │
+        ▼
+[git CLI executes helper]: git-credential-wrench get
+        │
+        ├── Inputs via stdin (key=value pairs): protocol=https, host=github.com, path=...
+        │
+        ▼
+[core.git_credential_helper.handle_get]
+        │
+        ├── Opens SQLite wrench.db in read-only URI mode (file:...mode=ro) with retry loop
+        │
+        ├── Step 1: Query repo_forge_links for exact (repo_id, remote_name) binding
+        │       └── Found? Retrieve associated forge_accounts row.
+        │
+        ├── Step 2 (Fallback): Query forge_accounts WHERE instance_url / host matches
+        │       ├── Exactly 1 matching account? Select it.
+        │       └── >1 matching accounts? Fail closed (do not guess) -> Exit 0 with empty stdout.
+        │
+        ├── Step 3: Fetch secret from credentials.get_backend() via secret_service_key
+        │       └── D-Bus Secret Service unlocks collection if necessary.
+        │
+        └── Emits to stdout:
+                username=<username>
+                password=<password>
+```
+
 ---
 
 ## 5. Relational Database Schema
@@ -376,7 +466,8 @@ wrench/
 │       ├── ui-planning.md
 │       ├── phase-1.md
 │       ├── phase-1.5.md
-│       └── phase-2.md
+│       ├── phase-2.md
+│       └── phase-3.md
 ├── packaging/
 │   └── flatpak/                  # Flatpak packaging manifests
 ├── src/wrench/
@@ -384,20 +475,27 @@ wrench/
 │   ├── core/                     # Core Git engine & platform primitives
 │   │   ├── engine.py             # Public unified façade
 │   │   ├── read_ops.py           # pygit2 read operations
-│   │   ├── write_ops.py          # subprocess CLI write operations
+│   │   ├── write_ops.py          # subprocess CLI write & streaming operations
+│   │   ├── git_credential_helper.py # Standalone git-credential-wrench executable
+│   │   ├── ssh_agent.py          # SSH_AUTH_SOCK platform encapsulation
+│   │   ├── exceptions.py         # Domain and CLI typed exceptions
 │   │   ├── lock_recovery.py      # Stale index.lock detection
 │   │   ├── snapshots.py          # Rolling safety snapshots
 │   │   ├── reflog.py             # Reflog operations
 │   │   ├── identity.py           # Git author configuration
 │   │   └── paths.py              # XDG / platformdirs path resolution
+│   ├── credentials/              # Secret Service & credential backends
+│   │   ├── backend.py            # CredentialBackend abstract interface
+│   │   └── secret_service.py     # D-Bus Secret Service platform backend
 │   ├── forge/                    # Forge provider capability system
 │   ├── storage/                  # SQLite storage & repository registry
 │   │   ├── db.py                 # SQLite connection management & locks
 │   │   ├── repo_registry.py      # Repository tracking CRUD
 │   │   ├── settings.py           # App & repo key-value settings
+│   │   ├── forge_accounts.py     # Forge accounts & repository links
 │   │   └── schema.sql            # Normalized relational schema
 │   ├── ui/                       # PySide6 desktop UI
-│   │   ├── main_window.py        # Main application window
+│   │   ├── main_window.py        # Main application window & repository menu
 │   │   ├── workers.py            # Thread-safe background worker marshaller
 │   │   ├── tabs/                 # Hybrid tab navigation system
 │   │   │   ├── tab_bar.py        # TabContainer & TabButton widgets
@@ -408,6 +506,9 @@ wrench/
 │   │   │   └── graph_widget.py   # CommitGraphWidget & custom delegate
 │   │   ├── dialogs/              # Interactive dialogs & recovery panels
 │   │   │   ├── merge_dialog.py   # 3-Way visual merge conflict resolution tool
+│   │   │   └── remotes_dialog.py # Repository remotes manager & reachability
+│   │   ├── recovery/             # Recovery & progress modals
+│   │   │   ├── busy_dialog.py    # Modal progress tracker & cancel button
 │   │   │   └── recovery_dialog.py# Busy operation tracking & repo diagnostics
 │   │   ├── widgets/              # Reusable UI widgets
 │   │   │   └── branch_switcher.py# Interactive branch selector & popup

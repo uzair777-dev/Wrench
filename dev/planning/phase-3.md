@@ -1,0 +1,136 @@
+# Phase 3 Summary: Remote Operations & Credential Infrastructure
+
+**Status:** Completed  
+**Associated SRS Requirements:** FR-4.1 – FR-4.5, FR-11.1 – FR-11.3, NFR Concurrency & Reliability, NFR Performance  
+**Associated Planning Documents:** [`implementation-plan.md`](file:///home/uzair/Projects/wrench/dev/planning/implementation-plan.md), [`srs.md`](file:///home/uzair/Projects/wrench/dev/planning/srs.md), [`ARCHITECTURE.md`](file:///home/uzair/Projects/wrench/ARCHITECTURE.md)
+
+---
+
+## 1. Overview & Objectives
+
+Phase 3 delivered the complete remote transport, credential management, and background network operation infrastructure for Wrench:
+
+1. **Secret Service D-Bus Credential Infrastructure (`SecretServiceBackend`)**:
+   - Implemented native Secret Service D-Bus integration via `secretstorage` conforming to Freedesktop Secret Service specifications.
+   - Support for collection auto-unlocking (`unlock()`), thread-safe locked collection error handling, and environment-aware packaging context detection (`flatpak`, `snap`, `appimage`, `system`).
+   - Flatpak permissions configured with `--socket=ssh-auth` and `--talk-name=org.freedesktop.secrets`.
+
+2. **Standalone `git-credential-wrench` Helper**:
+   - Built a standalone Git credential helper binary (`git-credential-wrench`) communicating over standard IO per Git's credential protocol.
+   - Deterministic multi-account disambiguation: resolves credentials first by explicit repository link (`repo_forge_links`), falling back to unique host matching, and strictly failing closed without guessing when multiple accounts share a host.
+   - Read-only WAL SQLite access with locked-retry resilience and empty-stdout/exit-0 protocol adherence.
+
+3. **Deadlock-Free Streaming Git Execution (`run_git_streaming`)**:
+   - Implemented concurrent dual-pipe draining threads for `stdout` and `stderr` using `subprocess.Popen`, completely eliminating the classic 64 KiB OS pipe buffer deadlock.
+   - Carriage-return `\r` and newline `\n` progress stream parsing capturing stages (`Enumerating`, `Counting`, `Compressing`, `Writing`, `Receiving`, `Resolving`) and percentage completions.
+   - Cooperative cancellation via `threading.Event` enforcing graceful termination (`SIGTERM` ➔ 3s grace window ➔ `SIGKILL`).
+   - Structured exception classification mapping CLI failures to typed exceptions (`PushRejectedError`, `MergeRequiredError`, `AuthFailedError`, `AuthRequiredError`, `CLITimeoutError`).
+
+4. **Platform-Abstraction Guard (FR-11.1–11.3)**:
+   - Strictly isolated all platform-specific dependencies (`secretstorage`, `SSH_AUTH_SOCK`, `XDG_`) to authorized platform modules (`credentials/secret_service.py`, `core/ssh_agent.py`, `core/paths.py`).
+   - Automated CI verification guard ensuring 0 unauthorized leaks across all core and UI layers.
+
+5. **Safe Remote Operations & Remotes Management Façade**:
+   - `push`: Always uses `--force-with-lease` when force-pushing (never bare `--force`).
+   - `pull`: Enforces `--ff-only` to guarantee no implicit, uninspected merge commits mid-pull, surfacing divergence as `MergeRequiredError`.
+   - `fetch`: Prunes stale remote-tracking branches (`--prune`) and stores UTC ISO-8601 timestamps in settings.
+   - `clone_repo`: Clones into a temporary directory on the destination filesystem, performs an atomic move upon completion, automatically configures credential helper local settings, and cleans up on cancel or error.
+   - Remotes Façade: `list_remotes` (instant, non-blocking), `add_remote`, `remove_remote`, and `set_remote_url` with validation.
+
+6. **UI Integration & Recovery Routing**:
+   - `BusyOperationDialog`: Modal progress tracker with determinate/indeterminate progress and cancellation button.
+   - `RemotesDialog`: Repository remote manager with reachability indicators and Add/Edit/Remove/Refresh operations.
+   - `MainWindow` Wiring: Added **Repository** menu (Fetch, Pull, Push, Remotes...) and intelligent error routing for auth failures, push rejections, and merge divergence.
+
+---
+
+## 2. Implemented Components & Architecture
+
+### 2.1 Credential Infrastructure (`src/wrench/credentials/`)
+- **`SecretServiceBackend` (`secret_service.py`)**:
+  - Subclasses `CredentialBackend`.
+  - Implements `get_secret(key)`, `store_secret(key, secret)`, and `delete_secret(key)`.
+  - Automatic collection unlocking via `secretstorage.collection.create_collection` / `collection.unlock()`.
+  - Detailed diagnostic help texts customized for Flatpak sandboxes, desktop keyrings (GNOME Keyring / KWallet), and headless environments.
+- **Factory & Detection (`credentials/__init__.py`)**:
+  - `get_backend()` singleton factory caching the active platform backend.
+  - `detect_packaging_context()` detecting Flatpak (`/.flatpak-info`), Snap (`SNAP`), and AppImage (`APPIMAGE`).
+
+### 2.2 Git Credential Helper (`src/wrench/core/git_credential_helper.py`)
+- **CLI Entry Point**: Exposed as `git-credential-wrench` via `pyproject.toml` console scripts.
+- **Protocol Handlers**:
+  - `get`: Parses `protocol`, `host`, `path`, and `username` from stdin. Resolves credentials via `repo_forge_links` or `forge_accounts`, outputting `username=<user>` and `password=<secret>`.
+  - `store` & `erase`: Handled gracefully per protocol.
+- **Resilience**: Connects to SQLite database in read-only URI mode (`file:...?mode=ro`) with SQLite busy timeouts and retry loops.
+
+### 2.3 Streaming Git Execution & Remote Operations (`src/wrench/core/`)
+- **Streaming Runner (`write_ops.py`)**:
+  - `run_git_streaming(repo_path, args, *, timeout=600, on_stderr_line=None, cancel_event=None) -> tuple[int, str, str]`
+  - Dual background threads reading `stdout.readline` and `stderr.readline` into buffers concurrently.
+  - Progress line parser `_parse_progress(line)` extracting `(stage, percent)`.
+- **SSH Agent Encapsulation (`ssh_agent.py`)**:
+  - `get_ssh_auth_socket() -> str | None`: Reads `SSH_AUTH_SOCK` from environment without leaking platform calls.
+  - `configure_ssh_env(env: dict[str, str]) -> None`: Safely injects the unmodified socket path into subprocess environments.
+- **Façade Operations (`engine.py`)**:
+  - `push(repo, remote, branch, *, force=False, progress_cb=None, cancel_event=None)`
+  - `pull(repo, remote, branch, *, progress_cb=None, cancel_event=None)`
+  - `fetch(repo, remote, *, progress_cb=None, cancel_event=None)`
+  - `clone_repo(url, dest, *, progress_cb=None, cancel_event=None) -> CloneResult`
+  - `list_remotes(repo) -> list[RemoteInfo]`
+  - `add_remote(repo, name, url)`
+  - `remove_remote(repo, name)`
+  - `set_remote_url(repo, name, url)`
+- **Failure Classification (`write_ops.py` & `exceptions.py`)**:
+  - Non-zero CLI exits map deterministically to typed exceptions:
+    - `rejected` ➔ `PushRejectedError`
+    - `Not possible to fast-forward` ➔ `MergeRequiredError`
+    - `Authentication failed` / `401` / `403` / `Permission denied (publickey)` ➔ `AuthFailedError`
+    - `could not read Username` / `Password` / `terminal prompts disabled` ➔ `AuthRequiredError`
+    - Timeout expired ➔ `CLITimeoutError`
+
+### 2.4 UI Layer & Dialogs (`src/wrench/ui/`)
+- **Background Worker Progress Adapter (`workers.py`)**:
+  - Adapted `GitOperationWorker.run()` to accept `(pct, stage)` progress callbacks and emit `Signal(int)` to GUI widgets without breaking existing callers.
+- **Busy Modal Dialog (`recovery/busy_dialog.py`)**:
+  - `BusyOperationDialog`: Provides progress bar (determinate or indeterminate), status text update, and interactive cancellation triggering `cancel_event.set()`.
+- **Remotes Configuration Dialog (`dialogs/remotes_dialog.py`)**:
+  - `RemotesDialog`: Table view with columns `Name`, `URL`, `Last Fetch`, and `Reachability`.
+  - Operations: `Add Remote` (with name regex & URL validation), `Edit Remote`, `Remove Remote` (with confirmation), and `Refresh Status` (reachability probe via `git ls-remote`).
+- **Main Window Remote Wiring (`main_window.py`)**:
+  - **Repository Menu**: `Fetch` (`Ctrl+Shift+F`), `Pull` (`Ctrl+Shift+L`), `Push` (`Ctrl+Shift+U`), `Remotes…`.
+  - **Async Clone Flow**: Rewrote `_on_clone_repo` to run asynchronously through `run_in_background` with cancellation support.
+  - **Error Routing**:
+    - `AuthRequiredError`: Prompt explaining credentials are required and naming the host.
+    - `AuthFailedError`: Notification that credentials on file were rejected.
+    - `PushRejectedError`: Actionable choice offering "Fetch & Retry", "Force Push (with lease)", or "Cancel".
+    - `MergeRequiredError`: Actionable choice offering "Merge", "Rebase", or "Cancel".
+    - `RemoteNotFoundError`: Opens Remotes dialog.
+    - `CloneAbortedError`: Clean dismissal without error alerts.
+
+---
+
+## 3. Test Coverage & Verification
+
+- **Platform-Abstraction Guard Check**:
+  - Executed: `grep -rn "secretstorage\|SSH_AUTH_SOCK\|XDG_" src/wrench --include="*.py" | grep -v -E "credentials/(backend|secret_service|__init__)\.py|core/(paths|ssh_agent)\.py"`
+  - Result: **0 violations / Passed**.
+- **Credentials & Secret Service Tests** (`tests/unit/credentials/test_secret_service.py`):
+  - Secret retrieval, storage, and deletion.
+  - Collection unlock workflows and locked error handling.
+  - Platform detection and packaging context logic.
+- **Credential Helper Tests** (`tests/unit/core/test_git_credential_helper.py`):
+  - Helper protocol parsing (`get`, `store`, `erase`).
+  - Disambiguation order: exact path link ➔ single-account host match ➔ ambiguous fails closed.
+- **Write Operations & Remotes Tests** (`tests/unit/core/test_write_ops_remotes.py` & `test_engine_remotes.py`):
+  - Push happy path, non-fast-forward push rejection.
+  - Fast-forward pull and diverged pull error classification.
+  - Fetch timestamp recording in settings.
+  - Deadlock prevention on >64 KiB pipe buffer output.
+  - Atomic clone temp-dir handling and cancellation cleanup.
+  - Remotes CRUD and reachability probing.
+- **UI Tests** (`tests/unit/ui/test_busy_operation_dialog.py`, `test_remotes_dialog.py`, `test_main_window_remotes.py`):
+  - Busy dialog progress updates and cancellation signaling.
+  - Remotes table rendering, addition validation, editing, and removal.
+  - Repository menu actions, async clone execution, and error routing.
+- **Full Test Suite**: **212 passed in 10.72s**.
+- **Code Quality**: `ruff check .` and `black --check .` clean.

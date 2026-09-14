@@ -82,3 +82,67 @@ class RepoBusyError(WrenchGitError):
             f"Cannot perform {operation} while repository is in {state} state.",
             stderr=stderr,
         )
+
+
+class CloneAbortedError(WrenchGitError):
+    """User cancelled a clone via cancel_event; temp directory was cleaned up."""
+
+    def __init__(
+        self, message: str = "Clone operation was cancelled by user.", *, stderr: str | None = None
+    ):
+        super().__init__(message, stderr=stderr)
+
+
+class AuthRequiredError(WrenchGitError):
+    """Credentials required by remote host but none found in storage."""
+
+    def __init__(
+        self,
+        host: str | None = None,
+        path_component: str | None = None,
+        *,
+        stderr: str | None = None,
+    ):
+        self.host = host
+        self.path_component = path_component
+        detail = f" for host '{host}'" if host else ""
+        super().__init__(f"Authentication credentials required{detail}.", stderr=stderr)
+
+
+class AuthFailedError(WrenchGitError):
+    """Stored credentials rejected by remote host or SSH agent authentication failed."""
+
+    def __init__(self, host: str, *, stderr: str | None = None):
+        self.host = host
+        super().__init__(
+            f"Authentication failed for host '{host}'. Check account token or SSH keys.",
+            stderr=stderr,
+        )
+
+
+class PushRejectedError(GitCommandError):
+    """git push exited non-zero with 'rejected' in stderr (non-fast-forward / remote moved)."""
+
+
+class MergeRequiredError(GitCommandError):
+    """git pull --ff-only failed because branches diverged."""
+
+
+class RemoteExistsError(WrenchGitError):
+    """Remote name already exists."""
+
+    def __init__(self, name: str, *, stderr: str | None = None):
+        self.name = name
+        super().__init__(f"Remote '{name}' already exists.", stderr=stderr)
+
+
+class RemoteNotFoundError(WrenchGitError):
+    """Remote name was not found in repository."""
+
+    def __init__(self, name: str, *, stderr: str | None = None):
+        self.name = name
+        super().__init__(f"Remote '{name}' not found.", stderr=stderr)
+
+
+class CLITimeoutError(GitCommandError):
+    """The git subprocess exceeded its timeout."""

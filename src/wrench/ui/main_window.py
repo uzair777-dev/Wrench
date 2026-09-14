@@ -522,6 +522,12 @@ class MainWindow(QMainWindow):
             if path in self._repos_state:
                 self.changes_tab.restore_repo_state(self._repos_state[path])
 
+            # Trigger background reachability probing for all remotes
+            try:
+                engine.probe_remotes_async(self._current_repo, db_conn=self._conn)
+            except Exception as probe_err:
+                logger.debug("Remotes reachability probe skipped: %s", probe_err)
+
             self._schedule_auto_save()
         except Exception as e:
             logger.error("Error setting up repo watcher: %s", e)
@@ -616,6 +622,39 @@ class MainWindow(QMainWindow):
         remotes = [r.name for r in self._current_repo.pygit2_repo.remotes]
         if not remotes:
             return None
+
+        # Check if active branch has an upstream tracking remote configured
+        branch_name = self._get_current_branch()
+        if branch_name:
+            # 1. Check git config 'branch.<branch>.remote' directly
+            try:
+                cfg_key = f"branch.{branch_name}.remote"
+                if cfg_key in self._current_repo.pygit2_repo.config:
+                    cfg_remote = self._current_repo.pygit2_repo.config[cfg_key]
+                    if cfg_remote in remotes:
+                        return cfg_remote
+            except Exception:
+                pass
+
+            # 2. Check pygit2 branch object upstream references
+            try:
+                branch = self._current_repo.pygit2_repo.branches.get(branch_name)
+                if branch:
+                    if branch.upstream:
+                        remote_name = getattr(branch.upstream, "remote_name", None)
+                        if remote_name and remote_name in remotes:
+                            return remote_name
+                    try:
+                        upstream_name = getattr(branch, "upstream_name", None)
+                        if upstream_name and upstream_name.startswith("refs/remotes/"):
+                            parts = upstream_name[len("refs/remotes/") :].split("/")
+                            if parts and parts[0] in remotes:
+                                return parts[0]
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
         if "origin" in remotes:
             return "origin"
         return remotes[0]
@@ -664,7 +703,7 @@ class MainWindow(QMainWindow):
                 self.tr("Please open a repository first to manage remotes."),
             )
             return
-        dlg = RemotesDialog(self._current_repo, parent=self, db_conn=self._conn)
+        dlg = RemotesDialog(self._current_repo, parent=self, db_conn=self._conn, auto_probe=True)
         dlg.exec()
         self._refresh_after_git_op()
 

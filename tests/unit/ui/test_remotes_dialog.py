@@ -157,3 +157,24 @@ class TestRemotesDialog:
             assert "Reachable" in dialog.table.item(0, 3).text()
 
         dialog.close()
+
+    def test_remotes_dialog_auto_probe_and_async_refresh(self, repo_with_remote, db_conn):
+        with patch("wrench.core.engine.probe_remotes_async") as mock_probe:
+            dialog = RemotesDialog(repo_with_remote, db_conn=db_conn, auto_probe=True)
+            assert mock_probe.called
+            dialog.close()
+
+    def test_remotes_dialog_async_refresh_clicked(self, repo_with_remote, db_conn):
+        dialog = RemotesDialog(repo_with_remote, db_conn=db_conn)
+        with patch("wrench.core.engine.probe_remotes_async") as mock_probe:
+            dialog.refresh_btn.click()
+            assert mock_probe.called
+            assert dialog.refresh_btn.text() == "Probing..."
+            assert not dialog.refresh_btn.isEnabled()
+
+            # Emitting probe_finished resets button and refreshes
+            dialog.probe_finished.emit()
+            assert dialog.refresh_btn.text() == "Refresh Status"
+            assert dialog.refresh_btn.isEnabled()
+
+        dialog.close()

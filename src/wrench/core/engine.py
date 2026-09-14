@@ -3,6 +3,7 @@ import re
 import sqlite3
 import tempfile
 import threading
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -227,6 +228,14 @@ def open_repo(path: Path | str) -> RepoHandle:
         pygit2_repo = pygit2.Repository(str(p))
     except pygit2.GitError as e:
         raise WrenchRepoNotFoundError(str(e)) from e
+
+    # Ensure Wrench credential helper is configured locally for seamless auth
+    try:
+        write_ops.run_git(p, ["config", "--local", "credential.helper", "wrench"])
+        write_ops.run_git(p, ["config", "--local", "credential.useHttpPath", "true"])
+    except Exception:
+        pass
+
     return RepoHandle(pygit2_repo, p)
 
 
@@ -655,6 +664,31 @@ def _probe_reachability(
     finally:
         if should_close and conn:
             conn.close()
+
+
+def probe_remotes_async(
+    repo: RepoHandle,
+    *,
+    db_conn: sqlite3.Connection | None = None,
+    on_complete: Callable[[], None] | None = None,
+) -> threading.Thread:
+    """Probe reachability for all remotes of the repo in a background daemon thread."""
+
+    def _worker():
+        try:
+            remotes = [r.name for r in repo.pygit2_repo.remotes]
+            for name in remotes:
+                _probe_reachability(repo.path, name, db_conn=db_conn)
+        finally:
+            if on_complete:
+                try:
+                    on_complete()
+                except Exception:
+                    pass
+
+    t = threading.Thread(target=_worker, daemon=True)
+    t.start()
+    return t
 
 
 def add_remote(

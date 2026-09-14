@@ -86,6 +86,63 @@ class TestMainWindowRemotes:
 
         win.close()
 
+    def test_get_default_remote_resolves_upstream_tracking(self, test_db, tmp_path):
+        repo_path = tmp_path / "tracking_repo"
+        repo_path.mkdir()
+        pygit2_repo = pygit2.init_repository(str(repo_path))
+
+        sig = pygit2.Signature("Test", "test@example.com")
+        tree = pygit2_repo.TreeBuilder().write()
+        pygit2_repo.create_commit("HEAD", sig, sig, "Initial commit", tree, [])
+
+        pygit2_repo.remotes.create("origin", "https://github.com/example/repo.git")
+        pygit2_repo.remotes.create("upstream", "https://github.com/upstream/repo.git")
+
+        # Configure master branch to track upstream
+        branch_name = pygit2_repo.head.shorthand
+        pygit2_repo.config[f"branch.{branch_name}.remote"] = "upstream"
+
+        win = MainWindow(conn=test_db)
+        win._current_repo = RepoHandle(pygit2_repo, repo_path)
+
+        assert win._get_default_remote() == "upstream"
+        win.close()
+
+    def test_get_default_remote_falls_back_to_origin(self, test_db, tmp_path):
+        repo_path = tmp_path / "fallback_repo"
+        repo_path.mkdir()
+        pygit2_repo = pygit2.init_repository(str(repo_path))
+
+        sig = pygit2.Signature("Test", "test@example.com")
+        tree = pygit2_repo.TreeBuilder().write()
+        pygit2_repo.create_commit("HEAD", sig, sig, "Initial commit", tree, [])
+
+        pygit2_repo.remotes.create("mirror", "https://github.com/mirror/repo.git")
+        pygit2_repo.remotes.create("origin", "https://github.com/example/repo.git")
+
+        win = MainWindow(conn=test_db)
+        win._current_repo = RepoHandle(pygit2_repo, repo_path)
+
+        assert win._get_default_remote() == "origin"
+        win.close()
+
+    def test_get_default_remote_falls_back_to_first_remote(self, test_db, tmp_path):
+        repo_path = tmp_path / "no_origin_repo"
+        repo_path.mkdir()
+        pygit2_repo = pygit2.init_repository(str(repo_path))
+
+        sig = pygit2.Signature("Test", "test@example.com")
+        tree = pygit2_repo.TreeBuilder().write()
+        pygit2_repo.create_commit("HEAD", sig, sig, "Initial commit", tree, [])
+
+        pygit2_repo.remotes.create("custom_remote", "https://github.com/custom/repo.git")
+
+        win = MainWindow(conn=test_db)
+        win._current_repo = RepoHandle(pygit2_repo, repo_path)
+
+        assert win._get_default_remote() == "custom_remote"
+        win.close()
+
     def test_fetch_remote_triggers_background_fetch(self, test_db, repo_with_remote):
         win = MainWindow(conn=test_db)
         win._current_repo = repo_with_remote
@@ -259,5 +316,17 @@ class TestMainWindowRemotes:
 
         with patch.object(QMessageBox, "exec", return_value=0):
             win._route_remote_error(exc, "origin", branch="main", op="pull")
+
+        win.close()
+
+    def test_repo_changed_triggers_async_probe(self, test_db, repo_with_remote):
+        win = MainWindow(conn=test_db)
+        with (
+            patch("wrench.ui.main_window.RepoWatcher"),
+            patch("wrench.core.engine.probe_remotes_async") as mock_probe,
+        ):
+            win._on_repo_changed(str(repo_with_remote.path))
+            assert mock_probe.called
+            assert mock_probe.call_args[0][0].path == repo_with_remote.path
 
         win.close()

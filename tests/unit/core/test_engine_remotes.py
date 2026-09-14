@@ -171,3 +171,51 @@ class TestEngineRemotesManagement:
         remotes = engine.list_remotes(repo)
         assert len(remotes) == 1
         assert remotes[0].url == new_url
+
+    def test_open_repo_auto_configures_credential_helper(self, tmp_path):
+        repo_dir = tmp_path / "existing_repo"
+        repo_dir.mkdir()
+        write_ops.run_git(repo_dir, ["init"])
+
+        # Prior to open_repo, helper is not configured
+        res = write_ops.run_git(repo_dir, ["config", "--local", "credential.helper"], check=False)
+        assert res.returncode != 0
+
+        # open_repo should auto-configure the credential helper
+        repo = engine.open_repo(repo_dir)
+        assert repo.path == repo_dir
+
+        h = write_ops.run_git(repo_dir, ["config", "--local", "credential.helper"]).stdout.strip()
+        p = write_ops.run_git(
+            repo_dir, ["config", "--local", "credential.useHttpPath"]
+        ).stdout.strip()
+        assert h == "wrench"
+        assert p == "true"
+
+    def test_probe_remotes_async(self, bare_repo_fixture, tmp_path):
+        bare_dir, clone1_dir = bare_repo_fixture
+        repo = engine.open_repo(clone1_dir)
+
+        db_file = tmp_path / "probe_test.db"
+        conn = sqlite3.connect(str(db_file), check_same_thread=False)
+        conn.row_factory = sqlite3.Row
+        conn.execute("""CREATE TABLE app_settings (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )""")
+        conn.commit()
+
+        completed = False
+
+        def on_done():
+            nonlocal completed
+            completed = True
+
+        t = engine.probe_remotes_async(repo, db_conn=conn, on_complete=on_done)
+        t.join(timeout=5)
+
+        assert completed is True
+        val = settings.get_setting(conn, "remote_reachable.origin")
+        assert val == "1"
+        conn.close()

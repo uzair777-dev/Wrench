@@ -10,6 +10,7 @@ import logging
 import sqlite3
 from typing import TYPE_CHECKING
 
+from PySide6.QtCore import Signal
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -104,12 +105,15 @@ class AddRemoteDialog(QDialog):
 class RemotesDialog(QDialog):
     """Modal dialog for managing repository remotes."""
 
+    probe_finished = Signal()
+
     def __init__(
         self,
         repo: RepoHandle,
         parent: QWidget | None = None,
         *,
         db_conn: sqlite3.Connection | None = None,
+        auto_probe: bool = False,
     ) -> None:
         super().__init__(parent)
         self._repo = repo
@@ -118,8 +122,14 @@ class RemotesDialog(QDialog):
         self.setWindowTitle("Manage Remotes")
         self.resize(680, 360)
 
+        self.probe_finished.connect(self._on_probe_finished)
         self._init_ui()
         self._refresh_table()
+
+        if auto_probe:
+            remotes = engine.list_remotes(self._repo, db_conn=self._db_conn)
+            if any(r.is_reachable is None for r in remotes):
+                self._start_probe_async()
 
     def _init_ui(self) -> None:
         main_layout = QVBoxLayout(self)
@@ -167,7 +177,7 @@ class RemotesDialog(QDialog):
         btn_layout.addWidget(self.remove_btn)
 
         self.refresh_btn = QPushButton("Refresh Status", self)
-        self.refresh_btn.clicked.connect(self._on_refresh_status)
+        self.refresh_btn.clicked.connect(self._on_refresh_clicked)
         btn_layout.addWidget(self.refresh_btn)
 
         btn_layout.addStretch()
@@ -313,10 +323,29 @@ class RemotesDialog(QDialog):
 
         self._refresh_table()
 
-    def _on_refresh_status(self) -> None:
-        """Probe reachability for all configured remotes and update table."""
-        remotes = engine.list_remotes(self._repo, db_conn=self._db_conn)
-        for remote in remotes:
-            engine._probe_reachability(self._repo.path, remote.name, db_conn=self._db_conn)
+    def _on_refresh_clicked(self) -> None:
+        self._start_probe_async()
 
+    def _start_probe_async(self) -> None:
+        self.refresh_btn.setEnabled(False)
+        self.refresh_btn.setText("Probing...")
+        engine.probe_remotes_async(
+            self._repo,
+            db_conn=self._db_conn,
+            on_complete=self.probe_finished.emit,
+        )
+
+    def _on_probe_finished(self) -> None:
+        self.refresh_btn.setEnabled(True)
+        self.refresh_btn.setText("Refresh Status")
         self._refresh_table()
+
+    def _on_refresh_status(self, checked: bool = False, *, sync: bool = True) -> None:
+        """Probe reachability for all configured remotes and update table."""
+        if sync:
+            remotes = engine.list_remotes(self._repo, db_conn=self._db_conn)
+            for remote in remotes:
+                engine._probe_reachability(self._repo.path, remote.name, db_conn=self._db_conn)
+            self._refresh_table()
+        else:
+            self._start_probe_async()

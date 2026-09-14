@@ -6,10 +6,12 @@ import time
 
 import pytest
 
+from wrench.core import write_ops
 from wrench.core.exceptions import (
     AuthFailedError,
     AuthRequiredError,
     CLITimeoutError,
+    CloneAbortedError,
     GitCommandError,
     MergeRequiredError,
     PushRejectedError,
@@ -17,6 +19,7 @@ from wrench.core.exceptions import (
 from wrench.core.write_ops import (
     _classify_git_error,
     _parse_progress,
+    run_git,
     run_git_streaming,
 )
 
@@ -192,3 +195,150 @@ class TestRunGitStreaming:
         # Non-zero returncode on termination
         assert code != 0
         assert cancel_event.is_set()
+
+
+@pytest.fixture
+def bare_repo_fixture(tmp_path):
+    bare_dir = tmp_path / "remote.git"
+    run_git(tmp_path, ["init", "--bare", str(bare_dir)])
+    run_git(bare_dir, ["symbolic-ref", "HEAD", "refs/heads/main"])
+
+    clone1_dir = tmp_path / "clone1"
+    run_git(tmp_path, ["clone", str(bare_dir), str(clone1_dir)])
+    run_git(clone1_dir, ["config", "user.name", "Test User"])
+    run_git(clone1_dir, ["config", "user.email", "test@example.com"])
+
+    (clone1_dir / "README.md").write_text("initial content\n")
+    run_git(clone1_dir, ["add", "README.md"])
+    run_git(clone1_dir, ["commit", "-m", "Initial commit"])
+    run_git(clone1_dir, ["branch", "-M", "main"])
+    run_git(clone1_dir, ["push", "-u", "origin", "main"])
+
+    clone2_dir = tmp_path / "clone2"
+    run_git(tmp_path, ["clone", str(bare_dir), str(clone2_dir)])
+    run_git(clone2_dir, ["config", "user.name", "Test User 2"])
+    run_git(clone2_dir, ["config", "user.email", "test2@example.com"])
+
+    return bare_dir, clone1_dir, clone2_dir
+
+
+class TestRemoteOperations:
+    def test_push_happy_path(self, bare_repo_fixture):
+        bare_dir, clone1_dir, _ = bare_repo_fixture
+        (clone1_dir / "file.txt").write_text("hello from clone1\n")
+        run_git(clone1_dir, ["add", "file.txt"])
+        run_git(clone1_dir, ["commit", "-m", "Commit from clone1"])
+
+        progress_events = []
+
+        def on_prog(pct, stage):
+            progress_events.append((pct, stage))
+
+        write_ops.push(clone1_dir, "origin", "main", progress_cb=on_prog)
+
+        rev1 = run_git(clone1_dir, ["rev-parse", "HEAD"]).stdout.strip()
+        rev_bare = run_git(bare_dir, ["rev-parse", "main"]).stdout.strip()
+        assert rev1 == rev_bare
+
+    def test_push_rejected_non_fast_forward(self, bare_repo_fixture):
+        _, clone1_dir, clone2_dir = bare_repo_fixture
+
+        # Advance remote via clone2
+        (clone2_dir / "file2.txt").write_text("from clone 2\n")
+        run_git(clone2_dir, ["add", "file2.txt"])
+        run_git(clone2_dir, ["commit", "-m", "Commit from clone2"])
+        write_ops.push(clone2_dir, "origin", "main")
+
+        # Create divergent commit in clone1
+        (clone1_dir / "file1.txt").write_text("from clone 1\n")
+        run_git(clone1_dir, ["add", "file1.txt"])
+        run_git(clone1_dir, ["commit", "-m", "Divergent commit in clone1"])
+
+        with pytest.raises(PushRejectedError):
+            write_ops.push(clone1_dir, "origin", "main")
+
+    def test_pull_happy_path_fast_forward(self, bare_repo_fixture):
+        _, clone1_dir, clone2_dir = bare_repo_fixture
+
+        (clone2_dir / "update.txt").write_text("new content\n")
+        run_git(clone2_dir, ["add", "update.txt"])
+        run_git(clone2_dir, ["commit", "-m", "Update from clone2"])
+        write_ops.push(clone2_dir, "origin", "main")
+
+        write_ops.pull(clone1_dir, "origin", "main")
+        assert (clone1_dir / "update.txt").exists()
+
+    def test_pull_merge_required(self, bare_repo_fixture):
+        _, clone1_dir, clone2_dir = bare_repo_fixture
+
+        # Advance remote via clone2
+        (clone2_dir / "c2.txt").write_text("c2\n")
+        run_git(clone2_dir, ["add", "c2.txt"])
+        run_git(clone2_dir, ["commit", "-m", "c2 commit"])
+        write_ops.push(clone2_dir, "origin", "main")
+
+        # Divergent commit in clone1
+        (clone1_dir / "c1.txt").write_text("c1\n")
+        run_git(clone1_dir, ["add", "c1.txt"])
+        run_git(clone1_dir, ["commit", "-m", "c1 commit"])
+
+        with pytest.raises(MergeRequiredError):
+            write_ops.pull(clone1_dir, "origin", "main")
+
+    def test_fetch_records_setting(self, bare_repo_fixture, tmp_path):
+        import sqlite3
+
+        from wrench.storage import settings
+
+        _, clone1_dir, _ = bare_repo_fixture
+
+        db_file = tmp_path / "test.db"
+        conn = sqlite3.connect(str(db_file))
+        conn.row_factory = sqlite3.Row
+        conn.execute("""CREATE TABLE app_settings (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )""")
+        conn.commit()
+
+        write_ops.fetch(clone1_dir, "origin", db_conn=conn)
+        val = settings.get_setting(conn, "remote_last_fetch.origin")
+        assert val is not None
+
+    def test_clone_repo_success_and_config(self, bare_repo_fixture, tmp_path):
+        bare_dir, _, _ = bare_repo_fixture
+        dest = tmp_path / "new_clone"
+
+        result = write_ops.clone_repo(str(bare_dir), dest)
+        assert result.path == dest
+        assert (dest / ".git").exists()
+        assert (dest / "README.md").exists()
+
+        # Check credential configuration
+        h = run_git(dest, ["config", "--local", "credential.helper"]).stdout.strip()
+        p = run_git(dest, ["config", "--local", "credential.useHttpPath"]).stdout.strip()
+        assert h == "wrench"
+        assert p == "true"
+
+    def test_clone_repo_destination_exists_rejected(self, bare_repo_fixture, tmp_path):
+        bare_dir, _, _ = bare_repo_fixture
+        dest = tmp_path / "existing_dir"
+        dest.mkdir()
+        (dest / "file.txt").write_text("existing")
+
+        with pytest.raises(GitCommandError) as exc_info:
+            write_ops.clone_repo(str(bare_dir), dest)
+        assert "exists" in str(exc_info.value)
+
+    def test_clone_repo_cancelled_cleans_up(self, bare_repo_fixture, tmp_path):
+        bare_dir, _, _ = bare_repo_fixture
+        dest = tmp_path / "cancelled_clone"
+
+        cancel_event = threading.Event()
+        cancel_event.set()
+
+        with pytest.raises(CloneAbortedError):
+            write_ops.clone_repo(str(bare_dir), dest, cancel_event=cancel_event)
+
+        assert not dest.exists()

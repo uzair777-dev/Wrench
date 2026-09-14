@@ -1,13 +1,21 @@
-"""Core Git Engine — public façade."""
-
 import os
+import re
+import sqlite3
 import tempfile
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import pygit2
 
-from .exceptions import BinaryFileStagingError, PatchApplyError, WrenchRepoNotFoundError
+from .exceptions import (
+    BinaryFileStagingError,
+    GitCommandError,
+    PatchApplyError,
+    RemoteExistsError,
+    RemoteNotFoundError,
+    WrenchRepoNotFoundError,
+)
 
 
 @dataclass
@@ -160,6 +168,23 @@ class LogFilter:
     path: str | None = None
 
 
+@dataclass
+class CloneResult:
+    """Phase 3 addition. Returned by clone_repo on success."""
+
+    path: Path
+
+
+@dataclass
+class RemoteInfo:
+    """Phase 3 addition. Represents a configured git remote."""
+
+    name: str
+    url: str
+    last_fetch_at: str | None = None
+    is_reachable: bool | None = None
+
+
 class RepoHandle:
     """Wraps a pygit2.Repository for reads and Path for subprocess."""
 
@@ -178,10 +203,14 @@ def init_repo(path: Path | str) -> RepoHandle:
     return open_repo(p)
 
 
-def clone_repo(url: str, dest: Path | str, *, progress_cb=None) -> RepoHandle:
-    p = Path(dest)
-    write_ops.clone_repo(url, p, progress_cb=progress_cb)
-    return open_repo(p)
+def clone_repo(
+    url: str,
+    dest: Path | str,
+    *,
+    progress_cb=None,
+    cancel_event=None,
+) -> CloneResult:
+    return write_ops.clone_repo(url, dest, progress_cb=progress_cb, cancel_event=cancel_event)
 
 
 clone = clone_repo
@@ -445,16 +474,236 @@ def restore_to_ref(repo: RepoHandle, sha: str) -> None:
     reflog.restore_to_ref(repo, sha)
 
 
-def push(repo: RepoHandle, remote: str, branch: str, *, force: bool = False) -> None:
-    raise NotImplementedError
+def push(
+    repo: RepoHandle,
+    remote: str,
+    branch: str,
+    *,
+    force: bool = False,
+    progress_cb=None,
+    cancel_event=None,
+) -> None:
+    write_ops.push(
+        repo.path,
+        remote,
+        branch,
+        force=force,
+        progress_cb=progress_cb,
+        cancel_event=cancel_event,
+    )
 
 
-def pull(repo: RepoHandle, remote: str, branch: str) -> None:
-    raise NotImplementedError
+def pull(
+    repo: RepoHandle,
+    remote: str,
+    branch: str,
+    *,
+    progress_cb=None,
+    cancel_event=None,
+) -> None:
+    write_ops.pull(
+        repo.path,
+        remote,
+        branch,
+        progress_cb=progress_cb,
+        cancel_event=cancel_event,
+    )
 
 
-def fetch(repo: RepoHandle, remote: str) -> None:
-    raise NotImplementedError
+def fetch(
+    repo: RepoHandle,
+    remote: str,
+    *,
+    db_conn=None,
+    progress_cb=None,
+    cancel_event=None,
+) -> None:
+    write_ops.fetch(
+        repo.path,
+        remote,
+        db_conn=db_conn,
+        progress_cb=progress_cb,
+        cancel_event=cancel_event,
+    )
+
+
+_REMOTE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+
+
+def _validate_remote_name(name: str) -> None:
+    if not name or not _REMOTE_NAME_RE.match(name):
+        raise GitCommandError(
+            ["remote"],
+            1,
+            f"Invalid remote name: '{name}'. Must match ^[A-Za-z0-9][A-Za-z0-9._-]*$",
+        )
+
+
+def _validate_remote_url(url: str) -> None:
+    u = url.strip()
+    if not u:
+        raise GitCommandError(["remote"], 1, "Invalid remote url: empty URL.")
+    if u.startswith(("https://", "http://", "ssh://")):
+        return
+    if "@" in u and ":" in u and not u.startswith("/"):
+        return
+    raise GitCommandError(
+        ["remote"],
+        1,
+        f"Invalid remote url: '{url}'. Supported schemes: https://, http://, ssh://, "
+        "user@host:path",
+    )
+
+
+def list_remotes(
+    repo: RepoHandle,
+    *,
+    db_conn: sqlite3.Connection | None = None,
+) -> list[RemoteInfo]:
+    """List configured remotes without network latency."""
+    remotes_list: list[RemoteInfo] = []
+
+    conn = db_conn
+    should_close = False
+    if conn is None:
+        try:
+            from wrench.storage import db
+
+            conn = db.get_connection()
+            should_close = True
+        except Exception:
+            conn = None
+
+    try:
+        repo_id = None
+        if conn:
+            from wrench.storage import repo_registry, settings
+
+            try:
+                rec = repo_registry.get_repo_by_path(conn, str(repo.path))
+                if rec:
+                    repo_id = rec.id
+            except Exception:
+                pass
+
+        for remote in repo.pygit2_repo.remotes:
+            last_fetch = None
+            reachable = None
+            if conn:
+                r_val = None
+                if repo_id is not None:
+                    last_fetch = settings.get_setting(
+                        conn, f"repo.{repo_id}.remote_last_fetch.{remote.name}"
+                    )
+                    r_val = settings.get_setting(
+                        conn, f"repo.{repo_id}.remote_reachable.{remote.name}"
+                    )
+                if not last_fetch:
+                    last_fetch = settings.get_setting(conn, f"remote_last_fetch.{remote.name}")
+                if not r_val:
+                    r_val = settings.get_setting(conn, f"remote_reachable.{remote.name}")
+                if r_val is not None:
+                    reachable = r_val == "1" or r_val.lower() == "true"
+
+            remotes_list.append(
+                RemoteInfo(
+                    name=remote.name,
+                    url=remote.url,
+                    last_fetch_at=last_fetch,
+                    is_reachable=reachable,
+                )
+            )
+    finally:
+        if should_close and conn:
+            conn.close()
+
+    remotes_list.sort(key=lambda r: r.name)
+    return remotes_list
+
+
+def _probe_reachability(
+    repo_path: Path, remote_name: str, db_conn: sqlite3.Connection | None = None
+) -> None:
+    res = write_ops.run_git(repo_path, ["ls-remote", remote_name, "HEAD"], timeout=15, check=False)
+    reachable = res.returncode == 0
+    conn = db_conn
+    should_close = False
+    if conn is None:
+        try:
+            from wrench.storage import db
+
+            conn = db.get_connection()
+            should_close = True
+        except Exception:
+            return
+
+    try:
+        from wrench.storage import repo_registry, settings
+
+        rec = None
+        try:
+            rec = repo_registry.get_repo_by_path(conn, str(repo_path))
+        except Exception:
+            pass
+
+        val = "1" if reachable else "0"
+        if rec:
+            settings.set_setting(conn, f"repo.{rec.id}.remote_reachable.{remote_name}", val)
+        settings.set_setting(conn, f"remote_reachable.{remote_name}", val)
+    except Exception:
+        pass
+    finally:
+        if should_close and conn:
+            conn.close()
+
+
+def add_remote(
+    repo: RepoHandle,
+    name: str,
+    url: str,
+    *,
+    db_conn: sqlite3.Connection | None = None,
+) -> None:
+    """Add a new remote, configure credential helper, and probe reachability in background."""
+    _validate_remote_name(name)
+    _validate_remote_url(url)
+
+    existing = [r.name for r in repo.pygit2_repo.remotes]
+    if name in existing:
+        raise RemoteExistsError(name)
+
+    write_ops.run_git(repo.path, ["config", "--local", "credential.helper", "wrench"])
+    write_ops.run_git(repo.path, ["config", "--local", "credential.useHttpPath", "true"])
+
+    write_ops.run_git(repo.path, ["remote", "add", name, url])
+
+    probe_thread = threading.Thread(
+        target=_probe_reachability,
+        args=(repo.path, name, db_conn),
+        daemon=True,
+    )
+    probe_thread.start()
+
+
+def remove_remote(repo: RepoHandle, name: str) -> None:
+    """Remove a configured remote."""
+    existing = [r.name for r in repo.pygit2_repo.remotes]
+    if name not in existing:
+        raise RemoteNotFoundError(name)
+
+    write_ops.run_git(repo.path, ["remote", "remove", name])
+
+
+def set_remote_url(repo: RepoHandle, name: str, url: str) -> None:
+    """Set the URL of an existing remote."""
+    _validate_remote_name(name)
+    _validate_remote_url(url)
+
+    existing = [r.name for r in repo.pygit2_repo.remotes]
+    if name not in existing:
+        raise RemoteNotFoundError(name)
+
+    write_ops.run_git(repo.path, ["remote", "set-url", name, url])
 
 
 def merge(repo: RepoHandle, source_branch: str) -> MergeResult:

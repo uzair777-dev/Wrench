@@ -8,7 +8,9 @@ from .db import _db_lock
 def get_setting(conn: sqlite3.Connection, key: str) -> str | None:
     with _db_lock:
         row = conn.execute("SELECT value FROM app_settings WHERE key = ?", (key,)).fetchone()
-        return row["value"] if row else None
+        if not row:
+            return None
+        return row["value"] if isinstance(row, sqlite3.Row) else row[0]
 
 
 def set_setting(conn: sqlite3.Connection, key: str, value: str) -> None:

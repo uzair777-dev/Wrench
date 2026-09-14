@@ -9,22 +9,26 @@ import logging
 import os
 import re
 import shutil
+import sqlite3
 import subprocess
+import tempfile
 import threading
 import time
 from collections.abc import Callable
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pygit2
 
 from . import ssh_agent
-from .engine import MergeResult, RebaseResult
+from .engine import CloneResult, MergeResult, RebaseResult
 from .exceptions import (
     AuthFailedError,
     AuthRequiredError,
     BranchAlreadyExistsError,
     BranchNotFullyMergedError,
     CLITimeoutError,
+    CloneAbortedError,
     DirtyTreeError,
     EmptyCommitMessageError,
     GitCommandError,
@@ -425,21 +429,217 @@ def init_repo(repo_path: Path | str) -> None:
     run_git(p, ["init"])
 
 
+def push(
+    repo_path: Path | str,
+    remote: str,
+    branch: str,
+    *,
+    force: bool = False,
+    progress_cb: Callable[[int, str], None] | None = None,
+    cancel_event: threading.Event | None = None,
+) -> None:
+    """Push branch to remote using --progress and --force-with-lease if force=True."""
+    p = Path(repo_path)
+    args = ["push", "--progress"]
+    if force:
+        args.append("--force-with-lease")
+    args.extend([remote, branch])
+
+    def on_line(line: str):
+        if progress_cb:
+            prog = _parse_progress(line)
+            if prog:
+                progress_cb(prog[0], prog[1])
+
+    code, stdout, stderr = run_git_streaming(
+        p,
+        args,
+        timeout=600,
+        on_stderr_line=on_line,
+        cancel_event=cancel_event,
+    )
+    if cancel_event and cancel_event.is_set():
+        raise GitCommandError(args, -1, "Push operation was cancelled by user")
+    if code != 0:
+        remote_url = None
+        try:
+            url_res = run_git(p, ["remote", "get-url", remote], check=False)
+            if url_res.returncode == 0 and url_res.stdout.strip():
+                remote_url = url_res.stdout.strip()
+        except Exception:
+            pass
+        raise _classify_git_error(args, code, stderr, remote_url=remote_url)
+
+
+def pull(
+    repo_path: Path | str,
+    remote: str,
+    branch: str,
+    *,
+    progress_cb: Callable[[int, str], None] | None = None,
+    cancel_event: threading.Event | None = None,
+) -> None:
+    """Pull branch from remote using --progress and --ff-only."""
+    p = Path(repo_path)
+    args = ["pull", "--progress", "--ff-only", remote, branch]
+
+    def on_line(line: str):
+        if progress_cb:
+            prog = _parse_progress(line)
+            if prog:
+                progress_cb(prog[0], prog[1])
+
+    code, stdout, stderr = run_git_streaming(
+        p,
+        args,
+        timeout=600,
+        on_stderr_line=on_line,
+        cancel_event=cancel_event,
+    )
+    if cancel_event and cancel_event.is_set():
+        raise GitCommandError(args, -1, "Pull operation was cancelled by user")
+    if code != 0:
+        remote_url = None
+        try:
+            url_res = run_git(p, ["remote", "get-url", remote], check=False)
+            if url_res.returncode == 0 and url_res.stdout.strip():
+                remote_url = url_res.stdout.strip()
+        except Exception:
+            pass
+        raise _classify_git_error(args, code, stderr, remote_url=remote_url)
+
+
+def fetch(
+    repo_path: Path | str,
+    remote: str,
+    *,
+    db_conn: sqlite3.Connection | None = None,
+    progress_cb: Callable[[int, str], None] | None = None,
+    cancel_event: threading.Event | None = None,
+) -> None:
+    """Fetch from remote with --progress and --prune, recording timestamp in settings."""
+    p = Path(repo_path)
+    args = ["fetch", "--progress", "--prune", remote]
+
+    def on_line(line: str):
+        if progress_cb:
+            prog = _parse_progress(line)
+            if prog:
+                progress_cb(prog[0], prog[1])
+
+    code, stdout, stderr = run_git_streaming(
+        p,
+        args,
+        timeout=600,
+        on_stderr_line=on_line,
+        cancel_event=cancel_event,
+    )
+    if cancel_event and cancel_event.is_set():
+        raise GitCommandError(args, -1, "Fetch operation was cancelled by user")
+    if code != 0:
+        remote_url = None
+        try:
+            url_res = run_git(p, ["remote", "get-url", remote], check=False)
+            if url_res.returncode == 0 and url_res.stdout.strip():
+                remote_url = url_res.stdout.strip()
+        except Exception:
+            pass
+        raise _classify_git_error(args, code, stderr, remote_url=remote_url)
+
+    # Record fetch timestamp in settings
+    try:
+        conn = db_conn
+        should_close = False
+        if conn is None:
+            from wrench.storage import db
+
+            conn = db.get_connection()
+            should_close = True
+
+        try:
+            from wrench.storage import repo_registry, settings
+
+            now_iso = datetime.now(timezone.utc).isoformat()
+            rec = None
+            try:
+                rec = repo_registry.get_repo_by_path(conn, str(p))
+            except Exception:
+                pass
+
+            if rec:
+                settings.set_setting(conn, f"repo.{rec.id}.remote_last_fetch.{remote}", now_iso)
+            settings.set_setting(conn, f"remote_last_fetch.{remote}", now_iso)
+        finally:
+            if should_close and conn:
+                conn.close()
+
+    except Exception as e:
+        logger.warning("[git] Failed to record fetch timestamp in settings: %s", e)
+
+
 def clone_repo(
     url: str,
     dest: Path | str,
     *,
     timeout: int = 600,
-    progress_cb=None,
-) -> None:
-    """Clone a repository."""
+    progress_cb: Callable[[int, str], None] | None = None,
+    cancel_event: threading.Event | None = None,
+) -> CloneResult:
+    """Clone a repository into a temporary directory and atomically move on success."""
     d = Path(dest)
+    if d.exists():
+        if d.is_file() or any(d.iterdir()):
+            raise GitCommandError(
+                ["clone", url, str(d)],
+                1,
+                f"Destination path '{d}' exists and is not empty.",
+            )
+
     d.parent.mkdir(parents=True, exist_ok=True)
-    run_git(
-        d.parent,
-        ["clone", url, str(d.name)],
-        timeout=timeout,
-    )
+    temp_dir = Path(tempfile.mkdtemp(prefix="wrench-clone-", dir=d.parent))
+
+    def on_line(line: str):
+        if progress_cb:
+            prog = _parse_progress(line)
+            if prog:
+                progress_cb(prog[0], prog[1])
+
+    try:
+        code, stdout, stderr = run_git_streaming(
+            d.parent,
+            ["clone", "--progress", url, str(temp_dir.name)],
+            timeout=timeout,
+            on_stderr_line=on_line,
+            cancel_event=cancel_event,
+        )
+
+        if cancel_event and cancel_event.is_set():
+            shutil.rmtree(temp_dir, ignore_errors=True)
+            raise CloneAbortedError("Clone operation was cancelled by user.")
+
+        if code != 0:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+            raise _classify_git_error(["clone", url, str(d)], code, stderr, remote_url=url)
+
+        if d.exists() and any(d.iterdir()):
+            shutil.rmtree(temp_dir, ignore_errors=True)
+            raise GitCommandError(
+                ["clone", url, str(d)],
+                1,
+                f"Destination path '{d}' already exists.",
+            )
+
+        shutil.move(str(temp_dir), str(d))
+
+        # Write credential config into fresh clone
+        run_git(d, ["config", "--local", "credential.helper", "wrench"])
+        run_git(d, ["config", "--local", "credential.useHttpPath", "true"])
+
+        return CloneResult(path=d)
+
+    except Exception:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+        raise
 
 
 # --- Phase 2: Merge & Rebase Operations ---

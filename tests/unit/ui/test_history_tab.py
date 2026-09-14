@@ -1,7 +1,7 @@
 """Unit tests for HistoryTab widget (Phase 2)."""
 
 import pytest
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QAbstractItemView, QApplication
 
 from wrench.ui.tabs.history_tab import HistoryTab
 
@@ -176,3 +176,36 @@ class TestHistoryTab:
         assert header2.sectionSize(0) == 180
         assert header2.sectionSize(1) == 450
         assert header2.sectionSize(2) == 200
+
+    def test_history_tab_pixel_scroll_and_graph_scrollbar_tracking(self, multi_commit_repo):
+        tab = HistoryTab()
+        tab.set_repo(multi_commit_repo)
+        tab.resize(400, 300)
+        tab.show()
+
+        graph = tab.graph_widget
+        assert graph.horizontalScrollMode() == QAbstractItemView.ScrollPerPixel
+
+        # Enable graph column scrollbar with lanes
+        graph._max_graph_scroll_x = 100
+        graph._update_graph_scrollbar_geom()
+
+        # At scroll 0: scrollbar is aligned with viewport and visible
+        assert graph.graph_scrollbar.isVisible() is True
+        initial_x = graph.graph_scrollbar.x()
+        assert initial_x == graph.viewport().x()
+
+        # When the main horizontal scrollbar scrolls right, column 0 moves left.
+        # The graph scrollbar x position must follow column 0 to the left.
+        graph.horizontalScrollBar().setValue(40)
+        assert graph.graph_scrollbar.x() == initial_x - 40
+        assert graph.graph_scrollbar.isVisible() is True
+
+        # When scrolled sufficiently far that column 0 is off-screen (col 0 width is 100):
+        graph.horizontalScrollBar().setValue(120)
+        assert graph.graph_scrollbar.isVisible() is False
+
+        # When scrolled back to 0:
+        graph.horizontalScrollBar().setValue(0)
+        assert graph.graph_scrollbar.x() == initial_x
+        assert graph.graph_scrollbar.isVisible() is True

@@ -20,6 +20,7 @@ from PySide6.QtGui import (
     QPen,
 )
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QHeaderView,
     QMenu,
     QScrollBar,
@@ -372,6 +373,7 @@ class CommitGraphWidget(QTableView):
     def _init_ui(self):
         self.setSelectionBehavior(QTableView.SelectRows)
         self.setSelectionMode(QTableView.SingleSelection)
+        self.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
         self.verticalHeader().setDefaultSectionSize(ROW_HEIGHT)
         self.verticalHeader().setVisible(False)
         self.setShowGrid(False)
@@ -402,10 +404,13 @@ class CommitGraphWidget(QTableView):
         header.setStretchLastSection(False)
 
         header.sectionResized.connect(self._on_section_resized)
+        header.geometriesChanged.connect(self._update_graph_scrollbar_geom)
         self.selectionModel().selectionChanged.connect(self._on_selection_changed)
         self.verticalScrollBar().valueChanged.connect(self._on_scroll)
         self.verticalScrollBar().valueChanged.connect(self._update_graph_scrollbar_geom)
         self.horizontalScrollBar().valueChanged.connect(self._update_graph_scrollbar_geom)
+        self.verticalScrollBar().rangeChanged.connect(self._update_graph_scrollbar_geom)
+        self.horizontalScrollBar().rangeChanged.connect(self._update_graph_scrollbar_geom)
         self.setContextMenuPolicy(Qt.CustomContextMenu)
         self.customContextMenuRequested.connect(self._show_context_menu)
 
@@ -426,26 +431,35 @@ class CommitGraphWidget(QTableView):
         super().resizeEvent(event)
         self._update_graph_scrollbar_geom()
 
-    def _update_graph_scrollbar_geom(self) -> None:
+    def scrollContentsBy(self, dx: int, dy: int) -> None:
+        super().scrollContentsBy(dx, dy)
+        self._update_graph_scrollbar_geom()
+
+    def _update_graph_scrollbar_geom(self, *args, **kwargs) -> None:
         if not hasattr(self, "_graph_scrollbar") or not self._graph_scrollbar:
             return
-        col_0_width = self.horizontalHeader().sectionSize(0)
-        col_0_x = self.horizontalHeader().sectionPosition(0) - self.horizontalScrollBar().value()
+        header = self.horizontalHeader()
+        col_0_width = header.sectionSize(0)
+        col_0_x = self.viewport().x() + header.sectionViewportPosition(0)
+        col_0_right = col_0_x + col_0_width
+
+        viewport_left = self.viewport().x()
+        viewport_right = self.viewport().x() + self.viewport().width()
+
+        visible_left = max(col_0_x, viewport_left)
+        visible_right = min(col_0_right, viewport_right)
+        visible_w = max(0, visible_right - visible_left)
 
         h_scroll_h = (
             self.horizontalScrollBar().height() if self.horizontalScrollBar().isVisible() else 0
         )
-        v_scroll_w = self.verticalScrollBar().width() if self.verticalScrollBar().isVisible() else 0
-
         bar_h = self.horizontalScrollBar().sizeHint().height() or 12
         self._graph_scrollbar.setFixedHeight(bar_h)
         y = max(0, self.height() - h_scroll_h - bar_h)
 
-        actual_x = max(0, col_0_x)
-        max_w = self.width() - v_scroll_w - actual_x
-        actual_w = max(0, min(col_0_width - (actual_x - col_0_x), max_w))
-        self._graph_scrollbar.setGeometry(actual_x, y, actual_w, bar_h)
-        self._graph_scrollbar.setVisible(self._max_graph_scroll_x > 0 and actual_w > 10)
+        bar_w = max(0, min(col_0_width, viewport_right - col_0_x))
+        self._graph_scrollbar.setGeometry(col_0_x, y, bar_w, bar_h)
+        self._graph_scrollbar.setVisible(self._max_graph_scroll_x > 0 and visible_w > 10)
         self._graph_scrollbar.raise_()
 
     def set_graph_scroll_x(self, val: int) -> None:

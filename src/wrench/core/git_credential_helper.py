@@ -23,9 +23,12 @@ def _host_of(url: str) -> str:
             return parsed.hostname.lower()
     except Exception:
         pass
-    # Fallback for plain host:port or raw paths
-    raw = url.replace("https://", "").replace("http://", "").split("/")[0]
-    return raw.split(":")[0].lower()
+    # Fallback for plain host:port or scp-style user@host:path
+    raw = url.replace("https://", "").replace("http://", "").replace("ssh://", "").split("/")[0]
+    host_part = raw.split(":")[0].lower()
+    if "@" in host_part:
+        host_part = host_part.split("@")[-1]
+    return host_part
 
 
 def _normalize_path(path: str) -> str:

@@ -7,22 +7,43 @@ it goes through core.engine.
 
 import logging
 import os
+import re
 import shutil
 import subprocess
+import threading
+import time
+from collections.abc import Callable
 from pathlib import Path
 
 import pygit2
 
+from . import ssh_agent
 from .engine import MergeResult, RebaseResult
 from .exceptions import (
+    AuthFailedError,
+    AuthRequiredError,
     BranchAlreadyExistsError,
     BranchNotFullyMergedError,
+    CLITimeoutError,
     DirtyTreeError,
     EmptyCommitMessageError,
     GitCommandError,
+    MergeRequiredError,
+    PushRejectedError,
 )
+from .git_credential_helper import _host_of
 
 logger = logging.getLogger(__name__)
+
+
+def _git_env() -> dict[str, str]:
+    """Construct a clean, non-interactive environment for git subprocesses."""
+    env = os.environ.copy()
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    env["GIT_ASKPASS"] = ""
+    env["LC_ALL"] = "C"
+    ssh_agent.configure_ssh_env(env)
+    return env
 
 
 def run_git(
@@ -35,9 +56,7 @@ def run_git(
     """Run a git command in the given repo directory."""
     p = Path(repo_path)
     logger.debug("[git] Executing in '%s': git %s", p, " ".join(args))
-    env = os.environ.copy()
-    env["GIT_TERMINAL_PROMPT"] = "0"
-    env["LC_ALL"] = "C"
+    env = _git_env()
 
     cmd = ["git"] + args
     try:
@@ -72,6 +91,202 @@ def run_git(
         logger.debug("[git] Succeeded (exit 0): git %s", " ".join(args))
 
     return result
+
+
+_PROGRESS_RE = re.compile(r"^([\w ]+?):\s+(\d+)%(?:\s*\(\d+/\d+\))?")
+
+
+def _parse_progress(line: str) -> tuple[int, str] | None:
+    """Parse git sideband progress lines.
+
+    Captures (percent, stage) e.g. (12, "Counting objects").
+    Returns None if line does not match.
+    """
+    s = line.strip()
+    if s.startswith("remote:"):
+        s = s[len("remote:") :].strip()
+    m = _PROGRESS_RE.match(s)
+    if not m:
+        return None
+    stage = m.group(1).strip()
+    pct = int(m.group(2))
+    return (pct, stage)
+
+
+def _classify_git_error(
+    args: list[str],
+    returncode: int,
+    stderr: str,
+    remote_url: str | None = None,
+) -> Exception:
+    """Classify non-zero git CLI exit into specific domain exceptions."""
+    is_push = len(args) > 0 and args[0] == "push"
+    is_pull = len(args) > 0 and args[0] == "pull"
+
+    if is_push and "rejected" in stderr:
+        return PushRejectedError(args, returncode, stderr)
+
+    if is_pull and "Not possible to fast-forward" in stderr:
+        return MergeRequiredError(args, returncode, stderr)
+
+    parsed_host = _host_of(remote_url) if remote_url else None
+    if not parsed_host and stderr:
+        m = re.search(r"https?://([^/:\s']+)", stderr)
+        if m:
+            parsed_host = m.group(1).lower()
+        else:
+            m = re.search(r"git@([^/:\s']+)", stderr)
+            if m:
+                parsed_host = m.group(1).lower()
+
+    if any(
+        pattern in stderr
+        for pattern in (
+            "Authentication failed",
+            "403",
+            "401",
+            "Permission denied (publickey)",
+        )
+    ):
+        return AuthFailedError(host=parsed_host, stderr=stderr)
+
+    if any(
+        pattern in stderr
+        for pattern in (
+            "could not read Username",
+            "could not read Password",
+            "terminal prompts disabled",
+        )
+    ):
+        return AuthRequiredError(host=parsed_host, stderr=stderr)
+
+    return GitCommandError(args, returncode, stderr)
+
+
+def run_git_streaming(
+    repo_path: Path | str,
+    args: list[str],
+    *,
+    timeout: int = 600,
+    on_stderr_line: Callable[[str], None] | None = None,
+    cancel_event: threading.Event | None = None,
+) -> tuple[int, str, str]:
+    """Execute a git command with concurrent pipe draining and cancellation support.
+
+    Prevents 64 KiB buffer deadlocks by consuming stdout and stderr concurrently.
+    Splits stderr on both \\r and \\n to stream in-place progress updates.
+    Returns (returncode, stdout_text, stderr_text).
+    """
+    p = Path(repo_path)
+    logger.debug("[git-streaming] Executing in '%s': git %s", p, " ".join(args))
+    env = _git_env()
+    cmd = ["git"] + args
+
+    proc = subprocess.Popen(
+        cmd,
+        cwd=p,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+
+    stdout_chunks: list[str] = []
+    stderr_chunks: list[str] = []
+
+    def _read_stdout():
+        assert proc.stdout is not None
+        while True:
+            chunk = proc.stdout.read(4096)
+            if not chunk:
+                break
+            stdout_chunks.append(chunk.decode("utf-8", errors="replace"))
+
+    def _read_stderr():
+        assert proc.stderr is not None
+        buffer = ""
+        while True:
+            chunk = proc.stderr.read(4096)
+            if not chunk:
+                if buffer and on_stderr_line:
+                    on_stderr_line(buffer)
+                break
+            text = chunk.decode("utf-8", errors="replace")
+            stderr_chunks.append(text)
+            buffer += text
+            while True:
+                r_pos = buffer.find("\r")
+                n_pos = buffer.find("\n")
+                if r_pos == -1 and n_pos == -1:
+                    break
+                if r_pos != -1 and (n_pos == -1 or r_pos < n_pos):
+                    split_pos = r_pos
+                    sep_len = 1
+                    if split_pos + 1 < len(buffer) and buffer[split_pos + 1] == "\n":
+                        sep_len = 2
+                else:
+                    split_pos = n_pos
+                    sep_len = 1
+                fragment = buffer[:split_pos]
+                buffer = buffer[split_pos + sep_len :]
+                if on_stderr_line and fragment:
+                    on_stderr_line(fragment)
+
+    t_stdout = threading.Thread(target=_read_stdout, daemon=True)
+    t_stderr = threading.Thread(target=_read_stderr, daemon=True)
+    t_stdout.start()
+    t_stderr.start()
+
+    start_time = time.monotonic()
+
+    while True:
+        if proc.poll() is not None:
+            break
+
+        if cancel_event and cancel_event.is_set():
+            logger.debug("[git-streaming] Cancel requested; terminating process %d", proc.pid)
+            proc.terminate()
+            try:
+                proc.wait(timeout=3.0)
+            except subprocess.TimeoutExpired:
+                logger.warning(
+                    "[git-streaming] Process %d did not terminate in 3s; killing", proc.pid
+                )
+                proc.kill()
+                proc.wait(timeout=1.0)
+            break
+
+        elapsed = time.monotonic() - start_time
+        if timeout and elapsed > timeout:
+            logger.error(
+                "[git-streaming] Process %d timed out after %ds; killing", proc.pid, timeout
+            )
+            proc.kill()
+            proc.wait(timeout=1.0)
+            t_stdout.join(timeout=1.0)
+            t_stderr.join(timeout=1.0)
+            stderr_str = "".join(stderr_chunks)
+            raise CLITimeoutError(args, timeout, stderr_str)
+
+        time.sleep(0.05)
+
+    t_stdout.join(timeout=2.0)
+    t_stderr.join(timeout=2.0)
+
+    returncode = proc.returncode if proc.returncode is not None else -1
+    stdout_str = "".join(stdout_chunks)
+    stderr_str = "".join(stderr_chunks)
+
+    if returncode != 0:
+        logger.debug(
+            "[git-streaming] Failed (exit %d): git %s\n  stderr: %s",
+            returncode,
+            " ".join(args),
+            stderr_str.strip(),
+        )
+    else:
+        logger.debug("[git-streaming] Succeeded (exit 0): git %s", " ".join(args))
+
+    return (returncode, stdout_str, stderr_str)
 
 
 def _check_clean_working_tree(repo_path: Path) -> None:

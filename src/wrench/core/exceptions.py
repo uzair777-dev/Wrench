@@ -112,10 +112,11 @@ class AuthRequiredError(WrenchGitError):
 class AuthFailedError(WrenchGitError):
     """Stored credentials rejected by remote host or SSH agent authentication failed."""
 
-    def __init__(self, host: str, *, stderr: str | None = None):
+    def __init__(self, host: str | None = None, *, stderr: str | None = None):
         self.host = host
+        detail = f" for host '{host}'" if host else ""
         super().__init__(
-            f"Authentication failed for host '{host}'. Check account token or SSH keys.",
+            f"Authentication failed{detail}. Check account token or SSH keys.",
             stderr=stderr,
         )
 
@@ -123,9 +124,31 @@ class AuthFailedError(WrenchGitError):
 class PushRejectedError(GitCommandError):
     """git push exited non-zero with 'rejected' in stderr (non-fast-forward / remote moved)."""
 
+    def __init__(
+        self,
+        stderr_or_args: str | list[str] = "",
+        returncode: int = 1,
+        stderr: str | None = None,
+    ):
+        if isinstance(stderr_or_args, list):
+            super().__init__(stderr_or_args, returncode, stderr or "")
+        else:
+            super().__init__(["push"], returncode, stderr_or_args)
+
 
 class MergeRequiredError(GitCommandError):
     """git pull --ff-only failed because branches diverged."""
+
+    def __init__(
+        self,
+        stderr_or_args: str | list[str] = "",
+        returncode: int = 1,
+        stderr: str | None = None,
+    ):
+        if isinstance(stderr_or_args, list):
+            super().__init__(stderr_or_args, returncode, stderr or "")
+        else:
+            super().__init__(["pull"], returncode, stderr_or_args)
 
 
 class RemoteExistsError(WrenchGitError):
@@ -146,3 +169,14 @@ class RemoteNotFoundError(WrenchGitError):
 
 class CLITimeoutError(GitCommandError):
     """The git subprocess exceeded its timeout."""
+
+    def __init__(
+        self,
+        args_or_msg: list[str] | str = "",
+        returncode_or_timeout: int | float = -1,
+        stderr: str = "",
+    ):
+        if isinstance(args_or_msg, list):
+            super().__init__(args_or_msg, int(returncode_or_timeout), stderr)
+        else:
+            super().__init__(["git"], -1, args_or_msg)

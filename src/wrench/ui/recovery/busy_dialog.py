@@ -1,8 +1,7 @@
-"""Dialog displayed when an external Git process is holding a repository lock."""
-
 from __future__ import annotations
 
 import logging
+import threading
 from pathlib import Path
 
 from PySide6.QtCore import QTimer, Signal
@@ -119,4 +118,66 @@ class BusyDialog(QDialog):
 
     def closeEvent(self, event) -> None:
         self._poll_timer.stop()
+        super().closeEvent(event)
+
+
+class BusyOperationDialog(QDialog):
+    """Progress & cancellation modal dialog for in-flight background operations."""
+
+    def __init__(
+        self,
+        title: str,
+        message: str,
+        *,
+        cancel_event: threading.Event | None = None,
+        parent: QWidget | None = None,
+    ):
+        super().__init__(parent)
+        self.cancel_event = cancel_event
+        self.setWindowTitle(title)
+        self.setMinimumWidth(440)
+        self.setModal(True)
+
+        self._init_ui(message)
+
+    def _init_ui(self, message: str) -> None:
+        layout = QVBoxLayout(self)
+        layout.setSpacing(12)
+
+        self.status_lbl = QLabel(message, self)
+        self.status_lbl.setWordWrap(True)
+        layout.addWidget(self.status_lbl)
+
+        self.progress_bar = QProgressBar(self)
+        self.progress_bar.setRange(0, 0)  # default indeterminate
+        layout.addWidget(self.progress_bar)
+
+        btn_bar = QHBoxLayout()
+        btn_bar.addStretch()
+
+        self.cancel_btn = QPushButton("Cancel", self)
+        self.cancel_btn.clicked.connect(self._on_cancel)
+        btn_bar.addWidget(self.cancel_btn)
+
+        layout.addLayout(btn_bar)
+
+    def set_progress(self, pct: int) -> None:
+        if pct <= 0:
+            self.progress_bar.setRange(0, 0)
+        else:
+            self.progress_bar.setRange(0, 100)
+            self.progress_bar.setValue(min(100, max(0, pct)))
+
+    def update_message(self, message: str) -> None:
+        self.status_lbl.setText(message)
+
+    def _on_cancel(self) -> None:
+        if self.cancel_event:
+            self.cancel_event.set()
+        self.status_lbl.setText("Cancelling operation...")
+        self.cancel_btn.setEnabled(False)
+
+    def closeEvent(self, event) -> None:
+        if self.cancel_event:
+            self.cancel_event.set()
         super().closeEvent(event)

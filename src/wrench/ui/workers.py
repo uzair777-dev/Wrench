@@ -57,16 +57,25 @@ class GitOperationWorker(QObject):
     failed = Signal(Exception)
     progress = Signal(int)
 
-    def __init__(self, fn, *args, **kwargs):
+    def __init__(self, fn, *args, cancel_event=None, **kwargs):
         super().__init__()
         self._fn = fn
         self._args = args
         self._kwargs = kwargs
+        self.cancel_event = cancel_event
 
     def run(self):
         try:
-            if hasattr(self._fn, "__code__") and "progress_cb" in self._fn.__code__.co_varnames:
-                self._kwargs.setdefault("progress_cb", self.progress.emit)
+            if hasattr(self._fn, "__code__"):
+                varnames = self._fn.__code__.co_varnames
+                if "progress_cb" in varnames and "progress_cb" not in self._kwargs:
+                    self._kwargs["progress_cb"] = lambda pct, stage=None: self.progress.emit(pct)
+                if (
+                    "cancel_event" in varnames
+                    and "cancel_event" not in self._kwargs
+                    and self.cancel_event is not None
+                ):
+                    self._kwargs["cancel_event"] = self.cancel_event
             result = self._fn(*self._args, **self._kwargs)
             self.finished.emit(result)
         except Exception as e:
@@ -74,11 +83,19 @@ class GitOperationWorker(QObject):
 
 
 def run_in_background(
-    fn, *args, on_finished=None, on_failed=None, on_progress=None, **kwargs
+    fn,
+    *args,
+    on_finished=None,
+    on_failed=None,
+    on_progress=None,
+    cancel_event=None,
+    **kwargs,
 ) -> QThread:
     dispatcher = _get_dispatcher()
     thread = QThread()
-    worker = GitOperationWorker(fn, *args, **kwargs)
+    worker = GitOperationWorker(fn, *args, cancel_event=cancel_event, **kwargs)
+    thread.worker = worker  # type: ignore[attr-defined]
+    thread.cancel_event = cancel_event  # type: ignore[attr-defined]
     worker.moveToThread(thread)
 
     pair = (thread, worker)

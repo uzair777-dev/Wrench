@@ -1,25 +1,43 @@
-"""FR-4.3: Secret Service D-Bus backend."""
+import secretstorage
+from secretstorage.exceptions import LockedException, SecretServiceNotAvailableException
 
-from .backend import CredentialBackend
+from .backend import CredentialBackend, CredentialBackendUnavailableError
 
 _ATTR_APP = "wrench"
 
 
 class SecretServiceBackend(CredentialBackend):
     def _collection(self):
-        raise NotImplementedError
+        try:
+            bus = secretstorage.dbus_init()
+            collection = secretstorage.get_default_collection(bus)
+        except SecretServiceNotAvailableException as e:
+            raise CredentialBackendUnavailableError(self.unavailable_help_text()) from e
+
+        if collection.is_locked():
+            try:
+                collection.unlock()
+            except LockedException as e:
+                raise CredentialBackendUnavailableError(self.unavailable_help_text()) from e
+        return collection
 
     def store_secret(self, key: str, secret: str, *, label: str) -> None:
-        raise NotImplementedError
+        self._collection().create_item(
+            label, {"application": _ATTR_APP, "key": key}, secret, replace=True
+        )
 
     def get_secret(self, key: str) -> str | None:
-        raise NotImplementedError
+        items = self._collection().search_items({"application": _ATTR_APP, "key": key})
+        for item in items:
+            sec = item.get_secret()
+            if isinstance(sec, bytes):
+                return sec.decode("utf-8")
+            return str(sec) if sec is not None else None
+        return None
 
     def delete_secret(self, key: str) -> None:
-        raise NotImplementedError
-
-    def unavailable_help_text(self) -> str:
-        raise NotImplementedError
+        for item in self._collection().search_items({"application": _ATTR_APP, "key": key}):
+            item.delete()
 
 
 class FlatpakSecretServiceBackend(SecretServiceBackend):

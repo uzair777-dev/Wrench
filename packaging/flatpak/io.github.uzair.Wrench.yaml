@@ -8,6 +8,7 @@ finish-args:
   - --socket=fallback-x11
   - --socket=wayland
   - --device=dri
+  - --socket=ssh-auth
 
 modules:
   - name: python3-dependencies

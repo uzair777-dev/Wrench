@@ -152,6 +152,9 @@ wrench/
 │   │   ├── capability.py          # ForgeCapability enum + ForgeAdapter ABC (the interface, FR-5.1)
 │   │   ├── registry.py            # entry-points discovery + adapter instantiation (FR-5.7)
 │   │   ├── models.py              # dataclasses: PullRequest, Issue, CIStatus, ForgeAccount
+│   │   ├── exceptions.py          # forge error hierarchy (§4.3.A) — separate from core/exceptions.py
+│   │   │                          #   because these aren't git errors: they must never be conflated
+│   │   │                          #   by the UI's git-error dialog path
 │   │   └── adapters/
 │   │       ├── __init__.py
 │   │       ├── github.py          # FR-5.2
@@ -281,6 +284,12 @@ CREATE TABLE forge_accounts (           -- FR-5.6
     instance_url    TEXT NOT NULL,          -- e.g. https://github.com, or self-hosted URL
     label           TEXT NOT NULL,          -- user-facing name, e.g. "Work Forgejo"
     username         TEXT,
+    -- per-account TLS policy (SRS §6.1's self-signed-cert question, resolved §11
+    -- item 13): NULL bundle + tls_insecure=0 → system trust store only (default).
+    -- bundle path set → verify against that PEM. tls_insecure=1 → skip
+    -- verification entirely (opt-in only, warning-gated in the accounts dialog).
+    tls_ca_bundle_path TEXT,
+    tls_insecure     INTEGER NOT NULL DEFAULT 0,
     -- NOTE: no token/secret column here — credentials live only in Secret Service,
     -- referenced by a secret_service_key, never stored in SQLite (NFR: no plaintext secrets).
     secret_service_key TEXT NOT NULL UNIQUE,
@@ -364,6 +373,9 @@ class ForgeAccountRecord:
     instance_url: str
     label: str
     username: str | None
+    tls_ca_bundle_path: str | None  # per-account TLS policy (schema comment, §3.1)
+    tls_insecure: int               # raw 0/1 from SQLite, kept as int so
+                                    # dataclass(**dict(row)) stays field-name-exact
     created_at: str
     # secret_service_key is deliberately excluded from this record — callers that
     # need it (the credential helper, account removal) read it directly from the
@@ -495,6 +507,40 @@ class Remote:
     url: str
 
 @dataclass
+class RemoteInfo:
+    """Phase 3 addition (§5 Phase 3 step 5). One row of the Remotes dialog —
+    a Remote plus health metadata. `last_fetch_at` is the ISO-8601 timestamp of
+    the most recent successful fetch against this remote recorded by
+    `fetch()` (None if never fetched through Wrench), and `is_reachable` is
+    the result of the last connectivity probe (`git ls-remote` with a short
+    timeout) — None means "not yet probed", True/False are the probed result."""
+    name: str
+    url: str
+    last_fetch_at: str | None = None
+    is_reachable: bool | None = None
+
+@dataclass
+class CloneResult:
+    """Phase 3 addition (§5 Phase 3 step 3). Returned by clone_repo on success —
+    the UI needs the final path (which equals `dest` on success, but returning
+    it explicitly lets the dialog open the new repo without re-deriving it)."""
+    path: Path
+
+# The exact callback contract for every progress-reporting engine function
+# (clone_repo, push, pull, fetch). `percent` is an int 0-100 parsed from git's
+# progress stream; `stage` is the human-readable phase label git reported
+# ("Enumerating objects", "Counting objects", "Compressing objects",
+# "Receiving objects", "Resolving deltas", ...) so the UI can render
+# "Receiving objects: 42%" without inventing its own strings. GUI widgets
+# subscribe via ui.workers.run_in_background's on_progress — which emits the
+# percent only; the stage string stays available to call sites that pass a
+# richer callback of their own.
+ProgressCallback = Callable[[int, str], None]  # (percent, stage); requires
+# `from collections.abc import Callable` (or typing.Callable) at the top of the
+# module — §4.1's import list above predates this alias; add the import when the
+# alias is added.
+
+@dataclass
 class ReflogEntry:
     sha: str
     message: str
@@ -522,7 +568,13 @@ class LogFilter:
     # matching is plain case-insensitive substring search, not regex — see §5 Phase 2 step 2
 
 def init_repo(path: Path) -> None: ...
-def clone_repo(url: str, dest: Path, *, progress_cb=None) -> None: ...
+def clone_repo(url: str, dest: Path, *, progress_cb: "ProgressCallback | None" = None) -> "CloneResult": ...
+    # Phase 3 (§5 Phase 3 steps 2–3): clones into tempfile.mkdtemp() first, moves to
+    # `dest` only on success, and writes the credential helper config into the new
+    # repo (§5 Phase 3 steps 2a–2b apply — every repo that enters the app gets this
+    # config, not just clones). Raises CloneAbortedError on user cancellation,
+    # AuthRequiredError when the remote demands credentials that don't resolve,
+    # and GitCommandError for anything else. Never raises bare subprocess errors.
 def open_repo(path: Path) -> "RepoHandle": ...   # raises WrenchRepoNotFoundError if missing
 
 def get_status(repo: "RepoHandle") -> RepoStatus: ...
@@ -546,9 +598,41 @@ def stash_create(repo: "RepoHandle", message: str | None = None) -> str: ...  # 
 def stash_apply(repo: "RepoHandle", stash_id: str) -> None: ...
 def stash_drop(repo: "RepoHandle", stash_id: str) -> None: ...
 
-def push(repo: "RepoHandle", remote: str, branch: str, *, force: bool = False) -> None: ...
-def pull(repo: "RepoHandle", remote: str, branch: str) -> None: ...
-def fetch(repo: "RepoHandle", remote: str) -> None: ...
+def push(repo: "RepoHandle", remote: str, branch: str, *, force: bool = False,
+         progress_cb: "ProgressCallback | None" = None,
+         cancel_event: "threading.Event | None" = None) -> None: ...
+    # Phase 3 (§5 Phase 3 step 3). `force=True` maps to `git push --force-with-lease`
+    # — NEVER bare `--force`, which silently clobbers remote history another client
+    # updated in the meantime. Raises PushRejectedError (non-FF / stale remote info),
+    # AuthRequiredError, or GitCommandError.
+def pull(repo: "RepoHandle", remote: str, branch: str, *,
+         progress_cb: "ProgressCallback | None" = None,
+         cancel_event: "threading.Event | None" = None) -> None: ...
+    # Phase 3 (§5 Phase 3 step 3): `git pull --ff-only` — a pull that can't fast-forward
+    # raises MergeRequiredError (typed), which the UI turns into an explicit
+    # merge/rebase choice instead of letting git create a surprise merge commit.
+def fetch(repo: "RepoHandle", remote: str, *,
+          progress_cb: "ProgressCallback | None" = None,
+          cancel_event: "threading.Event | None" = None) -> None: ...
+    # Phase 3 (§5 Phase 3 step 3): records a successful fetch's timestamp into
+    # storage (keyed on (repo_id, remote_name)) so list_remotes can populate
+    # RemoteInfo.last_fetch_at without shelling out to git log analysis.
+
+def list_remotes(repo: "RepoHandle") -> list["RemoteInfo"]: ...
+    # Phase 3 (§5 Phase 3 step 5): `git remote -v` parse + stored last-fetch metadata.
+    # Push and fetch URLs that differ collapse into one RemoteInfo row keyed on the
+    # fetch URL (the credential-relevant one); the divergence is a display detail
+    # for the Remotes dialog, not a second row.
+def add_remote(repo: "RepoHandle", name: str, url: str) -> None: ...
+    # Phase 3 (§5 Phase 3 step 5 — full contract there): validates name/url, rejects
+    # duplicate names via RemoteExistsError, writes the credential helper config
+    # FIRST (§5 Phase 3 step 2) so a failure leaves no half-configured remote,
+    # then `git remote add`, then fires a connectivity probe in the background.
+def remove_remote(repo: "RepoHandle", name: str) -> None: ...
+    # Phase 3 (§5 Phase 3 step 5): pre-checks existence, raises RemoteNotFoundError
+    # from the precheck (not git's stderr), then `git remote remove`.
+def set_remote_url(repo: "RepoHandle", name: str, url: str) -> None: ...
+    # Phase 3 (§5 Phase 3 step 5): same validation as add_remote; `git remote set-url`.
 
 def merge(repo: "RepoHandle", source_branch: str) -> "MergeResult": ...
 def rebase(repo: "RepoHandle", onto: str) -> "RebaseResult": ...
@@ -593,6 +677,59 @@ def rebase_continue(repo: "RepoHandle") -> None: ...   # run_git(["rebase", "--c
 def rebase_abort(repo: "RepoHandle") -> None: ...      # run_git(["rebase", "--abort"])
 ```
 
+#### 4.1.A `core/exceptions.py` — Phase 3 additions (exact definitions)
+
+The Phase 3 steps below reference these exception types. All of them live in `core/exceptions.py` alongside the Phase 1/2 hierarchy and follow the same pattern: they subclass `WrenchGitError`, carry structured fields (never just a bundled message string), and are the ONLY exception types that `core.engine` remote-operation wrappers ever raise — a lower layer surfacing `subprocess.CalledProcessError` or `pygit2.GitError` through the façade is a façade bug, not an acceptable leak.
+
+```python
+class CloneAbortedError(WrenchGitError):
+    """User cancelled a clone via cancel_event; the temp directory was cleaned
+    up and `dest` was never written. UI shows no error dialog — this is the
+    normal outcome of pressing Cancel, distinguished from failure precisely so
+    the UI can tell the two apart."""
+
+class AuthRequiredError(WrenchGitError):
+    """Git asked for credentials and the credential helper produced none —
+    either no matching account exists in `forge_accounts`, or the Secret
+    Service lookup returned nothing. Carries `host: str | None` and
+    `path_component: str | None` parsed from the remote URL so the dialog can
+    pre-fill the account-creation flow. Distinguish from AuthFailedError:
+    AuthRequired means 'no credential on file', AuthFailed means 'credential
+    on file was rejected'."""
+
+class AuthFailedError(WrenchGitError):
+    """The credential helper DID supply a credential and the server rejected it
+    (HTTP 401/403 from a forge host, or 'Permission denied (publickey)' over
+    SSH). The credential is almost certainly expired/revoked — the UI response
+    is 'edit this account's token', NOT 'try again'. Carries `host: str`."""
+
+class PushRejectedError(GitCommandError):
+    """`git push` exited non-zero with 'rejected' in stderr — non-fast-forward,
+    remote ref moved, or a server-side hook refused the push. The stderr text
+    is attached via the usual error_attributes mechanism; the UI offers
+    'fetch and retry' as the default corrective action, or force-with-lease
+    behind a confirmation."""
+
+class MergeRequiredError(GitCommandError):
+    """`git pull --ff-only` failed because the branches diverged — git refuses
+    rather than creating an implicit merge (see §5 Phase 3 step 3). The UI's
+    response is a merge-vs-rebase choice, wired to the Phase 2 machinery."""
+
+class RemoteExistsError(WrenchGitError):
+    """add_remote was asked to create a remote whose name is already configured.
+    Raised BEFORE invoking git so the git-level error string never leaks."""
+
+class RemoteNotFoundError(WrenchGitError):
+    """fetch/pull/push/add_remote probe referenced a remote name with no
+    configured URL. UI turns this into 'add a remote first' guidance."""
+
+class CLITimeoutError(GitCommandError):
+    """The git subprocess exceeded its timeout (§5 Phase 3 step 3's per-op
+    timeout table, not the generic 30s default). Distinct from a network
+    failure: the process may still be alive server-side, so this message must
+    not pretend to know the remote state."""
+```
+
 `RepoHandle` wraps a `pygit2.Repository` for reads and the repo's filesystem `Path` for subprocess calls. It is created once per opened repo and cached by `ui/main_window.py`; never re-open a repo per operation.
 
 **Where implementation lives vs. what UI calls**: `core/read_ops.py` and `core/write_ops.py` (§5 Phase 1, steps 1–2) contain the actual `pygit2`/subprocess logic; `core/engine.py` re-exports every one of these as a thin façade function (e.g. `engine.get_log = read_ops.get_log`, or a one-line wrapper if error-translation is needed per step 5 below). UI code calls `core.engine.get_log(...)`, `core.engine.get_diff(...)`, etc. — **never** `core.read_ops.get_log(...)` directly, per §1's one-directional dependency rule. This applies uniformly to every function above, including the read-path ones.
@@ -600,6 +737,7 @@ def rebase_abort(repo: "RepoHandle") -> None: ...      # run_git(["rebase", "--a
 ### 4.2 `core/write_ops.py` (subprocess wrapper conventions)
 
 - All `git` invocations go through one helper: `run_git(repo_path: Path, args: list[str], *, timeout: int = 30) -> subprocess.CompletedProcess`. This is the single place that sets `cwd`, environment (notably `GIT_TERMINAL_PROMPT=0` so git never blocks waiting for interactive credential input — credential negotiation happens via the credential helper below instead), and timeout.
+- **Timeout table for network operations** (Phase 3): the 30s default is right for local ops but wrong for anything that traverses the network. `push`, `pull`, `fetch`, and `clone` override with `timeout=600` (10 minutes). `git ls-remote` probes (§5 Phase 3 step 5) use `timeout=15`. Nothing network-touching uses an unbounded timeout — a wedged connection must surface as `CLITimeoutError`, not hang the worker thread forever. A timeout kill is signalled by `subprocess.TimeoutExpired` inside `run_git`, which translates to `CLITimeoutError` at the write_ops layer.
 - **Locale-stable output, or your parsing breaks for real users.** The same `env` must also set `LC_ALL=C` on every invocation: Phases 2–3 parse git's stdout/stderr ("Already up to date", "rejected", dirty-tree refusal messages) to derive typed results, and all of that pattern-matching silently stops matching the moment a user's `LANG`/`LC_MESSAGES` localizes git's strings. English-only parsing is a deliberate v1 constraint. Corollary: read stderr/stdout as bytes and decode with `errors="replace"` — a C-locale git can emit raw non-UTF-8 bytes for non-UTF-8 filenames, which a strict UTF-8 decode would turn into an exception instead of a diff.
 - Credential negotiation: configure a custom `credential.helper` pointing at a small internal script (`core/git_credential_helper.py`, invoked as `git credential-wrench`) that reads/writes via `credentials/secret_service.py` instead of any host credential helper (per SRS constraint — never shell out to `git-credential-libsecret` on the host).
 - **Multi-account (FR-4.5)**: also set `credential.useHttpPath = true` in the same repo-local config write — by default git does *not* send the URL path to credential helpers, only protocol+host, which is fine for a single account per host but ambiguous the moment a second account on the same host exists. With `useHttpPath` on, the helper receives enough to disambiguate by repo, not just host (exact matching logic in §5 Phase 3).
@@ -656,9 +794,16 @@ class ForgeAccount:
     instance_url: str
     label: str
     username: str | None
+    tls_ca_bundle_path: str | None  # CA bundle to verify against, or None = system store
+    tls_insecure: bool              # True = skip TLS verification (schema stores 0/1;
+    # this rich type converts at the row→dataclass seam; adapters read it in
+    # _client construction, §5 Phase 4 step 2)
     secret_service_key: str  # unlike ForgeAccountRecord (§3.1) — this full ForgeAccount type,
-    # with the key included, is only ever passed to adapter.authenticate()
-    # and secret_service.py, never to UI code
+    # with the key included, is only ever constructed to be handed to a ForgeAdapter's
+    # constructor (§4.4 builds one adapter instance per operation) and, through it, to
+    # the credentials backend. UI code may fetch it solely to pass it to the registry
+    # inside one background operation (§5 Phase 4 step 6) — never to display, log, or
+    # persist it; everywhere else the UI works with ForgeAccountRecord.
 ```
 
 ```python
@@ -672,20 +817,32 @@ class ForgeCapability(Flag):
     ISSUES = auto()
     CI_STATUS = auto()
     ISSUE_LINKING = auto()
+    REVIEWS = auto()  # PR review actions — approve / request-changes / comment.
+    # All four built-in providers support them (§11 item 14, resolved: the SRS's
+    # "review" wording means real in-app actions), but the flag exists so a
+    # third-party read-only adapter can simply not set it.
 
 
 class ForgeAdapter(ABC):
-    """One instance per configured forge_account row."""
+    """One instance per configured forge_account row — the account is bound at
+    construction and reachable as self.account for the adapter's lifetime."""
 
     provider_id: str  # e.g. 'github' — must match storage.forge_accounts.provider
+
+    account: ForgeAccount  # bound by __init__; the registry constructs cls(account)
+    # (§5 Phase 4 step 3), so no method below takes an account parameter
+
+    def __init__(self, account: ForgeAccount) -> None:
+        self.account = account
 
     @property
     @abstractmethod
     def capabilities(self) -> ForgeCapability: ...
 
     @abstractmethod
-    def authenticate(self, account: ForgeAccount) -> None:
-        """Validate stored credentials against the API; raise ForgeAuthError on failure."""
+    def authenticate(self) -> None:
+        """Validate the stored credential for self.account against the provider's
+        identity endpoint; raise ForgeAuthenticationError (§4.3.A) on rejection"""
 
     @abstractmethod
     def list_pull_requests(self, owner: str, repo: str) -> list[PullRequest]: ...
@@ -703,6 +860,29 @@ class ForgeAdapter(ABC):
     ) -> PullRequest: ...
 
     @abstractmethod
+    def submit_review(
+        self,
+        owner: str,
+        repo: str,
+        number: int,
+        *,
+        action: str,  # normalized: 'approve' | 'request_changes' | 'comment'
+        body: str = "",
+    ) -> None: ...
+    """Submit a PR review. The action vocabulary is the three values above and
+    nothing else; each provider maps it to its own endpoint shape (§5 Phase 4
+    step 5). Per-user review threads stay view-in-browser for v1 — this method
+    is the action surface only."""
+
+    @property
+    def supported_review_actions(self) -> frozenset[str]:
+        """The subset of {'approve', 'request_changes', 'comment'} this provider
+        can express (GitLab has no first-class request-changes, so a GitLab
+        adapter returns {'approve', 'comment'} and the UI grays that button at
+        render time — never a runtime surprise)."""
+        return frozenset({"approve", "request_changes", "comment"})
+
+    @abstractmethod
     def get_ci_status(self, owner: str, repo: str, ref: str) -> CIStatus: ...
 
     # Optional capabilities — default to NotImplementedError, only override if
@@ -713,11 +893,69 @@ class ForgeAdapter(ABC):
 
 Every adapter (`forge/adapters/*.py`) subclasses `ForgeAdapter`. UI code must check `adapter.capabilities` before showing a feature (e.g. don't render an "Issues" tab if `ForgeCapability.ISSUES` isn't set) rather than calling the method and catching `NotImplementedError`.
 
+#### 4.3.A `forge/exceptions.py` — the exact hierarchy the adapters raise (referenced by §5 Phase 4, previously never defined)
+
+```python
+class ForgeError(Exception):
+    """Root of every forge-layer failure. UI catches this for the generic
+    'forge operation failed' path; concrete subclasses get tailored dialogs."""
+
+
+class ForgeAdapterNotFoundError(ForgeError):
+    """registry.get_adapter_for_account() found no entry point registered for
+    the account's provider string. Means the install is broken or the provider
+    column contains a typo — this is a bug-level failure, not user error."""
+
+    def __init__(self, provider: str):
+        super().__init__(f"No forge adapter registered for provider {provider!r}")
+        self.provider = provider
+
+
+class ForgeUnreachableError(ForgeError):
+    """The instance URL could not be reached at all — connection refused, DNS
+    failure, timeout. Distinct from auth failure: no amount of re-entering the
+    token fixes this, so the UI guidance directs at the network/VPN, not the
+    credential."""
+
+    def __init__(self, instance_url: str, cause: str):
+        super().__init__(f"Can't reach {instance_url}: {cause}")
+        self.instance_url = instance_url
+
+
+class ForgeAuthenticationError(ForgeError):
+    """401 — the stored token is invalid or expired. The UI's response is the
+    token re-entry flow, never a silent retry."""
+
+
+class ForgeInsufficientScopeError(ForgeError):
+    """403 — token is valid but lacks the permission this operation needs (e.g.
+    a read-only token trying to create a PR). Carries a provider-specific hint
+    on which scope to add so the fix dialog can be specific."""
+
+    def __init__(self, message: str, *, scope_hint: str = ""):
+        super().__init__(message)
+        self.scope_hint = scope_hint
+
+
+class ForgeRateLimitedError(ForgeError):
+    """429 — per-adapter `Retry-After` parsing lives in the shared _request()
+    helper (§5 Phase 4 step 2), which is why this class can carry a uniform
+    retry_after_seconds across all four providers despite their response shape
+    differences."""
+
+    def __init__(self, retry_after_seconds: int):
+        super().__init__(f"Rate limited — retry in {retry_after_seconds}s")
+        self.retry_after_seconds = retry_after_seconds
+```
+
+These classes are deliberately **not** in `core/exceptions.py`: nothing in `core/` may import `forge` (§1's one-direction rule), and keeping forge errors in `forge/exceptions.py` makes that rule self-enforcing — an accidental `core → forge` import shows up as an import error in the first test run, not as a hidden layering violation.
+
 ### 4.4 `forge/registry.py` (entry-points discovery, FR-5.7)
 
 ```python
 from importlib.metadata import entry_points
 from .capability import ForgeAdapter
+from .exceptions import ForgeAdapterNotFoundError
 
 _ENTRY_POINT_GROUP = "wrench.forge_adapters"
 
@@ -738,7 +976,7 @@ def get_adapter_for_account(account: "ForgeAccount") -> ForgeAdapter:
     cls = adapters.get(account.provider)
     if cls is None:
         raise ForgeAdapterNotFoundError(account.provider)
-    return cls()
+    return cls(account)
 ```
 
 `pyproject.toml` entry for the four built-in adapters (this is what makes discovery work — write it exactly like this):
@@ -1324,43 +1562,214 @@ Each phase should be independently shippable/testable — don't let phases bleed
 
 ### Phase 3 — Remote Operations
 **Prerequisites:** Phase 2's acceptance check passed (commit graph, merge, non-interactive rebase, and the built-in merge tool all working).
-1. `credentials/backend.py`: implement the `CredentialBackend` ABC and `CredentialBackendUnavailableError` exactly as in §4.7 — this is new in this phase, but its shape was already fixed back in Phase 0's skeleton step, so this is filling in an interface, not designing one. `credentials/secret_service.py`: implement `SecretServiceBackend` (shared D-Bus logic per §4.5 — `store_secret`/`get_secret`/`delete_secret` via `secretstorage`'s `search_items`/`create_item`/`delete` against the default collection, handling the locked-collection case) plus its two thin subclasses `FlatpakSecretServiceBackend` and `AppImageSecretServiceBackend`, which only override `unavailable_help_text()`. `credentials/__init__.py`: implement `get_backend()` and `_detect_packaging_context()` per §4.7's corrected factory — do not reintroduce a bare `sys.platform` check as the sole dispatch, since that cannot distinguish Flatpak/AppImage/bare contexts at all. Unit test with a mocked D-Bus session (patch `secretstorage.dbus_init`/`get_default_collection`) so the suite doesn't need a real keyring in CI; an optional integration test can exercise a real Secret Service when available, skipped gracefully (`pytest.mark.skipif`) otherwise. Also test `_detect_packaging_context()` directly against all three cases (monkeypatch `os.environ`/`os.path.exists`), and test that `get_backend()` returns the right subclass for each; separately, monkeypatch `sys.platform` to something unsupported and assert `get_backend()` raises `NotImplementedError` rather than silently returning a Linux backend.
-2. `core/git_credential_helper.py`: implements the `git credential-wrench` command git invokes as an external credential helper. **Git's protocol, exact (easy to get subtly wrong if improvised):**
-   - Git invokes this script with exactly one argument: `get`, `store`, or `erase`.
-   - Git writes `key=value` lines to the script's **stdin**, one per line (typical keys: `protocol`, `host`, `path`, `username`; `store`/`erase` also include `password`), terminated by a blank line or EOF.
-   - `get`: read stdin into a dict. **Account disambiguation (FR-4.5/FR-5.8) — exact matching order:** (1) if `path` is present (requires `credential.useHttpPath = true`, set below), look up the specific `repo_forge_links` row for this repo+remote, get its `forge_account_id`, and use that account's secret directly — this is the common case once a repo is explicitly linked to an account. (2) If no `path` or no matching link row, fall back to matching `forge_accounts` by `host` alone — but only if **exactly one** account exists for that host; if zero, fall through to "not found" below; if more than one (ambiguous — two accounts, no explicit link), also fall through to "not found" rather than guessing, and let the resulting push/pull failure prompt the user to link the repo to a specific account. Once the right `forge_account.secret_service_key` is identified, resolve it via `credentials.get_backend().get_secret(key)` — never `secret_service.get_secret(...)` directly, per §4.7. If a secret was resolved, write `username=...` and `password=...` lines to **stdout** (not stderr) and exit 0. If not found, print nothing and exit 0 — git falls through to prompting, which is otherwise disabled via `GIT_TERMINAL_PROMPT=0` (§4.2), so in normal use this should surface as a clear push/pull failure rather than a hang.
-   - `store`: read the same `key=value` stdin format (now including `password`), call `credentials.get_backend().store_secret(...)`, exit 0, no stdout expected.
-   - `erase`: read stdin (no password expected), call `credentials.get_backend().delete_secret(...)`, exit 0.
-   - This must be a real, separately-invocable entry point, because git calls it as a subprocess, not a Python import: add `git-credential-wrench = "wrench.core.git_credential_helper:main"` under `[project.scripts]` in `pyproject.toml`, so `pip install -e .` puts `git-credential-wrench` on `PATH` inside the venv/Flatpak sandbox.
-   - Configure both `credential.helper` and `credential.useHttpPath = true` via `run_git`'s environment or a repo-local `.git/config` write on `open_repo`, never the user's global git config. **This only applies to HTTPS remotes** — SSH remotes don't invoke git's credential-helper mechanism at all, which is consistent with multi-account SSH identity being explicitly out of v1 scope (SRS §7).
-   Unit test: call `main()` directly with a mocked stdin — a `get` case against a pre-seeded fake secret, a `store` case followed by confirming `credentials.get_backend().get_secret(...)` returns what was stored, and a **two-account-same-host** case: seed two `forge_accounts` rows both with `instance_url = https://github.com`, link one specific repo to one of them via `repo_forge_links`, and assert `get` with that repo's `path` resolves the linked account's secret, not the other one's.
-3. `core/write_ops.py`: `push`, `pull`, `fetch` — wire to `run_git(["push"/"pull"/"fetch", "--progress", ...])`; git writes progress to **stderr** as lines like `Writing objects: 45% (9/20)`, so parse each stderr line with a regex (`r"(\d+)%"`) as it streams — don't wait for the process to exit and parse afterward, that defeats the purpose of a progress bar — and emit a Qt signal (`push_progress = Signal(int)`) the UI's `QProgressBar` connects to. On completion, check for "rejected" in stderr on a nonzero exit and raise a specific `PushRejectedError` rather than a generic failure, so the UI can suggest a pull/rebase instead of just showing "push failed." **`clone_repo` belongs here too** — it has a signature in §4.1 and a threading/cancellation design in §4.8, but no implementation step existed for it until now: `run_git(["clone", "--progress", url, str(temp_dir)])` into a `tempfile.mkdtemp()` location (never directly into `dest`), parsing progress the same stderr-regex way as push/pull/fetch above; on success, `shutil.move(temp_dir, dest)`; on failure or cancellation, `shutil.rmtree(temp_dir, ignore_errors=True)` and leave `dest` untouched — it should never exist as a partial directory. **Every one of push/pull/fetch/clone is called from the UI exclusively through `ui.workers.run_in_background` (§4.8), never as a direct synchronous call from a button's slot** — this is the phase where that pattern first matters in practice, since Phases 1–2's operations were fast enough that its absence wasn't yet visibly broken.
-4. SSH agent (FR-4.2/FR-11.3): confirm `SSH_AUTH_SOCK` is passed through in the Flatpak manifest (`--socket=ssh-auth`, already in §6.1 of this doc). `run_git`'s subprocess environment reads the socket path via `core.ssh_agent.get_ssh_auth_socket()` (§4.7) — never `os.environ["SSH_AUTH_SOCK"]` inline — and passes it through unmodified; do not strip or override it.
-5. FR-4.4: `storage` already supports multiple `repo_forge_links` rows per repo (different `remote_name` values). Add `core.engine.list_remotes(repo) -> list[Remote]` (wraps `pygit2.Repository.remotes`, returning `Remote(name, url)` pairs) and `add_remote(repo, name, url) -> None` (`repo.remotes.create(name, url)`); surface both in a small per-repo "Remotes" settings panel rather than a dedicated top-level tab — this is **S**-priority, not **M**-priority (SRS §3.4), so it shouldn't take prominent v1 UI real estate.
-6. **Acceptance check**: manual QA against a real throwaway repo on GitHub (or a local bare repo over `ssh://` to a loopback test server) — push, pull, fetch all succeed with credentials coming only from Secret Service (confirm via `strace`/log inspection that no plaintext credential file is ever written); test with plain `ssh-agent` per SRS's documented v1 scope (GPG-agent/hardware-key cases documented as known-unsupported, not silently broken). Separately: clone a repo large enough to take a few seconds, confirm the UI stays responsive (window can still be moved/resized) during the clone, then cancel a clone mid-progress and confirm the destination path doesn't exist afterward — not a partial directory, nothing at all.
+
+**Step 0 — repo-state reconciliation (fixes against the current codebase, do these first).** Earlier phases scaffolded Phase 3's entry points, so parts of this phase are corrections of existing code rather than greenfield work. Verified against the tree at Phase 2 completion:
+   - `credentials/backend.py` and the factory (`_detect_packaging_context()`/`get_backend()`) in `credentials/__init__.py` are **already implemented per §4.5/§4.7** — verify, don't rewrite. `credentials/secret_service.py` is a stub: all five methods raise `NotImplementedError`. Step 1 completes only that file.
+   - `engine.py` already contains `push`/`pull`/`fetch` **with the old signatures** (no `progress_cb`/`cancel_event`), raising `NotImplementedError`. Step 3 **replaces** these stubs with the §4.1 signatures — do not add duplicate overloads beside them.
+   - `write_ops` already has a `clone_repo`, but it (a) accepts and then **ignores** `progress_cb`, and (b) clones **directly into `dest`** — both contradict this phase's spec. Step 3 **rewrites** it. The `clone` alias in `engine.py`, and the File-menu/`main_window._on_clone_repo()` call site, keep working against the new signature without changes at their call sites (kwarg names are unchanged).
+   - `run_git` (write_ops) is built on `subprocess.run(capture_output=True)` — a fully-buffered call that cannot stream progress. Do **not** stretch it; step 3a adds a sibling helper instead, and step 3 converts only the four network ops to it. Every other `run_git` caller stays untouched.
+   - `pyproject.toml` **already** declares both the `git-credential-wrench` console script (§5 Phase 3 step 2) and the four forge-adapter entry points (§4.4). If either is missing when you get here, re-add exactly per §0 rule 4 before continuing — but expect them present.
+   - The `Remote` dataclass exists in `engine.py` (name, url). Phase 3 introduces the wider `RemoteInfo` (§4.1) — `Remote` stays for internal pygit2-adjacent use; `RemoteInfo` is what `list_remotes` returns to the UI.
+   - `ui/workers.py` exists with a `progress = Signal(int)`. The §4.1 `ProgressCallback` is `(percent: int, stage: str)` — reconcile at the injection seam (step 3e), not by widening the signal: the busy dialog only needs percent.
+
+1. `credentials/` package — complete `secret_service.py`; verify the rest:
+   - `credentials/backend.py` and `credentials/__init__.py` were delivered by scaffolding (Step 0) and should already match §4.7 verbatim — `CredentialBackend` ABC with abstract `store_secret`/`get_secret`/`delete_secret`/`unavailable_help_text`, `CredentialBackendUnavailableError`, `_detect_packaging_context()` returning `"flatpak"|"appimage"|"bare"` (checking `FLATPAK_ID`/`/.flatpak-info` first, then `APPIMAGE`), and `get_backend()` dispatching to `FlatpakSecretServiceBackend` only for `flatpak` and `AppImageSecretServiceBackend` for both other contexts (`bare` shares AppImage's remediation text because bare installs fail the same way — no sandbox permission to fix). If any drift from §4.7 is found, fix the drift; do not extend the interface.
+   - `credentials/secret_service.py`: fill in `SecretServiceBackend`'s five methods with the §4.5 bodies (`_collection()` handling `SecretServiceNotAvailableException` and the locked-collection `unlock()` path; `store_secret` with `replace=True`; `get_secret` via `search_items` returning the first match's decoded secret or `None`; `delete_secret` iterating matches). The two subclasses keep their existing `unavailable_help_text()` overrides and gain nothing else.
+   - **Key namespace rule**: keys passed to these methods are always the row's `forge_accounts.secret_service_key` value, formatted exactly `wrench:forge:{account_id}` (§4.5). The credential helper (step 2) and account CRUD both rely on this exact format — log the key, never the secret, when debugging.
+   - **Tests** (`tests/unit/credentials/test_secret_service.py` — currently `tests/unit/credentials/` holds only an `__init__.py`): these specific cases, all with `secretstorage.dbus_init`/`get_default_collection` mocked so CI needs no real keyring:
+     a. `get_secret` happy path returns the decoded secret of the first `search_items` hit.
+     b. `get_secret` returns `None` when `search_items` yields nothing (no exception).
+     c. `store_secret` calls `create_item` with `replace=True` and attributes exactly `{"application": "wrench", "key": key}`.
+     d. `delete_secret` calls `.delete()` on every matched item (not just the first).
+     e. `_collection` with `is_locked()==True` calls `unlock()`; `LockedException` → `CredentialBackendUnavailableError` whose message is the subclass's `unavailable_help_text()`.
+     f. `SecretServiceNotAvailableException` from `dbus_init` → `CredentialBackendUnavailableError` with the same subclass-specific text (assert the Flatpak and AppImage texts differ, locking in the §4.5 dispatch rationale).
+     g. `get_backend()` returns `FlatpakSecretServiceBackend` when `_detect_packaging_context()` is monkeypatched to `"flatpak"`, `AppImageSecretServiceBackend` for `"appimage"` and `"bare"`.
+     h. `_detect_packaging_context()`: monkeypatched env-var/file-exists permutations for all three outcomes (including the Flatpak-wins-over-APPIMAGE precedence case).
+     i. `get_backend()` with `sys.platform` monkeypatched to `"win32"` raises `NotImplementedError`.
+     j. Optional real-backend smoke test guarded by `pytest.mark.skipif` on `shutil.which("dbus-launch") is None or not _detect_packaging_context()=="bare"` — skipped in CI, for local sanity only.
+2. `core/git_credential_helper.py`: implement `main()` — the entry point is already declared in `pyproject.toml` (`git-credential-wrench = "wrench.core.git_credential_helper:main"`, Step 0) and git invokes it as an external helper executable named exactly `git-credential-wrench`. **Git's helper protocol, exact (easy to get subtly wrong if improvised):**
+   - Git invokes the helper with exactly one argument: `get`, `store`, or `erase`. Any other argv → exit 1 with nothing on stdout.
+   - Git writes `key=value` lines to **stdin**, one per line (typical keys: `protocol`, `host`, `path`, `username`; `store`/`erase` also include `password`), terminated by a blank line or EOF. Parse with `line.split("=", 1)` — values may legitimately contain `=` (some tokens do), a naive `split("=")` silently truncates them. Ignore blank lines; tolerate unknown keys without error.
+   - **Only handle `protocol=http` and `protocol=https`** — any other protocol (or a missing protocol key), print nothing and exit 0. SSH transport never reaches this helper (step 4), and silently no-oping is the defined behavior for a protocol the helper doesn't know.
+   - `get`: resolve which account applies, then whether we have a secret for it. **Account disambiguation (FR-4.5/FR-5.8) — exact matching order:**
+     1. **Host match.** Parse stdin's `host` (strip a trailing `:port` if present before comparing). Find all `forge_accounts` whose `instance_url`'s `http(s)://{host}` component equals it (compare hosts case-insensitively; the full-URL parse belongs in one small `_host_of(instance_url)` helper in this file so the normalization can't drift between call sites).
+     2. **Path+link refinement.** When stdin carries `path` (only present because we set `credential.useHttpPath = true` — see below), and exactly one candidate from step 1 is referenced by a `repo_forge_links` row whose `owner_slug/repo_slug` combined path matches stdin's `path` prefix (`owner/repo.git` vs `owner/repo` — normalize both by stripping a trailing `.git` and leading `/`), choose **that** account. This is the multi-account disambiguation path.
+     3. **Fallback.** If host matching resolved exactly one account, use it (single-account host — the common case). If it resolved zero, or more than one with no disambiguating path/link, print nothing and exit 0: **"not found," never a guess** (§8.1; pushing as the wrong identity is worse than failing).
+     4. With the account chosen, fetch `credentials.get_backend().get_secret(account.secret_service_key)`. `None` → print nothing, exit 0. A value → write exactly `username={account.username}\npassword={secret}\n` to **stdout** and exit 0. `username` comes from the `forge_accounts` row — git requires the helper to supply it on HTTPS, and a blank username line confuses some servers into re-prompting. If the row's `username` is NULL, write the password line alone rather than fabricating one.
+   - `store`: read stdin (now including `password`), and *locate the matching account row exactly as in `get` steps 1–3*. If none matches, exit 0 (nothing to update — git tolerates this; the recovery UI watches for "stores that never landed" separately, §5 Phase 4's account-edit flow). If found: `credentials.get_backend().store_secret(key=account.secret_service_key, secret=password_from_stdin, label=f"Wrench: {account.label}")`, exit 0. **Also update `forge_accounts.username` if stdin's `username` differs from the stored row** — this is how a first-time HTTPS clone's username self-populates without a separate settings trip (the `store` git issues right after a successful authenticated op carries the username that just worked).
+   - `erase`: stdin has no `password`. Match the account as in `get`; if found, `credentials.get_backend().delete_secret(account.secret_service_key)`, exit 0; else exit 0 silently. (Erase races matter less than writes — a delete that misses is idempotent-safe.)
+   - **Every failure inside `main()` — backend down, DB locked, malformed stdin — prints nothing to stdout and exits 0**, logging the real error to stderr only. A credential helper that exits non-zero makes git itself fail with a generic "helper failed" message that obscures the actual problem; git's designed fallback on empty-helper-output is to move on to the next config source, which produces the intelligible "could not read Username" chain the UI already knows how to classify (step 3c).
+   - **DB access from the helper (subprocess, no Qt):** the helper is a *separate short-lived process* spawned by git. It must not import `wrench.app`, touch Qt, or use the app's shared `storage/db.py` connection (wrong process). Resolve the DB path via `core.paths.data_dir() / "wrench.db"` (§4.7 — same resolution the app uses, no duplication), open it with `sqlite3.connect(f"file:{path}?mode=ro", uri=True)` — **read-only**: the helper only reads; `store`'s username-backfill is the single write, and that write goes through the normal `sqlite3.connect(path)` (read-write) connection opened *only in the store branch*, so a `get` against a concurrently migrating DB can't interfere. Wrap reads in a retry loop (3 attempts, 100ms apart) that tolerates `sqlite3.OperationalError: database is locked` — the app's WAL-mode writer (§3.1) may legitimately hold the DB at the moment git spawns us. All account/link reads run through `storage/forge_accounts.py`'s query helpers with this connection passed in — never inline SQL in the helper.
+   - **Concurrency with the app:** the app's `storage/db.py` uses WAL mode specifically so a background reader like this helper never blocks the UI (§3.1). Do not add any lock file, socket, or mutex for the helper — WAL + the read-only connection is the whole mechanism, and anything on top of it is a new bug farm.
+   - **Storage reads the helper depends on (implement these in `storage/forge_accounts.py` NOW, in this phase — the full CRUD set lands in Phase 4 step 4, but the helper cannot wait for it):** the current tree has `list_accounts`/`add_account`/`remove_account` as `NotImplementedError` stubs and **no** link-reading function at all. Add exactly these two read-only helpers, each taking `conn` as the first parameter per §3.1's convention:
+     - `list_accounts(conn) -> list[ForgeAccountRecord]` — `SELECT * FROM forge_accounts` mapped to the §3.1 dataclass (which deliberately excludes `secret_service_key`); the helper then needs the key, so it additionally runs `SELECT secret_service_key FROM forge_accounts WHERE id = ?` for the chosen row only — keep the secret-key column out of bulk list results (§3.1's rationale), one targeted lookup per `get` call.
+     - `find_link_by_path(conn, owner_slug, repo_slug) -> RepoForgeLink | None` — `SELECT * FROM repo_forge_links WHERE owner_slug = ? AND repo_slug = ?` — the disambiguation lookup from step 2's matching order. (Phase 4 adds `get_link_for_remote` keyed by `(repo_id, remote_name)`; this path-keyed variant is what the *helper* can compute from git's stdin alone — it never knows our internal `repo_id`.)
+     Both functions stay in `storage/forge_accounts.py` alongside the Phase 4 write helpers — no separate module, no duplicated SQL. If `storage/forge_accounts.py` currently lacks a `RepoForgeLink` import/circuit, add only what these two functions need.
+   - **Config — the helper is useless if git never calls it.** On every `open_repo` (engine, after the registry check), and once at the end of `clone_repo` (step 3d, also for the clone's own origin), run:
+     ```
+     run_git(repo_path, ["config", "credential.helper", "wrench"])
+     run_git(repo_path, ["config", "credential.useHttpPath", "true"])
+     ```
+     Repo-local config only — never `--global`, never the user's `~/.gitconfig`. `credential.helper = wrench` resolves to the `git-credential-wrench` executable on PATH (git prepends `git credential-` itself; that is why the entry-point name must be exactly `git-credential-wrench`). Writing on *every* `open_repo` is deliberately idempotent — a repo the user opened before upgrading Wrench, or one whose config was clobbered, self-heals on next open. These two lines must also be the FIRST thing `add_remote` does before its `git remote add` (step 5), so a remote added to a not-yet-configured repo can't strand the first push.
+   - **`credential.useHttpPath = true` explained (why it's mandatory, not cosmetic):** without it git sends the helper only `protocol`+`host`; two accounts on `github.com` then look identical and step 2's path-matching never fires. This bit is what carries the repo path into stdin (`path=owner/repo.git`). The Phase 2-era note "configure on open_repo" is superseded by the exact two commands above.
+   - **Tests** — `tests/unit/core/test_git_credential_helper.py` (invoke `main()` directly with `sys.stdin`/`sys.stdout` monkeypatched via `io.StringIO`; a fake `sqlite3` DB in `tmp_path` seeded through the real `storage/forge_accounts.py` helpers; `credentials.get_backend()` monkeypatched to a stub backend whose `get/store/delete` record calls):
+     a. `get` happy path: one account row, its key in the stub backend → stdout contains `username=…` and `password=…` lines and nothing else.
+     b. `get` unknown host → stdout empty, exit 0.
+     c. `get` two accounts same host, no `path` in stdin → stdout empty, exit 0 (ambiguity must not guess).
+     d. `get` two accounts same host, stdin `path=owner/repo.git` matching one account's `repo_forge_links` row → linked account's secret returned, not the other's. 
+     e. As (d) but stdin `path=owner/repo` (no `.git`) — identical result (normalization can't be off-by-suffix).
+     f. `get` non-HTTP protocol (`protocol=ssh`) → empty stdout, exit 0, backend not touched.
+     g. `store` with matching account: backend `store_secret` called with the row's `secret_service_key`, and the row's NULL username backfilled from stdin's `username=`.
+     h. `store` with no matching account → backend untouched, exit 0.
+     i. `erase` with matching account → backend `delete_secret` called once; without → exit 0, backend untouched.
+     j. Malformed stdin (`password=a=b=c` — `=` inside a secret value) parses with the full value intact (the split-once rule).
+     k. Backend raising `CredentialBackendUnavailableError` during `get` → caught in `main()`, empty stdout, exit 0, message on stderr (the silent-to-git rule).
+     l. `database is locked` on the first two attempts, success on the third → retry loop returns the row (patch `sqlite3.connect` to sequence the errors).
+3. `core/write_ops.py` + `core/engine.py`: `push`, `pull`, `fetch`, and the `clone_repo` rewrite. Read all sub-steps before writing code — 3a is the shared foundation the rest assume.
+   a. **New streaming sibling: `run_git_streaming(repo_path, args, *, timeout, on_stderr_line, cancel_event=None) -> tuple[int, str, str]`.** The existing `run_git` (`subprocess.run`, fully buffered) cannot report progress — do not modify it; every existing Phase 1–2 caller keeps using it. The new helper uses `subprocess.Popen` with `stderr=subprocess.PIPE, stdout=subprocess.PIPE`, the **same env** as `run_git` (including `GIT_TERMINAL_PROMPT=0`, `LC_ALL=C`, and the SSH passthrough from step 4 — factor env construction into one `_git_env()` used by both helpers so they cannot drift), and:
+      - Drains **both** pipes concurrently (two reader threads, or `selectors` — either; a single-threaded read that waits on one pipe the whole run deadlocks the moment git's progress flood fills the 64 KiB stderr pipe while you're blocked on stdout, and vice versa). This deadlock is the #1 real-world failure of naive Popen progress readers; the test in (f) covers it with a >64 KiB-stderr fixture.
+      - Decodes each stderr line as bytes → `str` with `errors="replace"` (§4.2's C-locale byte rule), and for every line calls `on_stderr_line(line)`. Progress arrives carriage-return-separated within a line (`Receiving objects:  12%...\rReceiving objects:  34%...`); split on `\r` as well as `\n` before invoking the callback per fragment — parsing only whole `\n`-terminated lines shows the bar frozen until git happens to flush.
+      - `cancel_event` polling: check `cancel_event.is_set()` on each read-loop iteration and at least every 100ms; on set → `proc.terminate()`, wait 3s grace, then `proc.kill()`; treat the resulting non-zero exit as *aborted*, not *failed* (callers translate per (c)/(d)).
+      - Timeout: enforce the caller's `timeout` for the whole process; on expiry kill and raise `CLITimeoutError`. Network ops pass `timeout=600` (§4.2's table); no unbounded waits.
+      - Returns `(returncode, stdout_text, stderr_full_text)` — the full stderr is needed by the classifier in (c) even though each line was already streamed.
+   b. **Progress parsing (one function, `_parse_progress(line) -> tuple[int, str] | None`, used by all four ops):** match `^([\w ]+?):\s+(\d+)%\s*\((\d+)/(\d+)\)` — captures (stage, percent). Git's stages include `Enumerating objects`, `Counting objects`, `Compressing objects`, `Receiving objects`, `Resolving deltas`, `Writing objects`; lines prefixed `remote: ` have the prefix stripped first. Non-matching lines return `None` silently (git emits plenty of informational chatter; a parser that raises on it breaks on every git version bump). Each match calls the op's `progress_cb(percent, stage)` (the §4.1 `ProgressCallback`). If git omits `%` entirely (small fetches finish under the reporting threshold), it is valid for `progress_cb` to never fire — the UI must treat "no progress signal" as "indeterminate spinner," not "stalled."
+   c. **Failure classification — exact mapping, applied in this order, on non-zero exit from push/pull/fetch** (case-sensitive against `LC_ALL=C` output; all classes from §4.1.A):
+
+      | stderr contains | raise |
+      |---|---|
+      | `rejected` (push only) | `PushRejectedError(stderr)` |
+      | `Not possible to fast-forward` (pull) | `MergeRequiredError(stderr)` |
+      | `Authentication failed` / `403` / `401` | `AuthFailedError(host=parsed_host)` |
+      | `Permission denied (publickey)` | `AuthFailedError(host=parsed_host)` |
+      | `could not read Username` / `could not read Password` / `terminal prompts disabled` | `AuthRequiredError(host=parsed_host)` |
+      | `Could not resolve hostname` / `Connection timed out` / `Failed to connect` | `GitCommandError` with stderr attached (UI shows "network unreachable" wording from the stderr; don't invent a new class without amending §4.1.A) |
+      | _anything else_ | `GitCommandError(stderr)` as usual |
+
+      The **order matters**: `rejected` before the generic "error: failed to push some refs" line that accompanies it, and auth lines before the generic fallback. `parsed_host` comes from the remote's URL via the same `_host_of()` helper the credential helper uses (step 2) — import it from `core.git_credential_helper` rather than re-deriving URL parsing in a second place.
+   d. **The four operations:**
+      - `push(repo, remote, branch, *, force=False, progress_cb=None, cancel_event=None)`: `["push", "--progress", remote, branch]`; `force=True` maps to `--force-with-lease` (**never** bare `--force` — lease refuses exactly when someone else updated the ref since our last fetch, which is the only safe auto-force). Success → also refresh `ahead`/`behind` by letting the UI's normal status refresh run (don't hand-compute).
+      - `pull(repo, remote, branch, *, progress_cb=None, cancel_event=None)`: `["pull", "--progress", "--ff-only", remote, branch]`. The `--ff-only` refusal is an expected branch, classified as `MergeRequiredError` by (c) — the UI then offers merge or rebase using the existing Phase 2 machinery. Never `pull` without `--ff-only`: a surprise merge commit mid-pull is exactly the behavior the façade exists to prevent.
+      - `fetch(repo, remote, *, progress_cb=None, cancel_event=None)`: `["fetch", "--progress", "--prune", remote]` (`--prune` keeps stale remote-tracking branches from accumulating forever; without it the branch-switcher remote section fills with ghosts of deleted branches). On success, record the fetch timestamp via the existing flat settings store — `storage/settings.py` exposes exactly `get_setting(conn, key) -> str | None` and `set_setting(conn, key, value)` over `app_settings`; per-repo values are stored as **namespaced keys**: `set_setting(conn, f"repo.{repo_id}.remote_last_fetch.{remote}", now_iso)`. Do **not** add a per-repo settings table or new accessor functions for this — namespacing one string key is the whole mechanism, keeps this phase migration-free, and matches how `ui.session_state` blobs already key per-repo draft state. `list_remotes` (step 5) and the reachability probe read back through the same `get_setting` call. ISO-8601 UTC for the value.
+      - `clone_repo(url, dest, *, progress_cb=None)` **(rewrite of the existing stub):**
+        1. Reject early if `dest` exists and is non-empty → `GitCommandError` with "destination exists" — don't let git's own message be the first thing the user sees.
+        2. `temp_dir = tempfile.mkdtemp(prefix="wrench-clone-", dir=dest.parent)` — same filesystem as `dest` so the final move is atomic rename, not a cross-device copy.
+        3. `run_git_streaming(dest.parent, ["clone", "--progress", url, temp_dir], timeout=600, on_stderr_line=..., cancel_event=...)` — note `cwd` is `dest.parent`, not the nonexistent repo path; `run_git`'s `repo_path` parameter is a *working directory*, not necessarily a repo.
+        4. On success: `shutil.move(temp_dir, dest)` — but if anything exists at `dest` by now (race), fail with the error rather than overwriting.
+        5. **Write the credential config into the fresh clone** (step 2's two `git config` commands verbatim) — the first fetch/push from this repo must go through the helper.
+        6. On any exception or cancellation: `shutil.rmtree(temp_dir, ignore_errors=True)`; `dest` is left exactly as found. Cancellation raises `CloneAbortedError` (§4.1.A); the UI shows no error for it.
+        7. Return `CloneResult(path=dest)`. The engine wrapper stays a thin pass-through; opening the repo flows through the UI's existing `open_repo` completion path (which auto-registers in `repo_registry`).
+   e. **engine.py wiring + the workers.py int-signal reconciliation.** Replace the three `NotImplementedError` stubs with the §4.1 signatures, delegating to write_ops, translating per (c). `ui/workers.py` keeps `progress = Signal(int)` — in `GitOperationWorker.run`, inject `progress_cb=lambda pct, stage: self.progress.emit(pct)` when the target accepts `progress_cb` (the stage string is dropped at this boundary; call sites that want stage text pass their own callback object instead of taking the signal). One adapter line, no Qt signature churn, and the busy dialog's bar keeps its existing int contract.
+   f. **Tests** (`tests/unit/core/test_write_ops_remotes.py`, new): against a **bare fixture remote** (`git init --bare` in `tmp_path`, clone it, commit, push) — real git both sides, no mocks:
+      1. push happy path: new commit pushed to bare remote; assert exit 0 and the ref exists in the bare repo.
+      2. push non-fast-forward (advance the bare repo from a second clone) → `PushRejectedError`.
+      3. pull with diverged branches → `MergeRequiredError`, and pull after a plain commit → fast-forwards cleanly.
+      4. fetch records `remote_last_fetch.origin` in settings (assert the key, don't parse the value's format).
+      5. Pull-request of progress: mock nothing — intercept `on_stderr_line` in the streaming helper test with a fake `args=["-c", "..."]`-style subprocess substitute (a tiny Python script via `sys.executable` that writes `>64 KiB` of progress-shaped lines to stderr): assert all lines streamed and no deadlock at the pipe buffer (this is the (a) deadlock regression test — keep it).
+      6. `cancel_event` set mid-clone (threading.Timer at ~0.2s against a deliberately slow local source — a repo with `uploadpack` throttled, or simply assert the aborted exception class and that `dest` does not exist): `CloneAbortedError`, no partial dir.
+      7. Classifier unit table: feed each (c) row's literal stderr into the classifier function directly, assert the exception type — no subprocess needed for this one.
+4. SSH agent (FR-4.2/FR-11.3) — verification and the one code hook, not new machinery:
+   - **Manifest check (must be true before any QA):** `packaging/flatpak/io.github.uzair.Wrench.yaml` `finish-args` contains `--socket=ssh-auth`. If it's missing, add it in this phase, not Phase 6 — a missing socket makes every SSH remote in Flatpak fail with "Permission denied (publickey)" and the failure mode is invisible from logs until you strace ssh.
+   - **Code hook (exactly one):** in the shared `_git_env()` from step 3a, `sock = core.ssh_agent.get_ssh_auth_socket()`; if non-None, put it into the subprocess env as `SSH_AUTH_SOCK` **unmodified**; if None, omit the variable entirely (never inject an empty string — ssh treats an empty `SSH_AUTH_SOCK` as "agent configured at empty path" and fails differently than "no agent," which misleads the (c) classifier). `core/ssh_agent.py` itself is already correct per §4.7 — one function, `get_ssh_auth_socket()`, nothing else; do not extend it in this phase.
+   - **No force-loading:** do not spawn `ssh-agent`, prompt for passphrases, or list identities. Git+ssh inherit the user's agent state as-is; v1's documented scope (SRS §7) is "works with a running plain ssh-agent; GPG-agent/hardware-key setups are known-unsupported and documented, not silently broken."
+   - **Tests:** `tests/unit/core/test_ssh_agent.py` — `get_ssh_auth_socket()` returns `None` with the env var unset and the value when set (trivial, but it pins the contract every `_git_env` user depends on); plus one `_git_env()` test asserting the var is passed through when present and absent from the mapping entirely when None.
+5. FR-4.4 — remotes management (engine + one dialog):
+   - `engine.list_remotes(repo) -> list[RemoteInfo]` (§4.1): read `pygit2.Repository.remotes` (name + fetch URL); for each, look up settings keys `repo.{repo_id}.remote_last_fetch.{name}` and `repo.{repo_id}.remote_reachable.{name}` (step 3d's namespace convention) to fill `last_fetch_at`/`is_reachable`. **Connectivity probes never run inside `list_remotes`** — it must be instant; probes are (a) fired in the background by `add_remote`, and (b) re-fired only by an explicit "Refresh status" action in the dialog. A `list_remotes` call that touches the network freezes the dialog for up-to-timeout seconds on every open.
+   - `engine.add_remote(repo, name, url) -> None` — **ordered contract, exactly this sequence:** (1) validate `name` against `^[A-Za-z0-9][A-Za-z0-9._-]*$` (reject empties/spaces/leading-dash with `GitCommandError` carrying the message "invalid remote name" — surface it verbatim, it's a programmer error the user can fix); (2) validate `url` is parseable as one of `https://…`, `http://…`, `ssh://…`, or scp-style `user@host:path` — reject anything else with a clear message (a malformed URL accepted here fails four steps later as an opaque transport error); (3) check `name` against existing remotes → `RemoteExistsError` before any git call; (4) write the credential config (step 2's two `git config` commands) so the repo is helper-ready even if it was registered before Wrench managed it; (5) `run_git(["remote", "add", name, url])`; (6) fire the reachability probe — `run_git(repo_path, ["ls-remote", name, "HEAD"], timeout=15)` — in a background thread, storing the boolean outcome under the settings key `repo.{repo_id}.remote_reachable.{name}` (same namespace as step 3d); probe failure does NOT fail `add_remote` (the remote is real even if the host is down right now).
+   - `engine.remove_remote(repo, name)` → `run_git(["remote", "remove", name])`; unknown name → `RemoteNotFoundError` from a pre-check, not from git's stderr. `engine.set_remote_url(repo, name, url)` → `["remote", "set-url", name, url]` with the same validation + not-found prechecks as `add_remote`. Both also touched when the dialog's Edit/Remove buttons exist — without them the dialog is read-only, which is not FR-4.4.
+   - **UI: `ui/dialogs/remotes_dialog.py`** (create the `ui/dialogs/` package if this is its first member in the working tree; keep the dialog consistent with wherever the Phase 2 recovery/merge dialogs live — check the current tree before creating parallel structure). Contents: a table (Name, URL, Last fetch, Reachability dot), buttons Add / Edit / Remove / "Refresh status"; Remove requires the project's standard destructive-action confirmation. Modest size, launched from the menu — **S**-priority surface (SRS §3.4), no top-level tab.
+   - **UI wiring for the operations themselves (where push/pull/fetch are triggered):** add a **Repository** menu to `main_window.py`'s menu bar next to File/Edit/View — Fetch, Pull, Push, separator, Remotes…. Each action: run through `ui.workers.run_in_background` (§4.8, mandatory), reuse the Phase 2 busy/cancel dialog (`BusyOperationDialog` in the recovery dialogs module — locate wherever `recovery_dialog.py` lives in the tree; do not build a second busy dialog), wire `on_progress` to its bar, and on success call the main window's existing full-refresh path (fetch changes `refs/remotes/*`, so status + branch switcher + commit graph all need it; the inotify watcher does not reliably fire for packed-refs updates — force the refresh, don't wait for the watcher). Failure routing: `AuthRequiredError` → open the account/link flow placeholder ("Add account…" lands properly in Phase 4; for now the dialog explains no credential was found and names the host); `AuthFailedError` → "stored credential rejected, check the account token"; `PushRejectedError` → offer Fetch-then-retry; `MergeRequiredError` → offer merge/rebase via the Phase 2 entry points; `RemoteNotFoundError` → open the Remotes dialog.
+   - **The clone flow**: the existing File → Clone (`main_window._on_clone_repo`) keeps its URL/destination inputs but must route `engine.clone_repo` through `run_in_background` with the busy dialog + progress + cancel button, per §4.8/§5 Phase 3 step 3d; on success, open the repo via the existing post-open path. If the current implementation calls it synchronously, this step is where that gets fixed (Step 0's note).
+6. **Acceptance check — Phase 3 is done when ALL of the following have actually been executed, not eyeballed:**
+   - **Automated:** `pytest tests/unit/credentials tests/unit/core -v` green — which now must include the step-1 credential cases (a–j), the step-2 helper cases (a–l), step 3f's remote-op tests, and step 4's ssh env tests. `ruff check . && black --check .` clean.
+   - **Credential plumbing, end to end (manual):** with a throwaway HTTPS repo on GitHub (a private test repo on a PAT is ideal — a guessed-at docs URL won't exercise auth), push, pull, and fetch all succeed with the credential supplied exclusively by the helper. Verify the plumbing, not just the outcome: `GIT_TRACE=1 GIT_CURL_VERBOSE=0 git -C <repo> fetch` from a terminal using the repo-local config shows `git credential-wrench get` being invoked. Then the plaintext audit — `strace -f -e trace=openat,open,creat -o /tmp/wrench-strace.log python -m wrench`, run a push+pull, quit, and `grep -i -E "credential|password|token" /tmp/wrench-strace.log` shows only the keyring paths (e.g. `org.freedesktop.secrets` D-Bus traffic, gnome-keyring files); **zero** opens of ad-hoc credential files under the repo or home dir. `git config --list --local` inside the repo shows exactly `credential.helper=wrench` and `credential.useHttpPath=true`, nothing credential-ish in plaintext.
+   - **Wrong-identity audit:** configure two accounts on the same host (e.g. two GitHub PATs with different usernames), link the test repo to account A via `repo_forge_links`, push, and confirm via the remote's API/audit view (or the commit's pusher identity) that account A's token was used. Then delete the link row, re-push, and confirm it now fails with the "no credential" path (ambiguity must never silently pick one) — restore the link row afterward.
+   - **Rejection paths (manual, not just unit):** a non-fast-forward push produces the PushRejected dialog with the fetch-and-retry action; a diverged pull produces the merge/rebase chooser; an SSH remote with no agent produces `AuthFailedError`'s message, not a hang.
+   - **UI responsiveness (§4.8 enforcement):** clone a repo large enough to take visible seconds (e.g. ≥50 MB), confirm the window drags/resizes *during* the clone, the progress bar moves with real percents, and a mid-clone Cancel leaves no directory at the destination — not empty, *absent*. Repeat once for a mid-push cancel of a large push.
+   - **SSH scope check:** push/pull over `git@`-style SSH with plain `ssh-agent` works (§9's documented v1 scope); confirm GPG-agent/hardware-key cases fail with the documented-limitation message and not a stack trace.
+   - **State visible in UI:** Remotes dialog lists `origin` with a real last-fetch time after a fetch; Add/Edit/Remove round-trip against git's own `git remote -v` output.
 
 ### Phase 4 — Forge Integration Layer
 **Prerequisites:** Phase 3's acceptance check passed (push/pull/fetch working with Secret-Service-backed credentials, at least over plain ssh-agent and HTTPS).
-1. `forge/models.py`: implement the dataclasses (`PullRequest`, `Issue`, `CIStatus`, `ForgeAccount`) referenced in §4.3 — fields are the provider-agnostic superset the UI needs (e.g. `PullRequest(id, title, source_branch, target_branch, state, url, author, created_at)`), not a copy of any single provider's response shape. `state` is normalized to a small fixed set (`"open" | "merged" | "closed"`) that every adapter maps its own vocabulary onto — e.g. GitLab's `"opened"` becomes `"open"` inside `gitlab.py`, not leaked through to the UI as provider-specific strings.
-2. `forge/capability.py`: implement `ForgeCapability` and `ForgeAdapter` exactly as in §4.3 — this file should need no changes once Phase 4 starts writing adapters; if an adapter's needs don't fit the existing interface, that's a signal to revisit §4.3 deliberately, not to bolt on a one-off adapter-specific method. **Add a shared, protected HTTP helper on `ForgeAdapter` itself** (`self._request(method, url, **kwargs)`, wrapping `httpx`) that every one of the four adapters calls instead of using `httpx` directly — this is deliberate, not incidental: rate-limit handling, offline detection, and auth-failure translation are identical logic that four independently-written adapters would otherwise each get slightly wrong in their own way. Exactly once, here:
-   - **Rate limiting**: on a `429` response, read `Retry-After` (GitHub/GitLab send this; if absent, default to a flat 60s) and raise a typed `ForgeRateLimitedError(retry_after_seconds=...)` rather than retrying silently in a loop — the UI surfaces this as "rate limited, try again in Ns," not a spinner that hangs indefinitely.
-   - **Offline/unreachable**: catch `httpx.ConnectError` and `httpx.TimeoutException` specifically and re-raise as `ForgeUnreachableError` — a distinct, clear "can't reach {instance_url}, check your connection" message, not the same generic failure path as an auth or rate-limit error.
-   - **Auth failures, distinguished**: a `401` means the stored credential is invalid/expired — raise `ForgeAuthenticationError` and prompt the user to re-enter the token. A `403` on an otherwise-valid credential usually means insufficient token scope (e.g. a read-only token trying to create a PR) — raise a distinct `ForgeInsufficientScopeError` with provider-specific guidance on which scope to add, since conflating these two into one generic "auth failed" message sends a user with a scope problem down the wrong troubleshooting path (re-entering the same token again and again).
-3. `forge/registry.py`: implement `discover_adapters()`/`get_adapter_for_account()` exactly per §4.4; add the `[project.entry-points."wrench.forge_adapters"]` section to `pyproject.toml` in this same commit (not deferred) so registration is testable immediately rather than assumed to work.
-4. `storage/forge_accounts.py`: CRUD for both `forge_accounts` and `repo_forge_links`:
-   - `add_account(provider, instance_url, label, username, secret_service_key) -> int`: inserts a `forge_accounts` row, returns its `id`. No uniqueness constraint on `(provider, instance_url)` is enforced here deliberately — that's what makes multi-account (FR-5.8) possible at the storage layer with zero extra schema work.
-   - `list_accounts(provider=None) -> list[ForgeAccountRecord]`: all accounts, optionally filtered to one provider — used by the account-picker UI in step 7.
-   - `remove_account(account_id) -> None`: deletes the row (cascades to `repo_forge_links`) and calls `credentials.get_backend().delete_secret(account.secret_service_key)` — **not** `secret_service.delete_secret(...)` directly, which no longer exists as a flat function after §4.5/§4.7's redesign (it's a method on whichever backend `get_backend()` returns) and would also violate the "never bypass the abstraction" rule FR-11.1 exists to enforce. Do this in the same operation as the row delete, so removing an account never leaves an orphaned credential behind in the keyring.
-   - `link_repo_to_account(repo_id, forge_account_id, remote_name, owner_slug, repo_slug) -> None`: upserts a `repo_forge_links` row (the table's primary key is `(repo_id, remote_name)`, so linking the same repo+remote again updates rather than duplicates).
-   - `get_link_for_remote(repo_id, remote_name) -> RepoForgeLink | None`: the lookup the credential helper (§5 Phase 3 step 2) and the forge panel both depend on to resolve "which account applies here."
-5. Adapter implementation order (build GitHub first — best-documented API, most available test fixtures — then reuse its test patterns for the rest):
-   - `forge/adapters/github.py` — REST API v3 (`api.github.com`), auth via personal access token in an `Authorization: Bearer` header. `list_pull_requests(owner, repo)` → `GET /repos/{owner}/{repo}/pulls`; `create_pull_request(...)` → `POST /repos/{owner}/{repo}/pulls`; `get_ci_status(owner, repo, ref)` → `GET /repos/{owner}/{repo}/commits/{ref}/status` (GitHub's combined-status endpoint, which already aggregates multiple check runs into one summary state — use this rather than the lower-level check-runs endpoint, which would push aggregation logic into Wrench that GitHub already does for you). Handle pagination via the `Link` response header (`rel="next"`), not by assuming one page is everything.
-   - `forge/adapters/gitlab.py` — REST API v4, auth via a `PRIVATE-TOKEN` header (not `Authorization: Bearer`, GitLab's convention differs from GitHub's here — easy to get wrong if copy-pasting from the GitHub adapter). Must support both `gitlab.com` and a self-hosted `instance_url` — never hardcode the `gitlab.com` host, always build request URLs from `account.instance_url`. `list_pull_requests` maps to GitLab's `/merge_requests` endpoint (GitLab's own term is "merge request," not "pull request" — this is exactly the kind of vocabulary the `PullRequest` dataclass in step 1 normalizes away). Pagination also uses a `Link` header, same shape as GitHub's — the one adapter where copying that logic verbatim is actually correct, not a trap.
-   - `forge/adapters/forgejo.py` — Gitea-compatible API (`/api/v1/`), auth via token in an `Authorization: token {token}` header (a third distinct auth-header convention — GitHub, GitLab, and Forgejo each do this differently, which is exactly the kind of provider-specific detail the capability interface in §4.3 is meant to absorb so the UI never sees it). Must support an arbitrary self-hosted `instance_url` the same way GitLab's adapter does. Pagination is via `page`/`limit` query parameters and an `X-Total-Count` response header — **not** a `Link` header; reusing the GitHub/GitLab pagination helper unmodified here will silently stop after one page once a repo has enough PRs to need a second one. Build this one **third**, after GitHub and GitLab have already exercised the interface once each — per the risk register, Forgejo is the adapter most likely to reveal a leaky abstraction, and it's cheaper to find that with two working reference implementations already in hand than as the very first adapter built.
-   - `forge/adapters/bitbucket.py` — Bitbucket Cloud REST API 2.0 (`api.bitbucket.org/2.0`). **Auth (confirmed via search, Aug 2026)**: HTTP Basic Auth with the user's Atlassian email as username and a scoped **API token** as password — the current primary supported method. Do *not* implement App Password auth: Atlassian deprecated app passwords in 2025 and disabled them permanently on June 9, 2026, so building against them would ship a dead auth path on day one. OAuth 2.0 (Authorization Code grant) remains supported and would only be the right choice if Wrench needed to act on behalf of other users rather than the signed-in user's own account — not needed for v1's per-account-token model, skip it. Store the API token via `secret_service.py` exactly like every other adapter's token (§4.5) — no special-casing needed, since Basic Auth with `email:token` is still just "a secret string" from `secret_service.py`'s point of view; construct the Basic Auth header inside `bitbucket.py` itself at call time. Pagination is yet a third distinct shape: a `next` field containing a **full URL** directly in the JSON response body — fetch that URL as-is for the next page rather than constructing one from a page number, since Bitbucket's own query parameters on that URL aren't part of any documented contract worth reconstructing by hand.
-6. `ui/forge_panel/`: a tabbed sub-panel per open repo (PRs / Issues / CI), each tab rendering from `forge.models` dataclasses and gated on `adapter.capabilities` — check `ForgeCapability.ISSUES in adapter.capabilities` before even showing the Issues tab, don't show it and let clicking it fail. A PR list row shows title, state (color-coded via the normalized `state` field from step 1), author, and CI status icon; selecting one shows the description and a "create PR" button opens a form (title, description, source/target branch dropdowns populated from `list_branches`) that calls `adapter.create_pull_request(...)`.
-7. Multi-account UI (FR-5.8/5.9): an "Add account" flow in settings that creates a new `forge_accounts` row (doesn't require the previous account for that provider to be removed — no uniqueness constraint blocks a second `github`-provider row). When linking a repo's remote to a forge (`repo_forge_links`), if the remote's host matches more than one configured account, show a one-time picker and persist the choice as that row — never prompt again for the same repo+remote. Also set `credential.useHttpPath` (§4.2/§5 Phase 3) when a link is created, since multi-account credential resolution depends on it.
-8. **Acceptance check**: `pytest tests/integration/{github,gitlab,forgejo,bitbucket} -v` all green using `responses`-mocked HTTP fixtures in `tests/fixtures/forge_responses/` (one JSON fixture set per provider, captured from real API docs/examples — never hit real APIs in tests), including a mocked `429` for each adapter (asserts `ForgeRateLimitedError` with the right `retry_after_seconds`) and a mocked connection failure (asserts `ForgeUnreachableError`, not a raw `httpx` exception reaching the UI); manual QA — configure one real account per provider, list PRs, create a test PR, confirm CI status renders; separately, add a **second** account on the same provider (e.g. a second GitHub account), link two different local repos to the two different accounts, and confirm push/pull on each uses the correct account's credentials (verify via each account's own PR/API view, not just "it didn't error").
+
+**Step 0 — repo-state reconciliation (verified against the tree at Phase 3 completion; per Phase 3's precedent, corrections here beat greenfield assumptions):**
+   - `forge/` exists with `models.py`, `capability.py`, `registry.py`, and `adapters/{github,gitlab,forgejo,bitbucket}.py` — **all stubs raising `NotImplementedError`**. The class names and module paths are already correct per §3; this phase fills bodies, not files. There is **no `forge/exceptions.py`** — step 1 creates it per §4.3.A.
+   - `pyproject.toml` **already** registers all four adapters under `[project.entry-points."wrench.forge_adapters"]` (§4.4) — step 3 only verifies; do not re-add duplicate entries.
+   - `storage/forge_accounts.py` has `ForgeAccountRecord`/`RepoForgeLink` dataclasses plus `NotImplementedError` stubs for `add_account`/`remove_account`/the link helpers; the two read helpers (`list_accounts`, `find_link_by_path`) were implemented in **Phase 3 step 2** because the credential helper needed them — step 4 verifies those two already exist, completes the write/link CRUD, and adds one more read the UI needs (`get_account_full`).
+   - `ui/forge_panel/__init__.py` exists as an empty package; the §3 layout lists `ui/tabs/pr_list_tab.py`, `pr_detail_tab.py`, `issue_list_tab.py`, `issue_detail_tab.py`, which **do not exist yet**. Step 6 creates the tabs per the §3 names (the tab system's dedup key `(tab_type, repo_path, entity_id)` from Phase 1.5 governs their lifecycle).
+   - `tests/integration/{github,gitlab,forgejo,bitbucket}/` exist containing only `.gitkeep`; `tests/fixtures/forge_responses/` does not exist — step 5 creates it alongside each adapter's tests.
+   - **A spec snag to resolve before step 4**: `forge_accounts.secret_service_key` is documented (§4.5) as `wrench:forge:{account.id}` — but the id doesn't exist until the row is inserted, so the key can't be computed at INSERT time. Step 4's `add_account` resolves this with a two-step insert-update; follow that exactly rather than redesigning the key format.
+
+1. `forge/models.py` + `forge/exceptions.py`: fill in the dataclasses exactly as §4.3 defines them (`PullRequest`, `Issue`, `CIStatus`, `ForgeAccount` — the stubs exist; replace the stub bodies, keeping field names/order identical because `storage/forge_accounts.py` and the credential helper already import these names), and create `exceptions.py` with the six-class hierarchy in §4.3.A verbatim. `state` normalization rules to encode as module-level docstring + per-adapter maps (step 5): `PullRequest.state` ∈ `{"open","merged","closed"}` — GitHub's `open/closed`+`merged_at!=null`, GitLab's `opened/merged/closed`, Forgejo's `open/closed`+`merged` bool, Bitbucket's `OPEN/MERGED/DECLINED/SUPERSEDED` (DECLINED and SUPERSEDED both map to `"closed"`). `Issue.state` ∈ `{"open","closed"}`. `CIStatus.state` ∈ `{"success","failure","pending","unknown"}` — **the "no CI configured" case returns `CIStatus(state="unknown", url=None, description=None)`, never raises**: a repo without CI is a normal state, not an error, and the UI renders it as a neutral icon distinct from pending. Unit test per mapping table row in each adapter's test file (step 5 enumerates them).
+2. `forge/capability.py`: implement `ForgeCapability` and `ForgeAdapter` exactly as in §4.3 — this file should need no changes once Phase 4 starts writing adapters; if an adapter's needs don't fit the existing interface, that's a signal to revisit §4.3 deliberately, not to bolt on a one-off adapter-specific method. **Add a shared HTTP layer on `ForgeAdapter` itself** so the four adapters never call `httpx` directly — this is deliberate, not incidental: rate-limit handling, offline detection, and auth-failure translation are identical logic that four independently-written adapters would otherwise each get slightly wrong in their own way. Exact contract:
+   - `self._client = httpx.Client(base_url=<adapter-specific>, verify=<per-account TLS policy: False if account.tls_insecure, else account.tls_ca_bundle_path or True>, timeout=httpx.Timeout(connect=10.0, read=30.0, write=10.0, pool=10.0), follow_redirects=True)` created in `__init__` from the account. The `verify=` value comes straight from the `forge_accounts` columns (§3.1 — item 13's resolution: system trust store by default, a user-supplied PEM bundle for self-signed instances, explicit skip-verification as the last-resort option); whenever `tls_insecure` is in effect, `_client` construction also emits a WARNING log line naming the account **label** (never the token) — insecure TLS must be loud in the diagnostics log, not silent. **Base URL derivation is per-adapter**: GitHub always `https://api.github.com` for `github.com` accounts, but a self-hosted GitHub Enterprise uses `{instance_url}/api/v3` — GitLab `{instance_url}/api/v4`, Forgejo `{instance_url}/api/v1`, Bitbucket Cloud always `https://api.bitbucket.org/2.0` (no self-hosted variant in v1). Each adapter owns its `base_url` construction in `__init__`; `_request` only joins paths.
+   - `self._request(method, path, *, json=None, params=None) -> httpx.Response` — the only HTTP verb surface adapters use:
+     a. Inject the auth header from `self._auth_headers()` (abstract per adapter — GitHub `Authorization: Bearer {token}`, GitLab `PRIVATE-TOKEN: {token}`, Forgejo `Authorization: token {token}`, Bitbucket HTTP Basic via `httpx.BasicAuth(email, token)` passed as `auth=`). The token itself comes from `credentials.get_backend().get_secret(account.secret_service_key)` — fetched in `authenticate()` and cached on `self`; never log it, never put it in params.
+     b. Execute with the timeout above; catch `httpx.ConnectError`/`httpx.TimeoutException` → `ForgeUnreachableError(self.account.instance_url, str(e))` (§4.3.A).
+     c. `401` → `ForgeAuthenticationError(f"{self.account.provider} token for {self.account.label} was rejected — it may be expired or revoked")`; `403` → `ForgeInsufficientScopeError(...)` with a `scope_hint` string naming the conventional fix ("needs `repo` scope" / "needs `api` scope" — per adapter, known per provider, step 5).
+     d. `429` → `ForgeRateLimitedError(retry_after_seconds=int(response.headers.get("Retry-After", "60")))`.
+     e. Other 4xx/5xx → `ForgeError(f"{provider} API error {status}: {body[:300]}")` — truncate the body, API error pages can be huge HTML.
+     f. Success → return the response; adapters do their own `.json()` and field mapping.
+   - `authenticate()` (no parameter — the account was bound in `__init__`, §4.3): each adapter implements it as "one cheap authenticated GET against the provider's identity endpoint" (GitHub `GET /user`, GitLab `GET /user`, Forgejo `GET /user`, Bitbucket `GET /user`) purely through `self._request` — so the exception translation above already applies. It exists to validate a token *before* it's saved in the Add-account flow (step 7 — construct the adapter with a not-yet-persisted account and call this), and to revalidate on 401 recovery. No side effects beyond the request; success = no exception.
+   - **Pagination helper** `_paged_get(path, params, *, per_page=50) -> list[dict]`: the three pagination shapes (Link header, page/limit+X-Total-Count, full-URL-in-body from §5 Phase 4 step 5) are adapter-specific in *mechanism* but uniform in *contract*: return the concatenated item list; cap at 10 pages (500 items) per call as a runaway guard — a repo with more open PRs than that is beyond v1's UI design anyway, and an uncapped loop turns a provider bug into an infinite request storm; pass the cap through as a keyword so tests can set it to 2.
+   - Threading: `ForgeAdapter` instances are created and used inside `run_in_background` workers from the UI; the httpx client is not thread-shared — one adapter instance per background operation, no caching across threads.
+3. `forge/registry.py`: implement `discover_adapters()`/`get_adapter_for_account()` exactly per §4.4. **The entry-points section is already in `pyproject.toml`** (Step 0) — verify it matches §4.4 verbatim; if it was regenerated/lost, re-add in this same commit. Two implementation details §4.4 leaves open, settled here: (a) cache the `discover_adapters()` result in a module-level dict after first call — `importlib.metadata.entry_points()` re-scans installed distributions on every call, and the UI calls `get_adapter_for_account` per panel render; (b) construct the adapter with the account passed to `__init__(account)` (§4.3's "one instance per configured forge_account row" — the adapter binds its account at construction, which is why step 2's `authenticate()` takes no parameter). A duplicate `provider_id` across two entry points raises `ForgeError` at discovery time listing both sources — never silently last-one-wins; a shadowed built-in adapter is a debugging nightmare and must fail loud.
+4. `storage/forge_accounts.py`: complete the CRUD. The Phase 3 read helpers (`list_accounts`, `find_link_by_path`) already exist — verify them against §5 Phase 3 step 2's contract rather than rewriting; everything else below is new this phase:
+   - `add_account(conn, provider, instance_url, label, username, token, *, tls_ca_bundle_path=None, tls_insecure=False) -> int` — **note the signature takes the raw token, not a key** (the key can't be computed before insert: it embeds the row id — §4.5's format `wrench:forge:{id}`). Exact two-step sequence: (1) `INSERT INTO forge_accounts (provider, instance_url, label, username, tls_ca_bundle_path, tls_insecure, secret_service_key) VALUES (?, ?, ?, ?, ?, ?, ?)` with a placeholder key `wrench:forge:pending:{uuid4().hex}` (satisfies the NOT NULL UNIQUE column during the insert); (2) immediately `UPDATE forge_accounts SET secret_service_key = ? WHERE id = ?` with `f"wrench:forge:{new_id}"`. Then (3) `credentials.get_backend().store_secret(key, token, label=f"Wrench: {label}")`. **Order is not negotiable**: row insert first, secret second — if the secret store throws (`CredentialBackendUnavailableError`, locked keyring), delete the row and re-raise, because an account row pointing at a never-stored secret is a silent credential failure later (the helper finds the row, gets `None` from the backend, and the user gets an inexplicable "auth failed" loop). The whole sequence runs under the module lock §4.8 requires.
+   - `list_accounts(conn, provider=None) -> list[ForgeAccountRecord]`: all accounts, optionally filtered — used by the account-picker UI (step 7). Already implemented in Phase 3; add the `provider` filter parameter if missing.
+   - `get_account_full(conn, account_id) -> ForgeAccount | None`: returns the §4.3 `ForgeAccount` (WITH `secret_service_key`) for adapter construction — this is the one function that intentionally bypasses §3.1's "record excludes the key" rule, because the registry needs the key to build an adapter (`get_adapter_for_account` takes a full `ForgeAccount`). The only legitimate caller is the forge-panel load path (step 6): fetch it, hand it to `registry.get_adapter_for_account` within the same background operation, done — never display, log, or cache the result anywhere else.
+   - `remove_account(conn, account_id) -> None`: read the row's `secret_service_key` first, delete the row (cascades to `repo_forge_links` — the links vanish, by design: an account without a row can't be linked anyway), then `credentials.get_backend().delete_secret(key)`. Same rationale as before: never an orphaned secret in the keyring. If the backend delete throws (keyring down), the row is already gone — log and continue; a stranded secret is far less harmful than a stranded account row.
+   - `link_repo_to_account(conn, repo_id, forge_account_id, remote_name, owner_slug, repo_slug) -> None`: upsert on the `(repo_id, remote_name)` primary key (`INSERT ... ON CONFLICT(repo_id, remote_name) DO UPDATE SET forge_account_id=excluded.forge_account_id, owner_slug=excluded.owner_slug, repo_slug=excluded.repo_slug`) — relinking a remote to a different account is a normal operation, not an error.
+   - `get_link_for_remote(conn, repo_id, remote_name) -> RepoForgeLink | None`: the (repo,remote)-keyed lookup the forge panel needs; complements Phase 3's path-keyed `find_link_by_path`.
+   - `get_remote_slug(conn, repo_id, remote_name) -> tuple[str, str] | None`: returns `(owner_slug, repo_slug)` from the link row — the forge panel needs this on every load to know which owner/repo path to query, without parsing the remote URL itself.
+   - Unit tests (`tests/unit/storage/test_forge_accounts.py`, in-memory `sqlite3.connect(":memory:")` per §3.1): full add→list→get_full→link→get_link→remove lifecycle; the add-account secret-store-failure path (mock the backend to raise) → no row remains and the exception propagates; upsert link twice with different accounts → second read returns the second account; two accounts same provider+instance_url coexist (the no-uniqueness-constraint property that FR-5.8 depends on).
+5. Adapter implementation order (build GitHub first — best-documented API, most available test fixtures — then reuse its test patterns for the rest). **Shared rules for all four** before per-adapter notes:
+   - Every adapter subclasses `ForgeAdapter`, sets `provider_id` to the entry-point key verbatim (`"github"`, `"gitlab"`, `"forgejo"`, `"bitbucket"`), declares its real `capabilities` set (all four: `PULL_REQUESTS | ISSUES | CI_STATUS | ISSUE_LINKING` — Bitbucket's issues endpoint exists in 2.0; if a provider legitimately lacked one, the correct answer is a smaller capability set, and the UI already gates on it).
+   - Every adapter lives entirely behind `self._request` (step 2) — `grep -n "httpx\." src/wrench/forge/adapters/ | grep -v capability` must return **zero hits** in review; CI-enforceable later if it drifts.
+   - All list methods take `(owner, repo)` and accept an optional `state` filter that the panel passes through; never enumerate more than the `_paged_get` cap from step 2.
+   - Each adapter's test file lives in `tests/integration/{provider}/test_{provider}_adapter.py`, using `responses` with fixtures from `tests/fixtures/forge_responses/{provider}/*.json` — filenames named after the endpoint action (`list_prs_ok.json`, `list_prs_page2.json`, `create_pr.json`, `ci_success.json`, `user_ok.json`, `error_401.json`, `error_403.json`, `error_429.json`). Minimum test matrix **per adapter** (each its own test, no combined mega-tests):
+     1. `authenticate` success against `user_ok.json` → returns without exception.
+     2. `authenticate` against `error_401.json` → `ForgeAuthenticationError`; against `error_403.json` → `ForgeInsufficientScopeError`; a network-level `httpx.ConnectError` (no response registered; `responses` raises ConnectionError → wrap accordingly) → `ForgeUnreachableError` carrying the instance URL.
+     3. 429 fixture → `ForgeRateLimitedError` with the fixture's `Retry-After` value, and the no-header spouse-case → 60s default.
+     4. `list_pull_requests` happy path maps every field including the provider's state vocabulary → normalized `open|merged|closed` (assert the two or three provider-native states that map onto each normalized one — e.g. a `DECLINED` Bitbucket PR and a `closed` GitHub PR both yield `state == "closed"`).
+     5. `list_pull_requests` pagination: two `responses`-registered pages → concatenated result, in order. With the page cap set to 1 via the keyword, assert exactly one page is fetched (the cap actually truncates — an uncapped loop over a pathological fixture would hang the test, which is precisely why the cap exists).
+     6. `create_pull_request` posts the right body shape for the provider (assert the request JSON via `responses.calls[0].request.body`) and maps the response.
+     7. `get_ci_status` success/failure/pending fixtures map to the three normalized states; a 404 or empty-list fixture (repo has no CI at all) → `CIStatus(state="unknown", ...)` and **not** an exception.
+     8. `list_issues` where supported: normalized open/closed mapping, same pagination rules.
+     9. The `state` filter parameter (open/closed/all) reaches the query string correctly per provider.
+     10. `submit_review`: one fixture or `responses`-asserted-request per action in that adapter's `supported_review_actions` (GitHub/Forgejo: `reviews` endpoint with the right event string — catch a Forgejo test that uses `APPROVE` instead of `APPROVED`; GitLab: approve+notes endpoints, plus a test that `request_changes` never reaches HTTP; Bitbucket: the three separate endpoints with the `content.raw` body shape) — and one 403 fixture asserting `ForgeInsufficientScopeError` with the review-scope hint.
+   - **Review actions (§11 item 14, resolved: in-app review IS v1 scope):** every built-in adapter sets `ForgeCapability.REVIEWS` and implements `submit_review`; per-provider endpoint mappings are in the notes below. `supported_review_actions` defaults to all three normalized actions; GitLab narrows it to `{approve, comment}` (no first-class request-changes endpoint). The UI grays buttons from that set — capability-gated at render, never call-and-catch.
+   - **Adapter-specific notes** (the deltas, not the full code):
+      - `forge/adapters/github.py` — REST v3 (`api.github.com`; Enterprise `{instance_url}/api/v3`), `Authorization: Bearer`, combined-status endpoint for CI. Owner/repo in the URL path verbatim — no URL-encoding gymnastics needed for normal slugs; they come from `repo_forge_links` slugs which validated at link time. **`list_issues` trap**: GitHub's `GET /repos/{owner}/{repo}/issues` returns pull requests mixed in with issues — filter out every item carrying a `pull_request` key before mapping; missing this yields "issues" that are secretly PRs, and the Issues tab shows double entries. `submit_review` → `POST /repos/{o}/{r}/pulls/{n}/reviews` with `{"event": "APPROVE"|"REQUEST_CHANGES"|"COMMENT", "body": ...}` — GitHub matches the normalized vocabulary one-to-one, no narrowing.
+     - `forge/adapters/gitlab.py` — REST v4, `PRIVATE-TOKEN` header, self-hosted `{instance_url}/api/v4`. PR↔MR vocabulary mapping is the whole point of the `PullRequest` model. CI: `GET /projects/{id}/pipelines?sha={ref}` newest-first, first entry's `status` maps (`success`/`failed`/`running|pending`/`canceled|skipped→unknown`-family — map `canceled`/`skipped` to `unknown`, NOT `failure`: a cancelled pipeline is not a red build and scaring the user over it is a false alarm). `submit_review` → approve is `POST /projects/{id}/merge_requests/{iid}/approve`, comment is `POST /projects/{id}/merge_requests/{iid}/notes` with `{"body": ...}`; GitLab has **no first-class request-changes action**, so this adapter overrides `supported_review_actions` to `{"approve", "comment"}` — the UI grays the button accordingly. Note the `/approve` endpoint rejects approving your *own* MR with 401; that surfaces as `ForgeAuthenticationError` which is misleading — catch the 401-body "You cannot approve" case and re-raise as `ForgeError` with the plain explanation instead.
+      - `forge/adapters/forgejo.py` — `/api/v1/`, `Authorization: token {token}`. Build **third**, deliberately, per the risk register. Pagination `page`/`limit`+`X-Total-Count`. Its commit-status endpoint is `/repos/{owner}/{repo}/commits/{ref}/status` (Gitea-compatible combined status); a 404 there = unknown. `submit_review` → `POST /repos/{o}/{r}/pulls/{n}/reviews` with `{"event": "APPROVED"|"REQUEST_CHANGES"|"COMMENT", "body": ...}` — note the event vocabulary is `APPROVED` (past tense), not `APPROVE`; the adapter maps the normalized `'approve'` to it. **TLS (§11 item 13, resolved — per-account policy):** this adapter gets nothing TLS-specific in code; the policy lives in the account row (`tls_ca_bundle_path` / `tls_insecure`, §3.1) and is applied by the shared `_client` construction in step 2's `verify=`. A self-signed instance with neither set still surfaces as `ForgeUnreachableError` — that failure is now the *prompt* for the user to open the account's TLS settings, and the banner text says exactly that ("if this instance uses a self-signed certificate, set its CA bundle in the account settings"). Minimum supported server version: Gitea ≥ 1.20 / Forgejo ≥ 1.20 (the `/reviews` and combined-status endpoints used here are stable that far back); older instances are untested, not blocked — no version sniffing in the adapter.
+     - `forge/adapters/bitbucket.py` — `api.bitbucket.org/2.0`, **HTTP Basic Auth via `httpx.BasicAuth(email, api_token)`** — account.username holds the email; if username is empty for a Bitbucket account, raise `ForgeAuthenticationError` immediately with "Bitbucket requires the Atlassian email as the username" — do not send an anonymous request and surface a generic 401. App Passwords are dead (§5 ban — do not implement). Pagination via `next` full-URL from the response body; PR state vocabulary `OPEN|MERGED|DECLINED|SUPERSEDED`; CI ("builds") `GET /repositories/{workspace}/{repo}/commit/{ref}/statuses` (paginated values list, state `SUCCESSFUL|FAILED|INPROGRESS|STOPPED` → success/failure/pending, STOPPED→unknown). `submit_review` → approve is `POST /repositories/{w}/{r}/pullrequests/{id}/approve`, request-changes is `POST .../request-changes`, comment is `POST .../pullrequests/{id}/comments` with `{"content": {"raw": body}}` — all three map, no narrowing.
+6. Forge UI surface — the §3 files `ui/tabs/pr_list_tab.py`, `pr_detail_tab.py`, `issue_list_tab.py`, `issue_detail_tab.py` (new), plus shared widgets in `ui/forge_panel/` (state-badge and CI-icon widgets that render the normalized `state` strings from step 1). Rules that apply uniformly:
+   - **Tab lifecycle**: register the four tab types with the Phase 1.5 tab system's existing registration mechanism — dedup key `(tab_type, repo_path)` for the two list tabs, `(tab_type, repo_path, entity_id)` for the detail tabs, exactly per Phase 1.5's dedup rule. No homegrown tab management.
+   - **Link resolution on every list-tab open** (this is the seam where the whole phase's data flow starts): look up `storage.forge_accounts.get_link_for_remote(conn, repo_id, remote_name)` with `remote_name="origin"` first, falling back to the first remote from `engine.list_remotes` if origin is absent. Three outcomes: (a) no link → the tab shows an empty state with a "Link this repository…" button that launches step 7's link flow — not an error, not a silently empty list; (b) link → load the account via `get_account_full` (the normal route — this is adapter construction, allowed) and hand it to `registry.get_adapter_for_account`; (c) link exists but its account row is gone (deleted account) → empty state saying the linked account no longer exists, with a relink button — `repo_forge_links` rows cascade-delete with the account, so this should be dead code, but if it ever renders it's better than a crash.
+   - **Threading, no exceptions**: every adapter call (list, create, CI, authenticate) runs via `ui.workers.run_in_background` (§4.8) with a `BusyOperationDialog` for the create-PR flow — the same dialog Phase 2/Phase 3 reuse, not a new one. One adapter instance per operation (step 2's no-thread-shared-client rule).
+   - **No N+1 CI fetches**: the PR list renders title/author/state/branch-pair only — **no per-row CI call**. CI status is fetched once, for the opened PR, in `pr_detail_tab`. (This deliberately narrows an earlier draft that showed a per-row CI icon: one HTTP request per row per render is a rate-limit farm against `429`; the detail tab keeps the same information one click away.)
+   - **Error routing is per exception class, once, in a shared helper in `ui/forge_panel/`** (all four tabs call it): `ForgeAuthenticationError` → inline banner "Stored token for {label} was rejected — re-enter it" launching step 7's token re-entry; `ForgeRateLimitedError` → banner "Rate limited, try again in {retry_after_seconds}s" with a disabled-until-then refresh button; `ForgeUnreachableError` → banner "Can't reach {instance_url} — check connection/VPN"; `ForgeInsufficientScopeError` → banner "Token for {label} lacks {scope_hint} — update its scopes at the provider, then refresh"; other `ForgeError` → generic banner with the (already token-free, truncated) message + Retry. None of these reach the generic crash path, and none log the token — messages built in step 2 carry no secret material by construction.
+   - **Capability gating**: tab visibility follows `adapter.capabilities` (issues tab hidden when `ISSUES` unset), never call-and-catch-`NotImplementedError`.
+   - **SRS NFRs that bind this code directly**: every user-visible string wrapped in `tr()` (§4 Localization row — English-only but structured from day one); full keyboard navigation for lists/details/dialogs and accessible names on icon-only buttons (CI icon, refresh button) per the Accessibility row — these are v1 gates (master checklist 7.2/7.4), not polish.
+   - **Create-PR flow**: button on the PR list tab (capability-gated) → modal form (title, description, source branch defaulting to the repo's current branch, target branch defaulting to the remote's default branch; branch dropdowns from `engine.list_branches`) → submit in background (busy dialog) → on success open the new PR in `pr_detail_tab` (its `url` field also gets an "Open in browser" action — `QDesktopServices.openUrl`, same pattern the diagnostics deep-link uses). `ForgeInsufficientScopeError` here renders the `scope_hint` text directly — the user sees "needs `repo` scope" rather than an unexplained 403.
+   - **Review actions** on `pr_detail_tab` (§4.3's `submit_review` — v1 scope, §11 item 14): three buttons — **Approve**, **Request changes**, **Comment** — gated on `ForgeCapability.REVIEWS in adapter.capabilities` AND the action being in `adapter.supported_review_actions` (a GitLab-linked repo renders Request-changes grayed with a tooltip "GitLab has no request-changes action", not missing-from-layout — the tab's layout stays stable across providers). All three open the same small confirm dialog with a `body` text field (empty body allowed for approve/request-changes, required for comment — the provider APIs all accept it on approve/reject; an empty comment is a UI-level mistake, not an API error to surface). Submit runs via `run_in_background`; on success, show a transient confirmation ("Review submitted") and refresh the PR detail. There's deliberately **no in-app review-thread viewer** in v1 — submitted bodies land on the provider; the "Open in browser" action covers seeing the conversation. (§4.3's `submit_review` docstring carries this "action surface only" boundary.)
+7. Multi-account UI (FR-5.6/5.8/5.9). Two dialogs, one flow contract:
+   - **Accounts manager** — `ui/dialogs/accounts_dialog.py` (create if Phase 3's remotes dialog didn't already establish `ui/dialogs/`; same placement rule as Phase 3 step 5). A list of all `forge_accounts` rows (label, provider, instance URL, username — **never the token, and never show the secret after entry**) plus Add / Edit label / Remove. **Nothing here requires removing an existing account to add another** — no uniqueness constraint blocks a second `github`-provider row (step 4's storage test proves this; FR-5.8 is the point). Multiple self-hosted instances of one provider (two Forgejo servers) are entered as two rows with different `instance_url`s (FR-5.6).
+     - **Add flow**: fields = provider dropdown (the four, matching `provider_id` exactly), instance URL (free text, with sane per-provider placeholder text — `https://github.com` works for GitHub Cloud and an enterprise host for GHE, `https://gitlab.com`, `https://forgejo.example.org`; Bitbucket has **no editable instance field at all** — Cloud-only in v1, so picking Bitbucket in the provider dropdown pins the instance to the one fixed cloud value, shown read-only so users see what will be stored), label (free text, required — "work GitHub", "personal GitHub"), username (required for Bitbucket = Atlassian email; optional elsewhere — the Phase 3 helper's username backfill populates it on first use), token (password-echo field, required). **TLS group** (the §11 item-13 resolved policy), collapsed-advanced by default, for the editable-instance providers only: (a) a "Custom CA bundle (PEM)" file picker — chosen path lands in `tls_ca_bundle_path`; (b) a "Skip TLS certificate verification" checkbox that requires an inline warning read-and-acknowledge ("traffic to this instance will not be checked for tampering — only use this on networks you control") before it can be checked — this lands in `tls_insecure`; setting both is contradictory and the dialog rejects it ("pick a CA bundle or skip verification, not both"). **Validate before persisting**: construct the adapter from the not-yet-saved data (including the TLS choice — the `verify=` parameter is applied at `_client` construction, so the validation probe exercises exactly the TLS path the account will live with) and call `authenticate()` via `run_in_background` (never on the UI thread; a hanging keyring or VPN must not freeze the dialog) — success → `storage.forge_accounts.add_account(...)` (step 4's two-step insert+secret-store); failure → the §4.3.A exception maps to an inline message under the offending field (401/403 → token row, `ForgeUnreachableError` → instance URL row, with the self-signed-cert hint appended when the failing instance has no TLS override set) and **nothing is written**: not the row, not the secret. A save that half-completes (keyring dies between row and secret) is step 4's rollback path, already specified there.
+     - **Remove flow**: confirm with a dialog that names the label and says what else goes away (the `repo_forge_links` rows cascade — "the N repos linked to this account will be unlinked"). Then `remove_account` per step 4 (row first, secret best-effort after).
+     - **Edit**: label and username editable inline; the TLS group from the Add flow reappears here (same fields, same warning) since self-hosted instances get their CA bundles rotated in production life. Token replacement = "Edit label…" is deliberately **not** how you rotate a token; a separate "Replace token…" action re-runs the same validate-then-store flow against the existing row, updating the secret in place (`store_secret` with the existing key) — no new row, no re-linking.
+   - **Link flow (FR-5.9's one-time picker)**, reachable from the forge tabs' empty state (step 6) and the Remotes dialog's account column. Given a repo+remote: parse the remote URL to `(host, owner, repo)` (the Phase 3 helper's URL parsing — extract it into a shared `core/remote_urls.py` function *this* phase and have both call sites use it; the helper's stdin parsing and the UI's remote parsing are the same two regexes and must not drift). Match `forge_accounts` rows by provider-host: enumerate `list_accounts()`, filter to accounts whose `instance_url`'s host equals the remote's host (GitHub.com accounts also match GHE? No — `github.com` hosts only match `instance_url=https://github.com` accounts; an Enterprise account on its own URL only matches remotes on that URL; this exact-match rule is what makes two same-provider accounts unambiguous rather than silently first-one-wins).
+     - **Zero matches** → empty state: "no account configured for {host}" + button straight to the accounts manager.
+     - **One match** → still a confirm ("Link `owner/repo` to {label}?" — one click, default action). Do not skip the confirmation: a wrongly-assumed account is worse than one click; FR-5.9 mandates the *prompt-once* behavior, and "once" includes the first time.
+     - **Multiple matches** → the picker dialog listing the matching rows with label/username/instance columns; choosing one is the same outcome path. The picker says at the bottom why it's being asked: "this remote could use more than one configured account — Wrench will remember this choice for this repository and remote."
+     - **Persisting the choice** (all three branches): `link_repo_to_account(conn, repo_id, account_id, remote_name, owner_slug, repo_slug)` — upsert semantics from step 4 — **and** `git config credential.useHttpPath true` scoped to this repo (§5 Phase 3 step 3: the git-level credential lookup depends on the path component; the helper's matching order reads `path` first, which only arrives when useHttpPath is on). Both writes belong in the same user action; a repo with the link row but the config unset silently degrades the multi-account guarantee (FR-4.5) to host-only matching.
+     - **Re-linking** (change account for a repo) is the same dialog with the current choice pre-selected; the upsert overwrites — no delete-then-insert.
+   - All strings wrapped in `tr()` (SRS §4 Localization row); both dialogs pass the keyboard-only walkthrough (SRS §4 Accessibility row — tab order through every field, Enter activates defaults, Escape cancels, accessible names on icon-only buttons); no token ever appears in logs — the diagnostics log (FR-9.2) records account *labels*, never secrets.
+8. **Acceptance check** — three gates, in order; a phase is not done until all three pass:
+   - **Automated**: `pytest tests/unit/storage/test_forge_accounts.py tests/integration/{github,gitlab,forgejo,bitbucket} -v` all green — the four adapters against `responses`-mocked fixtures in `tests/fixtures/forge_responses/{provider}/` (fixtures captured from real API docs/examples per step 5; **never hit real APIs in tests**), covering each adapter's full step-5 matrix — normalized state mappings, pagination concatenation *and* cap enforcement, mocked `429` asserting `ForgeRateLimitedError` with the parsed `retry_after_seconds`, mocked connect-failure asserting `ForgeUnreachableError` (not a raw `httpx` exception reaching surfaced code), and GitHub's issues-in-list filtering. Plus `pytest tests/unit/forge/test_registry.py`: the four adapters discoverable from a fresh `importlib` pass; constructing each from a full `ForgeAccount` yields a working instance; a forged duplicate `provider_id` raises. Run on a clean clone (the `entry_points` path behaves differently editable-installed vs. packaged — catch that here, not in Phase 6).
+   - **End-to-end, per provider** (one real account each, then the multi-account case): add the account through the manager (validate-then-save works), link one repo, PR list loads, open one PR detail (CI status renders), create a throwaway PR and see it appear. Then the **flagship multi-account check**: two accounts on the same provider, two different local repos, each linked to a different account — push/pull on each uses the correct account's credentials (verify each repo's remote API calls land on the right account, not just "no error"), and the git-level `credential.useHttpPath` is set on both repos. Finally the **ambiguity-demonstration check**: both accounts share the same host (e.g. two `github.com` accounts, FR-5.8's whole point); linking a third repo shows the one-time picker, picks one, and a subsequent fetch on that repo uses the chosen account without re-prompting (FR-5.9).
+   - **Failure-path QA** (do not skip — these are the dialogs hours-of-debugging turned into): revoke one account's token at the provider, trigger a forge tab load → the 401 banner offers re-entry, replace the token, retry → works; firewall-block one instance's host (`iptables` or a hosts-file blackhole) → `ForgeUnreachableError` banner with actionable text; paste a deliberately-under-scoped token (e.g. GitHub `public_repo` on a private repo) → 403 banner names the missing scope; revoke the Secret Service daemon (`killall gnome-keyring-daemon` on a GNOME session) mid-session → add-account fails cleanly with the no-row-orphan behavior from step 4, existing accounts that were already running keep working until the next secret read.
+   - **Documentation gate**: §11 items 13 and 14 are resolved (per-account TLS policy; in-app review actions) — this gate is now a *confirmation* checklist: review the three TLS-policy UI texts (CA-bundle picker label, insecure-mode warning, self-signed failure hint) against what's written in step 7, and confirm the review action flows (approve/request-changes/comment on a test PR per provider, plus the GitLab grayed-button case) behaving as step 5's adapter notes describe — sign-off requires both, since these were the two items that reshaped this phase's scope.
 
 ### Phase 5 — LFS & Submodules
 **Prerequisites:** Phase 4's acceptance check passed (all four forge adapters' integration tests green).
@@ -1767,6 +2176,7 @@ Every row below is detailed in full where cited — this table exists so none of
 | Forge APIs | Offline / connection failure | §5 Phase 4 step 2 — `ForgeUnreachableError` |
 | Forge APIs | Expired token (`401`) vs. insufficient scope (`403`) | §5 Phase 4 step 2 — distinct exceptions, distinct guidance |
 | Forge APIs | Pagination shape differs per provider (`Link` header vs. `page`/`limit` vs. full-URL-in-body) | §5 Phase 4 step 5, per adapter |
+| Forge APIs | GitHub's `/issues` endpoint returns pull requests mixed into the results | §5 Phase 4 step 5 — the GitHub adapter filters out `pull_request`-keyed items |
 | Multi-account | Ambiguous host match, no explicit link | §5 Phase 3 step 2 — falls through to "not found," never guesses |
 | Submodules | Not a `repos` row, so multi-account disambiguation can't target it specifically | §5 Phase 5 step 2 — documented v1 gap, not solved |
 | Packaging | Flatpak build sandbox has no network access — plain `pip install` in a build step fails | §6.1 — `flatpak-pip-generator`, regenerated whenever dependencies change, never hand-edited |
@@ -1835,7 +2245,8 @@ Cross-references SRS §7.
 10. ~~Confirm snapshot storage/trigger/retention design~~ — ✅ Resolved: hybrid storage (`git stash create` + capped untracked archive), all four triggers enabled by default and independently configurable, count+age retention with manual-snapshot protection (SRS §7, rows 11–14; full algorithm in §4.6). FR-1.11 reclassified from v2 to v1 as a consequence.
 11. **Open**: default values for `untracked_per_file_cap_mb` (50) and `untracked_total_cap_mb` (500) in `snapshot_settings` are reasonable starting points, not empirically validated — revisit after real-world use on a repo with substantial untracked build artifacts.
 12. **Open, tracked in SRS §6.1/§7**: SSH agent compatibility across GPG-as-agent and hardware-key setups — narrower risk than originally scoped (protocol forwarding is agent-agnostic; real risk is env-var propagation at launch and untested hardware-key paths), but not empirically validated yet. Beta-cycle validation task, not a Phase 3 blocker.
-13. **Open, tracked in SRS §6.1**: self-hosted Forgejo/Gitea TLS handling (self-signed certs) and minimum supported API version — undecided, needs an explicit call before Phase 4's Forgejo adapter work closes out.
+13. ~~Self-hosted Forgejo/Gitea TLS handling (self-signed certs) and minimum supported API version~~ — ✅ **Resolved**: per-account TLS policy stored on the account row — `tls_ca_bundle_path` (verify against a user-supplied PEM) and `tls_insecure` (explicit, warning-gated opt-in to skip verification); default remains system trust store. The accounts dialog's TLS group (§5 Phase 4 step 7) exposes both; the adapters never special-case TLS — the policy reaches the `httpx.Client` at construction time via `verify=` (§5 Phase 4 step 2). Minimum supported server version: Gitea/Forgejo ≥ 1.20 (the endpoints §5 Phase 4 step 5 uses are stable that far back); older versions are untested, not blocked — no version sniffing.
+14. ~~SRS FR-5.2–5.5 "PR create/view/**review**" vs §4.3's interface with no review methods~~ — ✅ **Resolved**: in-app review actions ARE v1 scope. §4.3 gained `submit_review(action: 'approve'|'request_changes'|'comment', body)` plus a `supported_review_actions` property for provider gaps (GitLab lacks a first-class request-changes action — the UI grays that button rather than erroring). rilling review threads stays out of app scope for v1 (the "Open in browser" action covers reading them); the method is the action surface only.
 
 ---
 
@@ -1894,25 +2305,26 @@ Flattened, in strict execution order, across every phase — the literal path th
 
 
 **Phase 3 — Remote Operations** *(prerequisites: 2.7 checked)*
-- [ ] 3.1 `credentials/backend.py` (`CredentialBackend` ABC + `CredentialBackendUnavailableError`) + `credentials/secret_service.py` (shared `SecretServiceBackend` + `FlatpakSecretServiceBackend`/`AppImageSecretServiceBackend`) + `credentials/__init__.py` (`get_backend()` + `_detect_packaging_context()`) — §4.7
-- [ ] 3.2 `core/git_credential_helper.py`: exact `get`/`store`/`erase` protocol per §5 Phase 3 step 2 + `[project.scripts]` entry, **including** `credential.useHttpPath` + host+path account disambiguation for multi-account (FR-4.5)
-- [ ] 3.3 `core/write_ops.py`: push/pull/fetch/clone with progress parsing, all dispatched via `ui.workers.run_in_background`
-- [ ] 3.4 `core/ssh_agent.py` + confirm `SSH_AUTH_SOCK` passthrough, unmodified
-- [ ] 3.5 `list_remotes`/`add_remote` (FR-4.4)
-- [ ] 3.6 **CHECK**: real push/pull/fetch QA; confirm no plaintext credentials are ever written (inspect via `strace`/logs)
+- [x] 3.0 Step 0 reconciliation: verify scaffolded seams exist (`git-credential-wrench` script entry, credential factory, workers progress signal); note engine stubs being *replaced*, not added beside
+- [x] 3.1 `credentials/secret_service.py` filled in per §4.5 (backend ABC + factory already scaffolded — verify only); tests (a)–(j) green incl. DB-locked retry and context-specific `unavailable_help_text`
+- [x] 3.2 `core/git_credential_helper.py`: exact `get`/`store`/`erase` protocol per §5 Phase 3 step 2 — split-once stdin parse, http(s)-only, host→link→fallback disambiguation ("not found," never guess), read-only WAL DB access with locked-retry, empty-stdout-exit-0 failure rule, per-`open_repo` + clone + `add_remote` credential config write (`credential.helper=wrench`, `credential.useHttpPath=true`); tests (a)–(l) green
+- [x] 3.3 `core/write_ops.py` + `core/engine.py`: `run_git_streaming` sibling (dual-pipe drain, `\r`-fragment split, terminate→kill cancel, timeout→`CLITimeoutError`); `_parse_progress`; classification table (`PushRejectedError`/`MergeRequiredError`/`AuthFailedError`/`AuthRequiredError`); `push` (`--force-with-lease` only for force), `pull` (`--ff-only`), `fetch` (`--prune` + `remote_last_fetch.*` settings), `clone_repo` rewrite (temp-dir-then-move, `CloneAbortedError`, config write into fresh clone); workers.py percent adapter; tests 3f(1)–(7) green; all four ops only ever called via `run_in_background` from UI
+- [x] 3.4 Flatpak manifest has `--socket=ssh-auth`; `_git_env()` passes `SSH_AUTH_SOCK` via `core.ssh_agent.get_ssh_auth_socket()` only when set, unmodified; tests green
+- [x] 3.5 `list_remotes` (no network in the list call) / `add_remote` (validate → dup-check → config → add → background probe) / `remove_remote` / `set_remote_url`; `ui/dialogs/remotes_dialog.py` + Repository menu (Fetch/Pull/Push/Remotes) wired through `run_in_background` + Phase 2 busy dialog, error routing per §5 Phase 3 step 5
+- [x] 3.6 **CHECK**: full §5 Phase 3 step 6 list executed — pytest green; real HTTPS push/pull/fetch with helper-supplied credentials verified via `GIT_TRACE=1`; strace shows zero plaintext credential files; two-account same-host → linked-account-wins, unlinked-ambiguous → fails closed; rejection dialogs (push-rejected / merge-required / auth) shown correctly; mid-clone cancel leaves no directory; SSH plain-agent works; Remotes dialog round-trips
 
 **Phase 4 — Forge Integration Layer** *(prerequisites: 3.6 checked)*
-- [ ] 4.1 `forge/models.py`: provider-agnostic dataclasses
-- [ ] 4.2 `forge/capability.py`: `ForgeCapability` + `ForgeAdapter` ABC
-- [ ] 4.3 `forge/registry.py`: entry-points discovery + `pyproject.toml` section
-- [ ] 4.4 `storage/forge_accounts.py`: CRUD
-- [ ] 4.5 `forge/adapters/github.py` — build first
+- [ ] 4.1 `forge/models.py`: dataclasses + normalized state strings; `forge/exceptions.py`: the §4.3.A six-class hierarchy (lives in `forge/`, not `core/` — no new core→forge imports)
+- [ ] 4.2 `forge/capability.py`: `ForgeCapability` + `ForgeAdapter` ABC — account bound in `__init__`, argument-less `authenticate()`, shared `_request()` (timeouts, 401/403/429→exception map) + `_paged_get` (10-page cap)
+- [ ] 4.3 `forge/registry.py`: entry-points discovery (already in `pyproject.toml` — verify, don't re-add), cached discovery, `cls(account)` construction, loud duplicate-provider failure
+- [ ] 4.4 `storage/forge_accounts.py`: full CRUD — two-step `add_account` (placeholder key → final key → `store_secret`, row-rollback on secret-store failure), `get_account_full`, `link_repo_to_account` upsert, `get_link_for_remote`, `get_remote_slug`, `remove_account`
+- [ ] 4.5 `forge/adapters/github.py` — build first; `/issues`-returns-PRs filter
 - [ ] 4.6 `forge/adapters/gitlab.py`
-- [ ] 4.7 `forge/adapters/forgejo.py` — build third, deliberately (most likely to reveal leaky abstractions)
-- [ ] 4.8 `forge/adapters/bitbucket.py` — API-token Basic Auth; do **not** implement App Passwords (dead since June 2026)
-- [ ] 4.9 `ui/forge_panel/`: capability-gated rendering — check `adapter.capabilities` before showing a feature, never call-and-catch `NotImplementedError`
-- [ ] 4.10 Multi-account UI (FR-5.8/5.9): "Add account" flow (no uniqueness constraint blocks a second account per provider); one-time account picker on ambiguous repo-link, persisted to `repo_forge_links`
-- [ ] 4.11 **CHECK**: all four adapters' integration tests green against mocked fixtures; manual QA with one real account per provider, plus a second same-provider account linked to a different repo, confirming each uses its own credentials
+- [ ] 4.7 `forge/adapters/forgejo.py` — build third, deliberately; system-trust TLS only, SRS §6.1 stays open
+- [ ] 4.8 `forge/adapters/bitbucket.py` — API-token Basic Auth (email+token); do **not** implement App Passwords (dead since June 2026)
+- [ ] 4.9 Forge UI: the four §3 tab files + shared `ui/forge_panel/` widgets — all adapter HTTP via `run_in_background`, no N+1 CI in lists, per-class error banners, capability gating (no call-and-catch), `tr()` + full keyboard operation
+- [ ] 4.10 Accounts manager + link flow (FR-5.6/5.8/5.9): validate-before-save via background `authenticate()`; one-time picker on ambiguous host match, always confirmed, never re-prompted; linking upserts `repo_forge_links` **and** sets `credential.useHttpPath`
+- [ ] 4.11 **CHECK**: unit + adapter-integration tests green on a **clean clone** (entry-points behave differently editable-installed); real-account QA per provider, plus the two-accounts-same-host case with the picker, plus failure-path QA (401 re-entry, 429 banner, unreachable banner, keyring-down add); §11 items 13 and 14 presented to the user for decisions — not silently resolved
 
 **Phase 5 — LFS & Submodules** *(prerequisites: 4.11 checked)*
 - [ ] 5.1 `core/lfs.py`

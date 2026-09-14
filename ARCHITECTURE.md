@@ -174,7 +174,9 @@ graph TD
   - Unborn branch empty state (`"No history yet"`).
 - **`CommitGraphWidget` (`ui/commit_graph/graph_widget.py`)**: Custom table view for Git DAG commit graph.
   - Custom `CommitTableModel` supporting `Qt.DisplayRole`, `Qt.UserRole` (`GraphRow`), and rich `Qt.ToolTipRole` across all columns.
-  - Pinned Column 0 horizontal scrollbar (`_graph_scrollbar`) styled identically to the main scrollbar with dynamic height matching and off-screen viewport panning (`_graph_scroll_x`).
+  - **Smooth Per-Pixel Horizontal Scrolling**: Configured with `setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)` to eliminate column snapping and deliver fluid pixel-continuous horizontal scrolling across all table columns.
+  - **Synchronized Column 0 Scrollbar (`_graph_scrollbar`)**: Dedicated pinned horizontal scrollbar styled identically to the main scrollbar with dynamic height matching and off-screen viewport panning (`_graph_scroll_x`). Dynamically tracks Column 0's viewport coordinate (`self.viewport().x() + header.sectionViewportPosition(0)`), translating smoothly to the left in exact sync with Column 0 as the main scrollbar scrolls right, with width bounded by viewport boundaries to prevent overlapping the vertical scrollbar. Automatically hides when Column 0 scrolls off-screen or when lane count fits without scrolling.
+  - **Synchronous Viewport Scroll Updates**: Overrides `scrollContentsBy(dx, dy)` and connects to `valueChanged`, `rangeChanged`, and `header.geometriesChanged` to ensure instant, zero-lag scrollbar positioning during mouse drags, trackpad pans, and window resizes.
   - Interactive column resizing across all header sections with boundary clipping and auto-save triggering on resize.
   - Auto-scrolling to selected commit nodes with glowing halo accent rings (`NODE_RADIUS + 3.0`).
 - **`Topological Layout Calculator` (`ui/commit_graph/layout.py`)**:

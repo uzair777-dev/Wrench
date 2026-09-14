@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
+import threading
 from pathlib import Path
 
 from PySide6.QtCore import QByteArray, Qt, QTimer
@@ -31,12 +32,25 @@ from PySide6.QtWidgets import (
 
 from wrench.core import engine, snapshots
 from wrench.core.engine import RepoHandle
+from wrench.core.exceptions import (
+    AuthFailedError,
+    AuthRequiredError,
+    CLITimeoutError,
+    CloneAbortedError,
+    GitCommandError,
+    MergeRequiredError,
+    PushRejectedError,
+    RemoteNotFoundError,
+)
 from wrench.storage import repo_registry, settings
 from wrench.storage.db import get_connection
+from wrench.ui.dialogs.remotes_dialog import RemotesDialog
+from wrench.ui.recovery.busy_dialog import BusyOperationDialog
 from wrench.ui.snapshots_panel import SnapshotsPanel
 from wrench.ui.tabs.changes_tab import ChangesTab
 from wrench.ui.tabs.history_tab import HistoryTab
 from wrench.ui.tabs.tab_bar import TabContainer
+from wrench.ui.workers import run_in_background
 from wrench.watcher.inotify_watcher import RepoWatcher
 
 logger = logging.getLogger(__name__)
@@ -226,6 +240,26 @@ class MainWindow(QMainWindow):
         self.act_toggle_tab_pos = view_menu.addAction(self.tr("&Toggle Tab Orientation"))
         self.act_toggle_tab_pos.setShortcut(QKeySequence("Ctrl+Shift+T"))
         self.act_toggle_tab_pos.triggered.connect(self._on_toggle_tab_orientation)
+
+        # ---------------- Repository Menu ----------------
+        repo_menu = menu_bar.addMenu(self.tr("&Repository"))
+
+        self.act_fetch = repo_menu.addAction(self.tr("&Fetch"))
+        self.act_fetch.setShortcut(QKeySequence("Ctrl+Shift+F"))
+        self.act_fetch.triggered.connect(self._on_fetch_remote)
+
+        self.act_pull = repo_menu.addAction(self.tr("&Pull"))
+        self.act_pull.setShortcut(QKeySequence("Ctrl+Shift+L"))
+        self.act_pull.triggered.connect(self._on_pull_remote)
+
+        self.act_push = repo_menu.addAction(self.tr("&Push"))
+        self.act_push.setShortcut(QKeySequence("Ctrl+Shift+U"))
+        self.act_push.triggered.connect(self._on_push_remote)
+
+        repo_menu.addSeparator()
+
+        self.act_remotes = repo_menu.addAction(self.tr("&Remotes…"))
+        self.act_remotes.triggered.connect(self._on_manage_remotes)
 
         # ---------------- Help Menu ----------------
         help_menu = menu_bar.addMenu(self.tr("&Help"))
@@ -547,16 +581,360 @@ class MainWindow(QMainWindow):
             return
 
         target_dest = str(Path(dest_parent) / repo_name)
-        try:
-            engine.clone(clean_url, target_dest)
+        cancel_event = threading.Event()
+        busy_dlg = BusyOperationDialog(
+            self.tr("Clone Repository"),
+            self.tr(f"Cloning {clean_url}..."),
+            cancel_event=cancel_event,
+            parent=self,
+        )
+
+        def on_finished(_res):
+            busy_dlg.accept()
             repo_registry.add_repo(self._conn, target_dest, repo_name)
             self.changes_tab.load_repos(select_path=target_dest)
-        except Exception as e:
+            self._on_repo_changed(target_dest)
+
+        def on_failed(exc):
+            busy_dlg.reject()
+            self._route_remote_error(exc, "origin", op="clone")
+
+        busy_dlg.show()
+        run_in_background(
+            engine.clone_repo,
+            clean_url,
+            Path(target_dest),
+            on_finished=on_finished,
+            on_failed=on_failed,
+            on_progress=busy_dlg.set_progress,
+            cancel_event=cancel_event,
+        )
+
+    def _get_default_remote(self) -> str | None:
+        if not self._current_repo:
+            return None
+        remotes = [r.name for r in self._current_repo.pygit2_repo.remotes]
+        if not remotes:
+            return None
+        if "origin" in remotes:
+            return "origin"
+        return remotes[0]
+
+    def _get_current_branch(self) -> str | None:
+        if not self._current_repo:
+            return None
+        try:
+            if self._current_repo.pygit2_repo.head_is_detached:
+                return None
+            return self._current_repo.pygit2_repo.head.shorthand
+        except Exception:
+            return None
+
+    def _refresh_after_git_op(self) -> None:
+        """Force full UI refresh after remote or write git operation."""
+        if hasattr(self, "changes_tab"):
+            self.changes_tab.refresh()
+        if hasattr(self, "history_tab"):
+            self.history_tab.refresh()
+        if hasattr(self, "snapshots_panel"):
+            self.snapshots_panel.refresh()
+        if self._current_repo:
+            try:
+                status = getattr(self.changes_tab, "_current_status", None)
+                if status:
+                    branch = status.branch_name or "detached"
+                elif self._current_repo.pygit2_repo.head_is_detached:
+                    branch = "detached"
+                else:
+                    try:
+                        branch = self._current_repo.pygit2_repo.head.shorthand
+                    except Exception:
+                        branch = "main"
+                self.status_label.setText(
+                    self.tr(f"Opened: {self._current_repo.path.name} ({branch})")
+                )
+            except Exception:
+                pass
+
+    def _on_manage_remotes(self) -> None:
+        if not self._current_repo:
+            QMessageBox.information(
+                self,
+                self.tr("No Repository Open"),
+                self.tr("Please open a repository first to manage remotes."),
+            )
+            return
+        dlg = RemotesDialog(self._current_repo, parent=self, db_conn=self._conn)
+        dlg.exec()
+        self._refresh_after_git_op()
+
+    def _on_fetch_remote(self) -> None:
+        if not self._current_repo:
+            return
+        remote = self._get_default_remote()
+        if not remote:
+            ret = QMessageBox.question(
+                self,
+                self.tr("No Remotes"),
+                self.tr("No remotes are configured. Would you like to add one?"),
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.Yes,
+            )
+            if ret == QMessageBox.StandardButton.Yes:
+                self._on_manage_remotes()
+            return
+
+        cancel_event = threading.Event()
+        busy_dlg = BusyOperationDialog(
+            self.tr("Fetch"),
+            self.tr(f"Fetching from '{remote}'..."),
+            cancel_event=cancel_event,
+            parent=self,
+        )
+
+        def on_finished(_res):
+            busy_dlg.accept()
+            self._refresh_after_git_op()
+            self.status_label.setText(self.tr(f"Fetched from '{remote}'."))
+
+        def on_failed(exc):
+            busy_dlg.reject()
+            self._route_remote_error(exc, remote, op="fetch")
+
+        busy_dlg.show()
+        run_in_background(
+            engine.fetch,
+            self._current_repo,
+            remote,
+            on_finished=on_finished,
+            on_failed=on_failed,
+            on_progress=busy_dlg.set_progress,
+            cancel_event=cancel_event,
+        )
+
+    def _on_pull_remote(self) -> None:
+        if not self._current_repo:
+            return
+        remote = self._get_default_remote()
+        if not remote:
+            self._on_manage_remotes()
+            return
+        branch = self._get_current_branch()
+        if not branch:
+            QMessageBox.warning(
+                self,
+                self.tr("Detached HEAD"),
+                self.tr("Cannot pull while HEAD is detached."),
+            )
+            return
+
+        cancel_event = threading.Event()
+        busy_dlg = BusyOperationDialog(
+            self.tr("Pull"),
+            self.tr(f"Pulling branch '{branch}' from '{remote}'..."),
+            cancel_event=cancel_event,
+            parent=self,
+        )
+
+        def on_finished(_res):
+            busy_dlg.accept()
+            self._refresh_after_git_op()
+            self.status_label.setText(self.tr(f"Pulled '{branch}' from '{remote}'."))
+
+        def on_failed(exc):
+            busy_dlg.reject()
+            self._route_remote_error(exc, remote, branch=branch, op="pull")
+
+        busy_dlg.show()
+        run_in_background(
+            engine.pull,
+            self._current_repo,
+            remote,
+            branch,
+            on_finished=on_finished,
+            on_failed=on_failed,
+            on_progress=busy_dlg.set_progress,
+            cancel_event=cancel_event,
+        )
+
+    def _on_push_remote(self, *, force: bool = False) -> None:
+        if not self._current_repo:
+            return
+        remote = self._get_default_remote()
+        if not remote:
+            self._on_manage_remotes()
+            return
+        branch = self._get_current_branch()
+        if not branch:
+            QMessageBox.warning(
+                self,
+                self.tr("Detached HEAD"),
+                self.tr("Cannot push while HEAD is detached."),
+            )
+            return
+
+        cancel_event = threading.Event()
+        title = self.tr("Force Push") if force else self.tr("Push")
+        busy_dlg = BusyOperationDialog(
+            title,
+            self.tr(f"Pushing branch '{branch}' to '{remote}'..."),
+            cancel_event=cancel_event,
+            parent=self,
+        )
+
+        def on_finished(_res):
+            busy_dlg.accept()
+            self._refresh_after_git_op()
+            self.status_label.setText(self.tr(f"Pushed '{branch}' to '{remote}'."))
+
+        def on_failed(exc):
+            busy_dlg.reject()
+            self._route_remote_error(exc, remote, branch=branch, op="push")
+
+        busy_dlg.show()
+        run_in_background(
+            engine.push,
+            self._current_repo,
+            remote,
+            branch,
+            force=force,
+            on_finished=on_finished,
+            on_failed=on_failed,
+            on_progress=busy_dlg.set_progress,
+            cancel_event=cancel_event,
+        )
+
+    def _route_remote_error(
+        self,
+        exc: Exception,
+        remote_name: str,
+        branch: str | None = None,
+        op: str = "remote",
+    ) -> None:
+        if isinstance(exc, CloneAbortedError):
+            return
+
+        if isinstance(exc, AuthRequiredError):
+            QMessageBox.warning(
+                self,
+                self.tr("Authentication Required"),
+                self.tr(
+                    f"No credentials found for host '{exc.host}'.\n"
+                    "Please configure credentials for this host in your Git settings "
+                    "or forge account."
+                ),
+            )
+            return
+
+        if isinstance(exc, AuthFailedError):
             QMessageBox.critical(
                 self,
-                self.tr("Clone Failed"),
-                self.tr(f"Could not clone repository: {e}"),
+                self.tr("Authentication Failed"),
+                self.tr(
+                    f"Stored credentials for host '{exc.host}' were rejected.\n"
+                    "Please check your account token or SSH keys."
+                ),
             )
+            return
+
+        if isinstance(exc, PushRejectedError):
+            box = QMessageBox(self)
+            box.setIcon(QMessageBox.Icon.Warning)
+            box.setWindowTitle(self.tr("Push Rejected"))
+            box.setText(
+                self.tr(
+                    f"Push to '{remote_name}' was rejected because the remote contains "
+                    "work that you do not have locally.\n\n"
+                    "Would you like to fetch from the remote and retry, or force push with lease?"
+                )
+            )
+            fetch_btn = box.addButton(self.tr("Fetch && Retry"), QMessageBox.ButtonRole.ActionRole)
+            force_btn = box.addButton(
+                self.tr("Force Push (with lease)"), QMessageBox.ButtonRole.DestructiveRole
+            )
+            box.addButton(QMessageBox.StandardButton.Cancel)
+            box.exec()
+
+            clicked = box.clickedButton()
+            if clicked == fetch_btn:
+                cancel_event = threading.Event()
+                fetch_dlg = BusyOperationDialog(
+                    self.tr("Fetch & Retry"),
+                    self.tr(f"Fetching from '{remote_name}' before retrying push..."),
+                    cancel_event=cancel_event,
+                    parent=self,
+                )
+
+                def on_fetch_done(_):
+                    fetch_dlg.accept()
+                    self._refresh_after_git_op()
+                    self._on_push_remote(force=False)
+
+                def on_fetch_failed(e):
+                    fetch_dlg.reject()
+                    self._route_remote_error(e, remote_name, branch=branch, op="fetch")
+
+                fetch_dlg.show()
+                run_in_background(
+                    engine.fetch,
+                    self._current_repo,
+                    remote_name,
+                    on_finished=on_fetch_done,
+                    on_failed=on_fetch_failed,
+                    on_progress=fetch_dlg.set_progress,
+                    cancel_event=cancel_event,
+                )
+            elif clicked == force_btn:
+                self._on_push_remote(force=True)
+            return
+
+        if isinstance(exc, MergeRequiredError):
+            box = QMessageBox(self)
+            box.setIcon(QMessageBox.Icon.Question)
+            box.setWindowTitle(self.tr("Merge Required"))
+            box.setText(
+                self.tr(
+                    f"Pull cannot fast-forward because your local branch has diverged from "
+                    f"'{remote_name}/{branch}'.\n\n"
+                    "How would you like to reconcile the branches?"
+                )
+            )
+            merge_btn = box.addButton(self.tr("Merge"), QMessageBox.ButtonRole.ActionRole)
+            rebase_btn = box.addButton(self.tr("Rebase"), QMessageBox.ButtonRole.ActionRole)
+            box.addButton(QMessageBox.StandardButton.Cancel)
+            box.exec()
+
+            clicked = box.clickedButton()
+            target_ref = f"{remote_name}/{branch}" if branch else remote_name
+            if clicked == merge_btn:
+                self._on_history_merge(target_ref)
+            elif clicked == rebase_btn:
+                self._on_history_rebase(target_ref)
+            return
+
+        if isinstance(exc, RemoteNotFoundError):
+            QMessageBox.warning(
+                self,
+                self.tr("Remote Not Found"),
+                self.tr(f"Remote '{remote_name}' was not found. Opening Remotes settings..."),
+            )
+            self._on_manage_remotes()
+            return
+
+        if isinstance(exc, CLITimeoutError):
+            QMessageBox.critical(
+                self,
+                self.tr("Operation Timed Out"),
+                self.tr(f"The Git operation timed out after {exc.timeout}s."),
+            )
+            return
+
+        msg = exc.stderr if isinstance(exc, GitCommandError) and exc.stderr else str(exc)
+        QMessageBox.critical(
+            self,
+            self.tr(f"{op.capitalize()} Failed"),
+            self.tr(f"Git operation failed: {msg}"),
+        )
 
     def _on_close_repo(self) -> None:
         current_idx = self.tab_container.current_index()

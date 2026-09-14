@@ -35,12 +35,15 @@ Phase 3 delivered the complete remote transport, credential management, and back
    - `pull`: Enforces `--ff-only` to guarantee no implicit, uninspected merge commits mid-pull, surfacing divergence as `MergeRequiredError`.
    - `fetch`: Prunes stale remote-tracking branches (`--prune`) and stores UTC ISO-8601 timestamps in settings.
    - `clone_repo`: Clones into a temporary directory on the destination filesystem, performs an atomic move upon completion, automatically configures credential helper local settings, and cleans up on cancel or error.
-   - Remotes Façade: `list_remotes` (instant, non-blocking), `add_remote`, `remove_remote`, and `set_remote_url` with validation.
+   - Remotes Façade: `list_remotes` (instant, non-blocking), `add_remote`, `remove_remote`, `set_remote_url`, and `probe_remotes_async` background reachability probe.
+   - **Auto-Configuring Credential Helper on Open**: When opening any existing repository (`engine.open_repo`), local git config automatically configures `credential.helper = wrench` and `credential.useHttpPath = true`.
 
-6. **UI Integration & Recovery Routing**:
+6. **UI Integration & Remote Resolution Enhancements**:
    - `BusyOperationDialog`: Modal progress tracker with determinate/indeterminate progress and cancellation button.
-   - `RemotesDialog`: Repository remote manager with reachability indicators and Add/Edit/Remove/Refresh operations.
+   - `RemotesDialog`: Repository remote manager with reachability indicators, async refresh (`probe_finished` Qt signal), and automatic background reachability probing.
    - `MainWindow` Wiring: Added **Repository** menu (Fetch, Pull, Push, Remotes...) and intelligent error routing for auth failures, push rejections, and merge divergence.
+   - **Dynamic Upstream Tracking Remote Resolution**: `_get_default_remote()` inspects the active branch's configured tracking remote (`branch.<name>.remote` and `branch.upstream`), falling back cleanly to `"origin"` and configured remotes.
+   - **Background Reachability on Open**: Opening a repository automatically kicks off non-blocking reachability probing for all configured remotes in a background daemon thread.
 
 ---
 
@@ -132,5 +135,5 @@ Phase 3 delivered the complete remote transport, credential management, and back
   - Busy dialog progress updates and cancellation signaling.
   - Remotes table rendering, addition validation, editing, and removal.
   - Repository menu actions, async clone execution, and error routing.
-- **Full Test Suite**: **212 passed in 10.72s**.
+- **Full Test Suite**: **220 passed in 9.19s**.
 - **Code Quality**: `ruff check .` and `black --check .` clean.

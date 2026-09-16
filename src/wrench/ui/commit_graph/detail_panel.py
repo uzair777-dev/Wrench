@@ -2,8 +2,8 @@
 
 import logging
 
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QFont, QGuiApplication
+from PySide6.QtCore import QEvent, Qt
+from PySide6.QtGui import QColor, QFont, QGuiApplication
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QHeaderView,
@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
 from wrench.core import engine
 from wrench.core.engine import Commit, FileStat, RepoHandle
 from wrench.ui.diff_view.diff_widget import DiffWidget
+from wrench.ui.theme import COMMIT_STAT_COLORS, get_badge_colors, is_dark_theme
 
 logger = logging.getLogger(__name__)
 
@@ -60,7 +61,7 @@ class CommitDetailPanel(QWidget):
         meta_top.addStretch()
 
         self.author_date_label = QLabel("-", self)
-        self.author_date_label.setStyleSheet("color: gray;")
+        self.author_date_label.setStyleSheet("color: palette(placeholder-text);")
         meta_top.addWidget(self.author_date_label)
 
         header_layout.addLayout(meta_top)
@@ -96,6 +97,66 @@ class CommitDetailPanel(QWidget):
         self.splitter.setStretchFactor(1, 2)
         main_layout.addWidget(self.splitter)
 
+    def changeEvent(self, event: QEvent) -> None:
+        super().changeEvent(event)
+        if event.type() in (
+            QEvent.PaletteChange,
+            QEvent.ApplicationPaletteChange,
+            QEvent.ThemeChange,
+            QEvent.StyleChange,
+        ):
+            self.refresh_theme()
+
+    def refresh_theme(self) -> None:
+        """Refreshes diff widget, table item styling, and header labels on theme change."""
+        self.diff_widget.refresh_theme()
+        if hasattr(self, "author_date_label"):
+            self.author_date_label.setStyleSheet("color: palette(placeholder-text);")
+        if self._file_stats:
+            self._populate_files_table()
+
+    def _populate_files_table(self):
+        is_dark = is_dark_theme(self)
+        mode = "dark" if is_dark else "light"
+        add_col = COMMIT_STAT_COLORS[mode]["add"]
+        del_col = COMMIT_STAT_COLORS[mode]["del"]
+
+        self.files_table.blockSignals(True)
+        self.files_table.setRowCount(len(self._file_stats))
+        for row, stat in enumerate(self._file_stats):
+            code = stat.change_type.capitalize()[:1]
+            status_item = QTableWidgetItem(code)
+            status_item.setTextAlignment(Qt.AlignCenter)
+            fg, _ = get_badge_colors(code, is_dark=is_dark)
+            status_item.setForeground(QColor(fg))
+            status_font = status_item.font()
+            status_font.setBold(True)
+            status_item.setFont(status_font)
+            self.files_table.setItem(row, 0, status_item)
+
+            file_item = QTableWidgetItem(stat.path)
+            self.files_table.setItem(row, 1, file_item)
+
+            stat_widget = QWidget(self.files_table)
+            stat_widget.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+            stat_layout = QHBoxLayout(stat_widget)
+            stat_layout.setContentsMargins(4, 1, 4, 1)
+            stat_layout.setSpacing(6)
+            stat_layout.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+
+            add_lbl = QLabel(f"+{stat.additions}", stat_widget)
+            add_lbl.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+            add_lbl.setStyleSheet(f"color: {add_col}; font-weight: bold; font-size: 11px;")
+            stat_layout.addWidget(add_lbl)
+
+            del_lbl = QLabel(f"-{stat.deletions}", stat_widget)
+            del_lbl.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+            del_lbl.setStyleSheet(f"color: {del_col}; font-weight: bold; font-size: 11px;")
+            stat_layout.addWidget(del_lbl)
+
+            self.files_table.setCellWidget(row, 2, stat_widget)
+        self.files_table.blockSignals(False)
+
     def set_repo(self, repo: RepoHandle | None):
         self._repo = repo
         self.diff_widget.set_repo(repo)
@@ -125,21 +186,7 @@ class CommitDetailPanel(QWidget):
             logger.exception("Failed to load file stats for %s: %s", commit.sha, e)
             self._file_stats = []
 
-        self.files_table.blockSignals(True)
-        self.files_table.setRowCount(len(self._file_stats))
-        for row, stat in enumerate(self._file_stats):
-            status_item = QTableWidgetItem(stat.change_type.capitalize()[:1])
-            status_item.setTextAlignment(Qt.AlignCenter)
-            self.files_table.setItem(row, 0, status_item)
-
-            file_item = QTableWidgetItem(stat.path)
-            self.files_table.setItem(row, 1, file_item)
-
-            diff_stat_str = f"+{stat.additions} -{stat.deletions}"
-            stat_item = QTableWidgetItem(diff_stat_str)
-            stat_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
-            self.files_table.setItem(row, 2, stat_item)
-        self.files_table.blockSignals(False)
+        self._populate_files_table()
 
         if self._file_stats:
             self.files_table.selectRow(0)

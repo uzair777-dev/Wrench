@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import logging
 
-from PySide6.QtCore import QPoint, Qt, Signal
+from PySide6.QtCore import QEvent, QPoint, Qt, Signal
 from PySide6.QtWidgets import (
     QDialog,
     QHBoxLayout,
@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
 
 from wrench.core import engine
 from wrench.core.engine import RepoHandle
+from wrench.ui.theme import ACCENT_COLORS, is_dark_theme
 
 logger = logging.getLogger(__name__)
 
@@ -181,6 +182,11 @@ class BranchSwitcherWidget(QWidget):
 
         self._update_display()
 
+    def changeEvent(self, event: QEvent) -> None:
+        if event.type() in (QEvent.PaletteChange, QEvent.ApplicationPaletteChange):
+            self._update_display()
+        super().changeEvent(event)
+
     def _update_display(self) -> None:
         if not self._repo:
             self.btn.setText(self.tr("No repository"))
@@ -191,19 +197,23 @@ class BranchSwitcherWidget(QWidget):
         self.btn.setEnabled(True)
 
         if self._is_detached:
+            dark = is_dark_theme(self)
+            color = ACCENT_COLORS["dark" if dark else "light"]["detached"]
+            hover_bg = "rgba(249, 226, 175, 0.2)" if dark else "rgba(223, 142, 29, 0.2)"
             self.btn.setText(f"🔗 HEAD detached at {self._detached_sha} ▾")
             self.btn.setStyleSheet(
-                "QPushButton { text-align: left; font-size: 12px; color: #e5a623; "
-                "font-weight: bold; padding: 3px 6px; border: none; } "
-                "QPushButton:hover { background-color: rgba(229, 166, 35, 0.2); }"
+                f"QPushButton {{ text-align: left; font-size: 12px; color: {color}; "
+                f"font-weight: bold; padding: 3px 6px; border: none; border-radius: 3px; }} "
+                f"QPushButton:hover {{ background-color: {hover_bg}; }}"
             )
             self.btn.setAccessibleName(f"Detached HEAD at {self._detached_sha}")
         elif self._is_unborn:
             branch_label = self._current_branch or "main"
             self.btn.setText(f"🌿 {branch_label} (initial)")
             self.btn.setStyleSheet(
-                "QPushButton { text-align: left; font-size: 12px; color: gray; "
-                "padding: 3px 6px; border: none; }"
+                "QPushButton { text-align: left; font-size: 12px; "
+                "color: palette(placeholder-text); padding: 3px 6px; "
+                "border: none; border-radius: 3px; }"
             )
             self.btn.setAccessibleName(f"Unborn branch: {branch_label}")
         else:
@@ -211,7 +221,7 @@ class BranchSwitcherWidget(QWidget):
             self.btn.setText(f"🌿 {branch_label} ▾")
             self.btn.setStyleSheet(
                 "QPushButton { text-align: left; font-size: 12px; padding: 3px 6px; "
-                "border: none; } "
+                "border: none; border-radius: 3px; } "
                 "QPushButton:hover { background-color: rgba(128, 128, 128, 0.15); }"
             )
             self.btn.setAccessibleName(f"Switch branch: {branch_label}")

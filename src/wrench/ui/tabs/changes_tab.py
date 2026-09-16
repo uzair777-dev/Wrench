@@ -17,7 +17,7 @@ import random
 import sqlite3
 from pathlib import Path
 
-from PySide6.QtCore import QByteArray, QPoint, Qt, Signal
+from PySide6.QtCore import QByteArray, QEvent, QPoint, Qt, Signal
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
@@ -46,6 +46,12 @@ from wrench.core.engine import RepoHandle, RepoStatus
 from wrench.storage import repo_registry
 from wrench.ui.diff_view.diff_widget import DiffView
 from wrench.ui.merge_tool.merge_dialog import MergeDialog
+from wrench.ui.theme import (
+    ACCENT_COLORS,
+    CONFLICT_BANNER_STYLES,
+    get_badge_colors,
+    is_dark_theme,
+)
 from wrench.ui.widgets.branch_switcher import BranchSwitcherWidget
 
 logger = logging.getLogger(__name__)
@@ -88,8 +94,9 @@ class FileListItemWidget(QWidget):
         layout.addWidget(self.checkbox)
 
         # Change type badge (M, A, D, R, ?, ⚠ C)
+        self._change_type = change_type
         self.badge = QLabel(change_type, self)
-        self.badge.setFixedWidth(24)
+        self.badge.setMinimumWidth(24)
         self.badge.setAlignment(Qt.AlignCenter)
         self._apply_badge_style(change_type)
         layout.addWidget(self.badge)
@@ -109,19 +116,29 @@ class FileListItemWidget(QWidget):
 
         self.setToolTip(f"{change_type}: {path}")
 
-    def _apply_badge_style(self, change_type: str) -> None:
-        colors = {
-            "M": ("#4C9EEB", "#102a45"),
-            "A": ("#50C878", "#12381f"),
-            "D": ("#E55B5B", "#3d1414"),
-            "R": ("#9B59B6", "#2d143d"),
-            "?": ("#888888", "#242424"),
-            "⚠ C": ("#FF4444", "#4a0b0b"),
-        }
-        fg, bg = colors.get(change_type, ("#888888", "#242424"))
+    def changeEvent(self, event: QEvent) -> None:
+        super().changeEvent(event)
+        if event.type() in (
+            QEvent.PaletteChange,
+            QEvent.ApplicationPaletteChange,
+            QEvent.ThemeChange,
+            QEvent.StyleChange,
+        ):
+            self.refresh_theme()
+
+    def refresh_theme(self) -> None:
+        """Re-applies the badge style based on the active theme."""
+        self._apply_badge_style()
+
+    def _apply_badge_style(self, change_type: str | None = None) -> None:
+        if change_type is not None:
+            self._change_type = change_type
+        ct = getattr(self, "_change_type", "M")
+        is_dark = is_dark_theme(self)
+        fg, bg = get_badge_colors(ct, is_dark=is_dark)
         self.badge.setStyleSheet(
             f"QLabel {{ color: {fg}; background-color: {bg}; font-weight: bold; font-size: 11px; "
-            f"border-radius: 3px; padding: 1px 3px; }}"
+            f"border-radius: 3px; padding: 2px 4px; }}"
         )
 
     def is_checked(self) -> bool:
@@ -209,8 +226,14 @@ class ChangesTab(QWidget):
         self.repo_combo = QComboBox(self)
         self.repo_combo.setStyleSheet(
             "QComboBox { border: none; font-weight: bold; font-size: 13px; "
-            "padding: 4px; background: transparent; } "
-            "QComboBox:hover { background-color: rgba(128, 128, 128, 0.1); border-radius: 3px; }"
+            "padding: 4px; background: transparent; color: palette(window-text); } "
+            "QComboBox:hover { background-color: rgba(128, 128, 128, 0.1); border-radius: 3px; } "
+            "QComboBox::drop-down { border: none; width: 16px; } "
+            "QComboBox QAbstractItemView { "
+            "background-color: palette(base); color: palette(text); "
+            "selection-background-color: palette(highlight); "
+            "selection-color: palette(highlighted-text); "
+            "border: 1px solid rgba(128, 128, 128, 0.25); border-radius: 4px; padding: 2px; }"
         )
         self.repo_combo.currentIndexChanged.connect(self._on_repo_combo_changed)
         left_layout.addWidget(self.repo_combo)
@@ -223,19 +246,15 @@ class ChangesTab(QWidget):
 
         # Conflict alert banner (hidden by default)
         self.conflict_banner = QFrame(self)
-        self.conflict_banner.setStyleSheet(
-            "QFrame { background-color: #4a1515; border: 1px solid #e55b5b; "
-            "border-radius: 4px; padding: 4px; }"
-        )
         conflict_layout = QHBoxLayout(self.conflict_banner)
         conflict_layout.setContentsMargins(6, 4, 6, 4)
         self.conflict_label = QLabel(self.tr("⚠️ Merge conflict in progress"), self.conflict_banner)
-        self.conflict_label.setStyleSheet("color: #ff8888; font-weight: bold; font-size: 11px;")
         conflict_layout.addWidget(self.conflict_label)
         self.conflict_btn = QPushButton(self.tr("Resolve…"), self.conflict_banner)
         self.conflict_btn.clicked.connect(self._on_conflict_btn_clicked)
         conflict_layout.addWidget(self.conflict_btn)
         self.conflict_banner.setVisible(False)
+        self._update_conflict_banner_theme()
         left_layout.addWidget(self.conflict_banner)
 
         # Separator
@@ -253,7 +272,7 @@ class ChangesTab(QWidget):
         files_header.addWidget(self.select_all_cb)
 
         self.files_count_label = QLabel(self.tr("0 changed files"), self)
-        self.files_count_label.setStyleSheet("font-size: 11px; color: gray;")
+        self.files_count_label.setStyleSheet("font-size: 11px; color: palette(placeholder-text);")
         files_header.addWidget(self.files_count_label)
         files_header.addStretch()
         left_layout.addLayout(files_header)
@@ -334,18 +353,22 @@ class ChangesTab(QWidget):
         clean_layout.setSpacing(8)
 
         self.clean_title = QLabel(self.tr("No changes"), self.clean_state_widget)
-        self.clean_title.setStyleSheet("font-size: 16px; font-weight: bold; color: gray;")
+        self.clean_title.setStyleSheet(
+            "font-size: 16px; font-weight: bold; color: palette(placeholder-text);"
+        )
         self.clean_title.setAlignment(Qt.AlignCenter)
         clean_layout.addWidget(self.clean_title)
 
         self.clean_quote = QLabel("", self.clean_state_widget)
-        self.clean_quote.setStyleSheet("font-size: 12px; font-style: italic; color: #888888;")
+        self.clean_quote.setStyleSheet(
+            "font-size: 12px; font-style: italic; color: palette(placeholder-text);"
+        )
         self.clean_quote.setAlignment(Qt.AlignCenter)
         self.clean_quote.setWordWrap(True)
         clean_layout.addWidget(self.clean_quote)
 
         self.clean_author = QLabel("", self.clean_state_widget)
-        self.clean_author.setStyleSheet("font-size: 11px; color: #666666;")
+        self.clean_author.setStyleSheet("font-size: 11px; color: palette(placeholder-text);")
         self.clean_author.setAlignment(Qt.AlignCenter)
         clean_layout.addWidget(self.clean_author)
 
@@ -524,6 +547,61 @@ class ChangesTab(QWidget):
             self.conflict_btn.setVisible(True)
         else:
             self.conflict_banner.setVisible(False)
+
+    def _update_conflict_banner_theme(self) -> None:
+        """Updates the conflict banner styling according to current theme."""
+        if not hasattr(self, "conflict_banner") or not hasattr(self, "conflict_label"):
+            return
+        is_dark = is_dark_theme(self)
+        mode_key = "dark" if is_dark else "light"
+        styles = CONFLICT_BANNER_STYLES[mode_key]
+        self.conflict_banner.setStyleSheet(f"QFrame {{ {styles['frame']} }}")
+        self.conflict_label.setStyleSheet(styles["label"])
+
+    def changeEvent(self, event: QEvent) -> None:
+        super().changeEvent(event)
+        if getattr(self, "_refreshing_theme", False):
+            return
+        if event.type() in (
+            QEvent.PaletteChange,
+            QEvent.ApplicationPaletteChange,
+            QEvent.ThemeChange,
+            QEvent.StyleChange,
+        ):
+            self._refreshing_theme = True
+            try:
+                self.refresh_theme()
+            finally:
+                self._refreshing_theme = False
+
+    def refresh_theme(self) -> None:
+        """Refreshes all theme-dependent elements in ChangesTab."""
+        self._update_conflict_banner_theme()
+        if hasattr(self, "branch_switcher"):
+            self.branch_switcher._update_display()
+        if hasattr(self, "files_list"):
+            for i in range(self.files_list.count()):
+                item = self.files_list.item(i)
+                w = self.files_list.itemWidget(item)
+                if isinstance(w, FileListItemWidget):
+                    w.refresh_theme()
+        if hasattr(self, "diff_view"):
+            self.diff_view.refresh_theme()
+        # Re-apply palette-based styles on secondary labels
+        if hasattr(self, "files_count_label"):
+            self.files_count_label.setStyleSheet(
+                "font-size: 11px; color: palette(placeholder-text);"
+            )
+        if hasattr(self, "clean_title"):
+            self.clean_title.setStyleSheet(
+                "font-size: 16px; font-weight: bold; color: palette(placeholder-text);"
+            )
+        if hasattr(self, "clean_quote"):
+            self.clean_quote.setStyleSheet(
+                "font-size: 12px; font-style: italic; color: palette(placeholder-text);"
+            )
+        if hasattr(self, "clean_author"):
+            self.clean_author.setStyleSheet("font-size: 11px; color: palette(placeholder-text);")
 
     def _on_conflict_btn_clicked(self) -> None:
         if not self._current_status:
@@ -731,7 +809,11 @@ class ChangesTab(QWidget):
         # 72-char soft limit visual indication
         text_len = len(self.commit_msg_input.text())
         if text_len > 72:
-            self.commit_msg_input.setStyleSheet("QLineEdit { border: 1px solid #e5a623; }")
+            mode = "dark" if is_dark_theme(self) else "light"
+            warning_color = ACCENT_COLORS[mode]["warning"]
+            self.commit_msg_input.setStyleSheet(
+                f"QLineEdit {{ border: 1px solid {warning_color}; }}"
+            )
         else:
             self.commit_msg_input.setStyleSheet("")
         self._update_commit_button()

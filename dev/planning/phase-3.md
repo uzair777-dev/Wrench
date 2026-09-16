@@ -45,6 +45,20 @@ Phase 3 delivered the complete remote transport, credential management, and back
    - **Dynamic Upstream Tracking Remote Resolution**: `_get_default_remote()` inspects the active branch's configured tracking remote (`branch.<name>.remote` and `branch.upstream`), falling back cleanly to `"origin"` and configured remotes.
    - **Background Reachability on Open**: Opening a repository automatically kicks off non-blocking reachability probing for all configured remotes in a background daemon thread.
 
+7. **Catppuccin Velvet Pastel Design System & Instant Theme Switching**:
+   - Implemented the complete **Catppuccin Velvet Pastel** theme system across all application surfaces:
+     - **Catppuccin Latte Pastel (Light Mode)**: Warm mist canvas (`#eff1f5`), card bases (`#ffffff`), charcoal slate text (`#4c4f69`), sapphire accents (`#1e66f5`), muted slate subtext (`#7c7f93`).
+     - **Catppuccin Mocha Velvet Pastel (Dark Mode)**: Deep twilight slate canvas (`#1e1e2e`), midnight card bases (`#181825`), frosted white text (`#cdd6f4`), pastel sky accents (`#89b4fa`), soft lavender-gray subtext (`#9399b2`).
+   - Centralized theme engine in `src/wrench/ui/theme.py` with **View → Theme** menu options (`Auto`, `Pastel Light`, `Pastel Dark`).
+   - Solved Qt container stylesheet palette isolation (`QSplitter`, `QGroupBox`) by implementing recursive descendant palette propagation across all `topLevelWidgets()` and their child widgets.
+   - Implemented event recursion protection (`_updating_style`, `_refreshing_theme`, `_updating_display_active`) to eliminate `maximum recursion depth exceeded` when `setStyleSheet` triggers `QEvent.PaletteChange`.
+   - Luminance-based detection `is_dark_theme(widget)` evaluating `(Window.lightnessF() + Base.lightnessF()) / 2.0 < 0.5` to eliminate host desktop color scheme mismatches on Linux (KDE Plasma / GNOME).
+   - Explicitly bound `TabButton` text colors (`palette(window-text)` on active tabs, `palette(placeholder-text)` on inactive tabs) and added `refresh_theme()` to `TabContainer` and `TabButton`.
+
+8. **Commit Graph Smooth Scrolling & Synchronized DAG Scrollbar**:
+   - Configured `CommitGraphWidget` with `ScrollPerPixel` to deliver fluid, continuous horizontal scrolling across table columns without column snapping.
+   - Dynamically synchronized Column 0 DAG lane horizontal scrollbar with Column 0's viewport coordinate (`viewport().x() + header.sectionViewportPosition(0)`), translating smoothly to the left as the table scrolls right and hiding cleanly when off-screen or when lanes fit.
+
 ---
 
 ## 2. Implemented Components & Architecture
@@ -110,6 +124,35 @@ Phase 3 delivered the complete remote transport, credential management, and back
     - `RemoteNotFoundError`: Opens Remotes dialog.
     - `CloneAbortedError`: Clean dismissal without error alerts.
 
+### 2.5 Theme Engine & Catppuccin Velvet Pastel Styling (`src/wrench/ui/theme.py`)
+- **Pastel Palettes**:
+  - `create_pastel_light_palette()`: Catppuccin Latte Pastel palette.
+  - `create_pastel_dark_palette()`: Catppuccin Mocha Velvet Pastel palette.
+- **Application & Descendant Propagation**:
+  - `apply_theme(app, mode)`: Sets palette on `app` and recursively propagates to all top-level windows and their child widgets via `findChildren(QWidget)`.
+- **Luminance Detection**:
+  - `is_dark_theme(widget)`: Computes palette lightness `(Window.lightnessF() + Base.lightnessF()) / 2.0 < 0.5`.
+- **Design Tokens**:
+  - `DIFF_STYLES`: Additions, deletions, hunk headers, and editor container stylesheets.
+  - `BADGE_STYLES`: Status pills (`M`, `A`, `D`, `R`, `?`, `⚠ C`).
+  - `CONFLICT_BANNER_STYLES`: Frame and label styles for active merge conflict banners.
+  - `SECONDARY_TEXT`: Muted subtext colors.
+  - `ACCENT_COLORS`: Warning borders and detached HEAD indicator colors.
+  - `COMMIT_STAT_COLORS`: Green `+` additions and red `-` deletions.
+- **Theme Lifecycles**:
+  - `TabButton`: Recursion-guarded `changeEvent` and `_update_style()` applying `color: palette(window-text)` (active) and `color: palette(placeholder-text)` (inactive).
+  - `TabContainer`: `refresh_theme()` method propagating changes to all child tab buttons.
+  - `ChangesTab`: `refresh_theme()` re-evaluating `repo_combo`, `branch_switcher`, status badges, conflict banner, and secondary labels.
+  - `HistoryTab`: `refresh_theme()` forwarding updates to `detail_panel` and requesting graph viewport repaints.
+  - `BranchSwitcherWidget`: Adapts to theme changes with `ACCENT_COLORS` and `palette(placeholder-text)`.
+
+### 2.6 Commit Graph Horizontal Smooth Scrolling (`src/wrench/ui/commit_graph/graph_widget.py`)
+- **`ScrollPerPixel` Mode**: Configured on `CommitGraphWidget` to replace default per-column step scrolling with fluid pixel scrolling.
+- **Dynamic Scrollbar Synchronization**:
+  - Dedicated Column 0 horizontal scrollbar tracks Column 0 viewport coordinate: `viewport().x() + header.sectionViewportPosition(0)`.
+  - Overrides `scrollContentsBy(dx, dy)` and connects to `valueChanged`, `rangeChanged`, and `header.geometriesChanged`.
+  - Bounded by viewport geometry to prevent overlapping the vertical scrollbar, and automatically hidden when Column 0 scrolls off-screen.
+
 ---
 
 ## 3. Test Coverage & Verification
@@ -131,9 +174,21 @@ Phase 3 delivered the complete remote transport, credential management, and back
   - Deadlock prevention on >64 KiB pipe buffer output.
   - Atomic clone temp-dir handling and cancellation cleanup.
   - Remotes CRUD and reachability probing.
-- **UI Tests** (`tests/unit/ui/test_busy_operation_dialog.py`, `test_remotes_dialog.py`, `test_main_window_remotes.py`):
+- **UI & Theme Switching Tests** (`tests/unit/ui/test_theme_switching.py`):
+  - `test_pastel_palettes`: Verified Catppuccin Latte & Mocha palette colors.
+  - `test_is_dark_theme`: Verified luminance-based theme detection.
+  - `test_badge_colors`: Verified pastel foreground and background pairs for all 6 change types.
+  - `test_diff_widget_theme_switching`: Verified HTML diff rendering and container styling in light and dark modes.
+  - `test_repo_combo_stylesheet_and_file_item_badge`: Verified `repo_combo` text color and badge styling.
+  - `test_main_window_theme_menu_and_persistence`: Verified `View → Theme` menu actions and SQLite persistence.
+  - `test_tab_button_and_container_theme_refresh`: Verified tab button active and inactive text color updates.
+  - `test_changes_tab_palette_propagation`: Verified recursive palette propagation down to `files_list` and `commit_desc_input`.
+- **History Tab & Graph Tests** (`tests/unit/ui/test_history_tab.py`):
+  - Empty repository rendering, multi-commit rendering, filter search.
+  - `test_history_tab_pixel_scroll_and_graph_scrollbar_tracking`: Verified `ScrollPerPixel` mode and Column 0 scrollbar geometry tracking during horizontal table scrolling.
+- **UI Dialog Tests** (`tests/unit/ui/test_busy_operation_dialog.py`, `test_remotes_dialog.py`, `test_main_window_remotes.py`):
   - Busy dialog progress updates and cancellation signaling.
   - Remotes table rendering, addition validation, editing, and removal.
   - Repository menu actions, async clone execution, and error routing.
-- **Full Test Suite**: **220 passed in 9.19s**.
-- **Code Quality**: `ruff check .` and `black --check .` clean.
+- **Full Test Suite**: **229 passed in 27.76s**.
+- **Code Quality**: `bin/wrench-format` and `bin/wrench-lint` pass cleanly across all 118 files with zero errors.

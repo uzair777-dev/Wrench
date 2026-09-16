@@ -27,7 +27,13 @@ Wrench is engineered around four non-negotiable architectural tenets:
    - Heavy write operations, network calls, and repository clones run in dedicated background threads (`ui.workers.run_in_background`).
    - Callback execution is marshalled back to the main GUI thread using Qt queued signals (`_Dispatcher`) to avoid thread race conditions and UI crashes.
 4. **Local-First & Non-Destructive Safety**:
-   - Every potentially destructive action is protected by safety```mermaid
+   - Every potentially destructive action is protected by safety snapshots (`git stash create` commit objects + `.tar.gz` untracked files) before execution, providing single-click undo and reflog restoration.
+
+---
+
+## 2. High-Level Component Diagram
+
+```mermaid
 graph TD
     subgraph UI ["UI Layer (PySide6)"]
         MW[MainWindow]
@@ -42,6 +48,7 @@ graph TD
         BD[BusyOperationDialog - Phase 3]
         FP[ForgePanel - Phase 4]
         WKR[Worker Thread Pool & Dispatcher]
+        THM[Theme Engine - theme.py]
     end
 
     subgraph Core ["Core Git Engine (src/wrench/core)"]
@@ -80,11 +87,19 @@ graph TD
     MW --> TC
     TC --> CT
     TC --> HT
+    HT --> CG
     CT --> BW
     CT --> DV
     MW --> ENG
     MW --> RD
     MW --> BD
+    MW --> THM
+    THM -.->|Recursive Palette & Event Broadcast| TC
+    THM -.->|Recursive Palette & Event Broadcast| CT
+    THM -.->|Recursive Palette & Event Broadcast| HT
+    THM -.->|Recursive Palette & Event Broadcast| DV
+    THM -.->|Recursive Palette & Event Broadcast| BW
+    THM -.->|Recursive Palette & Event Broadcast| CG
     CT --> ENG
     HT --> ENG
     BW --> ENG
@@ -151,27 +166,34 @@ graph TD
   - Trailing `+` button with category tabs dropdown menu.
   - Per-repo deduplication rule: `(tab_type, repo_path, entity_id)` avoids duplicate tabs.
   - Keyboard tab switching (`Ctrl+1` .. `Ctrl+9`).
+  - **Theme-Aware Tab Styling & Recursion Guards**:
+    - `TabButton` binds `color: palette(window-text)` on active tabs and `color: palette(placeholder-text)` on inactive tabs (with hover transition to `palette(window-text)`), preventing stale white-on-light text artifacts after theme switches.
+    - Handles `QEvent.PaletteChange` and `ApplicationPaletteChange` with an internal recursion guard (`_updating_style`) to eliminate stylesheet re-entry loops.
+    - `TabContainer` provides `refresh_theme()` to synchronously trigger styling updates across all tab buttons when themes change.
 - **`ChangesTab` (`ui/tabs/changes_tab.py`)**: Primary working tree changes workspace.
-  - Flush borderless repository selector `QComboBox` with missing repository auto-locate prompts.
-  - Embedded `BranchSwitcherWidget`.
+  - Flush borderless repository selector `QComboBox` with `color: palette(window-text);` and `QComboBox QAbstractItemView` styling ensuring legible text in both light and dark themes.
+  - Embedded `BranchSwitcherWidget` with theme-adaptive colors.
   - Visible 1px divider `QSplitter::handle` with interactive hover highlight.
-  - Merge conflict banner when merge conflicts are in progress.
+  - Theme-adaptive merge conflict banner when merge conflicts are in progress.
   - Unified changed files list (staged + unstaged + untracked) with status badges (`M`, `A`, `D`, `R`, `?`, `⚠ C`) and path tooltips.
   - Tri-state select-all checkbox cycling `Unchecked ➔ All Checked ➔ All Unchecked`.
   - Right-click file context menu (`Stage`, `Unstage`, `Discard`, `Copy Relative/Absolute Path`).
-  - Commit section with forge account avatar button, 72-character soft limit summary warning, description editor, amend toggle (pre-filled from last commit), and dynamic commit button.
+  - Commit section with forge account avatar button, 72-character soft limit summary warning (using theme-aware warning ambers), description editor, amend toggle (pre-filled from last commit), and dynamic commit button.
   - Per-repo selections and draft text snapshotting (`get_current_repo_state()` / `restore_repo_state()`) during repository switches.
   - Right column embedded `DiffView` with clean state and programming quotes.
+  - **Theme Lifecycle (`refresh_theme`)**: Propagates theme refreshes across `repo_combo`, `branch_switcher`, `files_list` item badges, `diff_view`, conflict banners, and secondary labels (`files_count_label`, `clean_title`, `clean_quote`, `clean_author` bound to `palette(placeholder-text)`), protected by recursion guards.
 - **`BranchSwitcherWidget` (`ui/widgets/branch_switcher.py`)**: Branch indicator and switcher.
   - Displays active branch (`🌿 main ▾`), detached HEAD (`🔗 HEAD detached at {sha}`), or unborn branch (`🌿 main (initial)`).
   - Searchable branch picker popup listing local and remote tracking branches.
   - Uncommitted changes prompt: `Stash & Switch`, `Switch Anyway`, or `Cancel`.
   - Right-click context actions: `Create New Branch…`, `Rename Branch…`, `Delete Branch…`.
+  - **Theme Integration**: Employs `ACCENT_COLORS` for detached HEAD indicators (`#df8e1d` in Light, `#f9e2af` in Dark), `palette(placeholder-text)` for unborn branch states, and listens to `PaletteChange` with recursion protection.
 - **`HistoryTab` (`ui/tabs/history_tab.py`)**: Git log and history visualization workspace.
   - Top search and filter bar (search input, dynamic author filter from active commits, path filter, clear button) with 300ms debouncing.
   - Hosts `CommitGraphWidget` with infinite scroll pagination, selection synchronization, and detail panel display.
   - Full UI state persistence: saves/restores table header column widths (`save_header_state()` / `restore_header_state()`) and vertical content splitter position (`save_splitter_state()` / `restore_splitter_state()`) in SQLite `ui.session_state`.
-  - Unborn branch empty state (`"No history yet"`).
+  - Unborn branch empty state (`"No history yet"`) styled with `palette(placeholder-text)`.
+  - **Theme Lifecycle**: Propagates theme changes to `CommitDetailPanel`, graph viewport, and empty-state labels with recursion guards.
 - **`CommitGraphWidget` (`ui/commit_graph/graph_widget.py`)**: Custom table view for Git DAG commit graph.
   - Custom `CommitTableModel` supporting `Qt.DisplayRole`, `Qt.UserRole` (`GraphRow`), and rich `Qt.ToolTipRole` across all columns.
   - **Smooth Per-Pixel Horizontal Scrolling**: Configured with `setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)` to eliminate column snapping and deliver fluid pixel-continuous horizontal scrolling across all table columns.
@@ -187,9 +209,17 @@ graph TD
 - **`RecoveryDialog` (`ui/dialogs/recovery_dialog.py`)**:
   - Actionable diagnostics and recovery workflows for stale locks, interrupted rebases, detached HEADs, and reflogs.
 - **`DiffView` (`ui/diff_view/diff_widget.py`)**: Syntax-highlighted diff viewer.
-  - Renders diff lines with line-number metadata and theme-adaptive light/dark mode contrast.
+  - Renders diff lines with line-number metadata and theme-adaptive Catppuccin Velvet Pastel contrast.
+  - Automatically re-renders loaded diffs on `PaletteChange`, `ApplicationPaletteChange`, or `ThemeChange` without requiring file re-selection.
   - Provides hunk dropdown controls and whole-file / hunk staging action buttons.
   - Binary file detection and exception safety.
+- **`Theme Engine` (`ui/theme.py`)**: Centralized styling and color management.
+  - Implements the **Catppuccin Velvet Pastel** design system:
+    - **Latte Pastel (Light Mode)**: `#eff1f5` warm mist canvas, `#ffffff` card bases, `#4c4f69` soft charcoal slate text, `#1e66f5` sapphire accents, `#7c7f93` muted slate subtext.
+    - **Mocha Velvet Pastel (Dark Mode)**: `#1e1e2e` deep twilight slate canvas, `#181825` midnight card bases, `#cdd6f4` frosted white text, `#89b4fa` pastel sky accents, `#9399b2` soft lavender-gray subtext.
+  - **Luminance-Based Detection (`is_dark_theme`)**: Calculates average luminance of `QPalette.Window` and `QPalette.Base` to avoid desktop environment color scheme mismatches on KDE Plasma and GNOME.
+  - **Recursive Descendant Palette Propagation (`apply_theme`)**: Sets the palette on `QApplication` and traverses all `topLevelWidgets()` and their child widgets recursively. This overcomes Qt container stylesheet isolation contexts (`QStyleSheetStyle` on `QSplitter`, `QGroupBox`, etc.) where child widgets otherwise retain stale palettes.
+  - **Design Tokens**: Centralized maps for `DIFF_STYLES`, `BADGE_STYLES`, `CONFLICT_BANNER_STYLES`, `SECONDARY_TEXT`, `ACCENT_COLORS`, and `COMMIT_STAT_COLORS`.
 - **`workers.py`**: Background thread runner using `QThread` and a thread-safe `_Dispatcher` `QObject` via `Qt.ConnectionType.QueuedConnection` to ensure callbacks execute strictly on the main GUI thread. Adapted in Phase 3 to support multi-parameter `progress_cb(pct, stage)` and cooperative cancellation via `threading.Event`.
 
 
@@ -410,6 +440,123 @@ ui.workers.run_in_background(fn, *args, on_finished=cb, on_failed=err_cb)
                 password=<password>
 ```
 
+### 4.7 Theme System & Instant Theme Switching Architecture
+```
+[Desktop Theme Change (KDE/GNOME/Windows)] OR [View -> Theme Menu Selection]
+                            │
+                            ▼
+           [QGuiApplication.styleHints().colorSchemeChanged]
+                                    OR
+                     [MainWindow._set_theme(mode)]
+                            │
+                            ├── 1. Apply Qt QPalette (Latte Pastel / Mocha Pastel / Native System)
+                            ├── 2. Recursive Palette Propagation to all topLevelWidgets() & children
+                            ├── 3. Persist mode to SQLite app_settings ('theme')
+                            │
+                            ▼
+             [Broadcast QEvent.PaletteChange & ApplicationPaletteChange]
+                            │
+          ┌─────────────────┼─────────────────┐
+          ▼                 ▼                 ▼
+   [TabContainer]    [ChangesTab]      [HistoryTab]
+          │                 │                 │
+          ├── Refresh tabs  ├── Refresh badges├── Refresh stats
+          │   (active /     ├── Conflict theme├── Graph viewport
+          │    inactive)    └── DiffWidget    └── Detail panel & DiffWidget
+          │                 │                 │
+          └─────────────────┼─────────────────┘
+                            ▼
+                 [DiffWidget.changeEvent]
+                            │
+                            ▼
+              [_render_diff() with Catppuccin Velvet Pastel]
+              - Light: Mint green (#dcefd8) & blush rose (#fcd7db)
+              - Dark: Velvet mint (#1e3527) & flamingo rose (#3b1d28)
+              - Seamless zero-latency instant re-render
+```
+
+#### 4.7.1 Palette Isolation & Recursive Descendant Propagation
+In Qt's widget engine, applying an inline stylesheet (`setStyleSheet`) to a container widget (such as `QSplitter` in `ChangesTab` or `QGroupBox` in the commit section) assigns that widget a dedicated `QStyleSheetStyle` instance with a snapshot of the palette at construction time. Consequently, subsequent calls to `QApplication.setPalette()` do **not** automatically update the palette of already-instantiated child widgets inside that styled container (such as `QListWidget` or `QTextEdit`).
+
+To ensure 100% theme fidelity when switching themes:
+1. `apply_theme(app, mode)` applies the selected `QPalette` to `QApplication`.
+2. It then traverses every top-level window via `QApplication.topLevelWidgets()` and sets the palette on each window and every descendant widget found via `top_widget.findChildren(QWidget)`.
+3. `MainWindow._propagate_theme_refresh()` directly invokes `refresh_theme()` on child workspaces (`TabContainer`, `ChangesTab`, `HistoryTab`) to immediately recompute any dynamic CSS or color tokens without waiting for deferred event loop cycles.
+
+#### 4.7.2 Event Recursion Protection
+In Qt's style sheet architecture, calling `QWidget.setStyleSheet()` dispatches an internal `QEvent.PaletteChange` event to the widget. If a widget re-applies its stylesheet directly inside its `changeEvent(event)` handler when observing `PaletteChange`, an unbounded recursive loop (`maximum recursion depth exceeded`) occurs.
+
+Wrench implements recursion guards across all theme-responsive components:
+- `TabButton`: Guarded by `_updating_style` flag in both `changeEvent` and `_update_style()`.
+- `ChangesTab`: Guarded by `_refreshing_theme` flag in `changeEvent`.
+- `HistoryTab`: Guarded by `_refreshing_theme` flag in `changeEvent`.
+- `BranchSwitcherWidget`: Guarded by `_updating_display_active` in `changeEvent`.
+
+#### 4.7.3 Luminance-Based Theme Detection
+`QGuiApplication.styleHints().colorScheme()` queries the host desktop environment (e.g., KDE Plasma or GNOME). On systems where the desktop runs in Dark Mode but the user selects "Pastel Light" in Wrench (or vice versa), `colorScheme()` returns the desktop setting rather than the application's active palette.
+
+`is_dark_theme(widget)` resolves this by calculating the actual luminance of the palette:
+$$\text{Luminance} = \frac{\text{lightnessF}(Window) + \text{lightnessF}(Base)}{2.0}$$
+If $\text{Luminance} < 0.5$, the widget/app is dark; otherwise it is light. This guarantees flawless theme detection across all platforms and desktop environments.
+
+#### 4.7.4 Design Tokens & Contrast System
+| Component | Catppuccin Latte Pastel (Light) | Catppuccin Mocha Velvet Pastel (Dark) |
+|---|---|---|
+| **Window Canvas** | `#eff1f5` (Warm pastel mist) | `#1e1e2e` (Velvety twilight slate) |
+| **Card / Editor Base** | `#ffffff` (Crisp card white) | `#181825` (Midnight card base) |
+| **Primary Text** | `#4c4f69` (Charcoal slate) | `#cdd6f4` (Frosted mist white) |
+| **Secondary Subtext** | `#7c7f93` (Muted slate) | `#9399b2` (Soft lavender-gray) |
+| **Highlight Accent** | `#1e66f5` (Sapphire blue) | `#89b4fa` (Pastel sky blue) |
+| **Diff Addition** | `#dcefd8` bg / `#216e39` text / `#40a02b` bar | `#1e3527` bg / `#a6e3a1` text / `#a6e3a1` bar |
+| **Diff Deletion** | `#fcd7db` bg / `#a8233e` text / `#d20f39` bar | `#3b1d28` bg / `#f38ba8` text / `#f38ba8` bar |
+| **Diff Hunk Header** | `#e6e9f8` bg / `#1e66f5` text / `#ccd0da` border | `#1e2640` bg / `#89b4fa` text / `#313244` border |
+| **Status Badge: Modified (M)** | `#1e66f5` fg / `#e0e7ff` bg | `#89b4fa` fg / `#1e2942` bg |
+| **Status Badge: Added (A)** | `#40a02b` fg / `#dcfce7` bg | `#a6e3a1` fg / `#1b3526` bg |
+| **Status Badge: Deleted (D)** | `#d20f39` fg / `#fee2e2` bg | `#f38ba8` fg / `#3b1c28` bg |
+| **Status Badge: Untracked (?)** | `#7c7f93` fg / `#e6e9ef` bg | `#9399b2` fg / `#282a3a` bg |
+| **Warning / Detached HEAD** | `#df8e1d` (Amber Latte) | `#f9e2af` (Amber Mocha) |
+
+### 4.8 Commit Graph Rendering & Synchronized Pixel Scrolling Architecture
+```
+[Main Horizontal Scroll Event / Mouse Drag / Trackpad Pan]
+                             │
+                             ▼
+     [CommitGraphWidget.setHorizontalScrollMode(ScrollPerPixel)]
+                             │
+                             ├── Fluid per-pixel horizontal movement across all columns
+                             │   (eliminates default QTableView column-snapping stutter)
+                             │
+                             ▼
+             [scrollContentsBy(dx, dy) Override]
+                             │
+                             ├── 1. Trigger base table viewport repainting
+                             │
+                             └── 2. Invoke _update_graph_scrollbar_geometry()
+                                     │
+                                     ├── Calculate Column 0 Viewport Coordinate:
+                                     │   x_col0 = viewport().x() + header.sectionViewportPosition(0)
+                                     │
+                                     ├── Translate DAG Scrollbar to x_col0:
+                                     │   - Translates left in lockstep as main table scrolls right
+                                     │   - Clips left boundary to max(viewport().x(), x_col0)
+                                     │   - Clips right boundary to prevent overlapping vertical scrollbar
+                                     │
+                                     └── Visibility Rules:
+                                         - Visible when DAG width > Column 0 width AND Column 0 is in viewport
+                                         - Hidden when Column 0 scrolls completely off-screen to the left
+                                         - Hidden when all DAG lanes fit within Column 0 without scrolling
+```
+
+#### 4.8.1 Two-Tier Horizontal Scrolling Coordination
+The `CommitGraphWidget` visualizes Git commit histories with an interactive topological DAG rendered in Column 0 (`"Graph"`) alongside standard textual metadata columns (`"SHA"`, `"Author"`, `"Date"`, `"Message"`). Because the number of concurrent branches can expand the DAG lane width beyond Column 0's allocated width, the DAG column requires independent horizontal panning (`_graph_scroll_x`).
+
+To prevent UI conflicts between table-level scrolling and column-level scrolling:
+1. **Fluid Pixel Scrolling**: The table is configured with `setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)` and `setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)`, eliminating stepped column snapping and providing fluid scrolling across high-resolution displays and touchpads.
+2. **Synchronized Overlay Scrollbar**: A dedicated `QScrollBar` is placed as an overlay pinned to the bottom of the table viewport. Instead of remaining static at $x=0$, its horizontal geometry is dynamically bound to Column 0's position:
+$$x_{\text{scrollbar}} = \text{viewport}().x() + \text{header}.\text{sectionViewportPosition}(0)$$
+$$w_{\text{scrollbar}} = \min(\text{header}.\text{sectionSize}(0), \text{viewport}().width() - (x_{\text{scrollbar}} - \text{viewport}().x()))$$
+3. **Synchronous Viewport Updates**: Overriding `scrollContentsBy(dx, dy)` guarantees that the overlay scrollbar updates synchronously with the table's native scrolling pipeline, eliminating visual latency or detachment during continuous scrolling.
+
 ---
 
 ## 5. Relational Database Schema
@@ -498,6 +645,7 @@ wrench/
 │   │   └── schema.sql            # Normalized relational schema
 │   ├── ui/                       # PySide6 desktop UI
 │   │   ├── main_window.py        # Main application window & repository menu
+│   │   ├── theme.py              # Catppuccin Velvet Pastel palettes & theme management
 │   │   ├── workers.py            # Thread-safe background worker marshaller
 │   │   ├── tabs/                 # Hybrid tab navigation system
 │   │   │   ├── tab_bar.py        # TabContainer & TabButton widgets
@@ -518,4 +666,3 @@ wrench/
 │   └── watcher/                  # Inotify filesystem watching & debouncing
 └── tests/                        # Comprehensive test suite (unit, integration, UI)
 ```
-

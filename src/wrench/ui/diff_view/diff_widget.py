@@ -3,8 +3,8 @@
 import html
 import logging
 
-from PySide6.QtCore import Signal
-from PySide6.QtGui import QFont, QPalette
+from PySide6.QtCore import QEvent, Signal
+from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QComboBox,
     QHBoxLayout,
@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
 
 from wrench.core import engine
 from wrench.core.engine import Diff, RepoHandle
+from wrench.ui.theme import DIFF_STYLES, is_dark_theme
 
 logger = logging.getLogger(__name__)
 
@@ -128,40 +129,36 @@ class DiffWidget(QWidget):
 
         self._render_diff()
 
+    def changeEvent(self, event: QEvent) -> None:
+        """Handles theme and palette changes immediately."""
+        super().changeEvent(event)
+        if event.type() in (
+            QEvent.PaletteChange,
+            QEvent.ApplicationPaletteChange,
+            QEvent.ThemeChange,
+            QEvent.StyleChange,
+        ):
+            self.refresh_theme()
+
+    def refresh_theme(self) -> None:
+        """Re-renders current diff and UI under the updated theme."""
+        if self._diff:
+            self._render_diff()
+
     def _render_diff(self):
         if not self._diff:
             self.editor.clear()
             return
 
-        # Detect if palette is dark or light
-        win_color = self.palette().color(QPalette.Window)
-        base_color = self.palette().color(QPalette.Base)
-        is_dark = win_color.lightnessF() < 0.5 or base_color.lightnessF() < 0.5
+        is_dark = is_dark_theme(self)
+        mode_key = "dark" if is_dark else "light"
+        styles = DIFF_STYLES[mode_key]
 
-        if is_dark:
-            self.editor.setStyleSheet(
-                "QTextEdit { background-color: #1e1e1e; color: #d4d4d4; "
-                "border: 1px solid rgba(128, 128, 128, 0.25); border-radius: 3px; }"
-            )
-            hunk_style = (
-                "color: #38bdf8; font-weight: bold; background-color: #0c2d48; "
-                "padding: 2px 6px; margin-top: 6px; border-radius: 2px;"
-            )
-            add_style = "color: #4ade80; background-color: #14381e; padding: 1px 6px;"
-            del_style = "color: #f87171; background-color: #3d1414; padding: 1px 6px;"
-            ctx_style = "color: #d1d5db; padding: 1px 6px;"
-        else:
-            self.editor.setStyleSheet(
-                "QTextEdit { background-color: #ffffff; color: #1f2937; "
-                "border: 1px solid rgba(128, 128, 128, 0.25); border-radius: 3px; }"
-            )
-            hunk_style = (
-                "color: #0288d1; font-weight: bold; background-color: #e1f5fe; "
-                "padding: 2px 6px; margin-top: 6px; border-radius: 2px;"
-            )
-            add_style = "color: #166534; background-color: #dcfce7; padding: 1px 6px;"
-            del_style = "color: #991b1b; background-color: #fee2e2; padding: 1px 6px;"
-            ctx_style = "color: #1f2937; padding: 1px 6px;"
+        self.editor.setStyleSheet(styles["container"])
+        hunk_style = styles["hunk"]
+        add_style = styles["add"]
+        del_style = styles["del"]
+        ctx_style = styles["ctx"]
 
         if self._diff.is_binary:
             self.editor.setHtml(
@@ -195,7 +192,7 @@ class DiffWidget(QWidget):
             self.stage_hunk_btn.setVisible(True)
 
         # Build colored diff HTML
-        text_color = "#d4d4d4" if is_dark else "#1f2937"
+        text_color = "#cdd6f4" if is_dark else "#4c4f69"
         pre_tag = (
             f"<pre style='font-family: monospace; font-size: 12px; line-height: 1.4; "
             f"margin: 0; padding: 6px; color: {text_color};'>"

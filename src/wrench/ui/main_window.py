@@ -17,9 +17,10 @@ import sqlite3
 import threading
 from pathlib import Path
 
-from PySide6.QtCore import QByteArray, Qt, QTimer
-from PySide6.QtGui import QGuiApplication, QKeySequence
+from PySide6.QtCore import QByteArray, QEvent, Qt, QTimer
+from PySide6.QtGui import QActionGroup, QGuiApplication, QKeySequence
 from PySide6.QtWidgets import (
+    QApplication,
     QFileDialog,
     QInputDialog,
     QLabel,
@@ -50,6 +51,7 @@ from wrench.ui.snapshots_panel import SnapshotsPanel
 from wrench.ui.tabs.changes_tab import ChangesTab
 from wrench.ui.tabs.history_tab import HistoryTab
 from wrench.ui.tabs.tab_bar import TabContainer
+from wrench.ui.theme import apply_theme
 from wrench.ui.workers import run_in_background
 from wrench.watcher.inotify_watcher import RepoWatcher
 
@@ -82,6 +84,11 @@ class MainWindow(QMainWindow):
         self._snapshot_timer.setInterval(300_000)
         self._snapshot_timer.timeout.connect(self._on_snapshot_timer)
         self._snapshot_timer.start()
+
+        self._current_theme_mode: str = "auto"
+        style_hints = QGuiApplication.styleHints()
+        if hasattr(style_hints, "colorSchemeChanged"):
+            style_hints.colorSchemeChanged.connect(self._on_system_color_scheme_changed)
 
         self._init_ui()
         self._restore_settings()
@@ -240,6 +247,27 @@ class MainWindow(QMainWindow):
         self.act_toggle_tab_pos = view_menu.addAction(self.tr("&Toggle Tab Orientation"))
         self.act_toggle_tab_pos.setShortcut(QKeySequence("Ctrl+Shift+T"))
         self.act_toggle_tab_pos.triggered.connect(self._on_toggle_tab_orientation)
+
+        view_menu.addSeparator()
+        theme_menu = view_menu.addMenu(self.tr("&Theme"))
+        self.theme_group = QActionGroup(self)
+        self.theme_group.setExclusive(True)
+
+        self.act_theme_auto = theme_menu.addAction(self.tr("&Auto (System Default)"))
+        self.act_theme_auto.setCheckable(True)
+        self.act_theme_auto.setChecked(True)
+        self.act_theme_auto.triggered.connect(lambda: self._set_theme("auto"))
+        self.theme_group.addAction(self.act_theme_auto)
+
+        self.act_theme_light = theme_menu.addAction(self.tr("Pastel &Light"))
+        self.act_theme_light.setCheckable(True)
+        self.act_theme_light.triggered.connect(lambda: self._set_theme("light"))
+        self.theme_group.addAction(self.act_theme_light)
+
+        self.act_theme_dark = theme_menu.addAction(self.tr("Pastel &Dark"))
+        self.act_theme_dark.setCheckable(True)
+        self.act_theme_dark.triggered.connect(lambda: self._set_theme("dark"))
+        self.theme_group.addAction(self.act_theme_dark)
 
         # ---------------- Repository Menu ----------------
         repo_menu = menu_bar.addMenu(self.tr("&Repository"))
@@ -410,10 +438,59 @@ class MainWindow(QMainWindow):
                 center = QGuiApplication.primaryScreen().availableGeometry().center()
                 self.move(center.x() - 600, center.y() - 400)
 
+        # Restore theme preference
+        saved_theme = settings.get_setting(self._conn, "theme") or "auto"
+        self._set_theme(saved_theme)
+
         # Mark restoration complete and ensure no lingering auto-save timer
         self._is_restoring = False
         if hasattr(self, "_auto_save_timer"):
             self._auto_save_timer.stop()
+
+    def _set_theme(self, mode: str) -> None:
+        """Applies the selected theme mode, updates UI actions, and persists setting."""
+        self._current_theme_mode = mode
+        app = QApplication.instance()
+        if app:
+            apply_theme(app, mode)
+        settings.set_setting(self._conn, "theme", mode)
+
+        if hasattr(self, "act_theme_auto"):
+            if mode == "light":
+                self.act_theme_light.setChecked(True)
+            elif mode == "dark":
+                self.act_theme_dark.setChecked(True)
+            else:
+                self.act_theme_auto.setChecked(True)
+
+        self._propagate_theme_refresh()
+
+    def _on_system_color_scheme_changed(self) -> None:
+        """Reacts when desktop/system color scheme changes while in 'auto' mode."""
+        if getattr(self, "_current_theme_mode", "auto") == "auto":
+            app = QApplication.instance()
+            if app:
+                apply_theme(app, "auto")
+            self._propagate_theme_refresh()
+
+    def _propagate_theme_refresh(self) -> None:
+        """Propagates theme change to all child tabs and diff views."""
+        if hasattr(self, "tab_container"):
+            self.tab_container.refresh_theme()
+        if hasattr(self, "changes_tab"):
+            self.changes_tab.refresh_theme()
+        if hasattr(self, "history_tab"):
+            self.history_tab.refresh_theme()
+
+    def changeEvent(self, event: QEvent) -> None:
+        super().changeEvent(event)
+        if event.type() in (
+            QEvent.PaletteChange,
+            QEvent.ApplicationPaletteChange,
+            QEvent.ThemeChange,
+            QEvent.StyleChange,
+        ):
+            self._propagate_theme_refresh()
 
     def _save_session_state(self) -> None:
         """Persists the complete session state to app_settings."""

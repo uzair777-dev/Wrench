@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import logging
 
-from PySide6.QtCore import QByteArray, Qt, QTimer, Signal
+from PySide6.QtCore import QByteArray, QEvent, Qt, QTimer, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -139,7 +139,9 @@ class HistoryTab(QWidget):
         empty_layout.setSpacing(8)
 
         self.empty_title = QLabel(self.tr("No history yet"), self.empty_state_widget)
-        self.empty_title.setStyleSheet("font-size: 16px; font-weight: bold; color: gray;")
+        self.empty_title.setStyleSheet(
+            "font-size: 16px; font-weight: bold; color: palette(placeholder-text);"
+        )
         self.empty_title.setAlignment(Qt.AlignCenter)
         empty_layout.addWidget(self.empty_title)
 
@@ -147,7 +149,7 @@ class HistoryTab(QWidget):
             self.tr("Make your first commit to see the branch graph here."),
             self.empty_state_widget,
         )
-        self.empty_sub.setStyleSheet("font-size: 12px; color: #888888;")
+        self.empty_sub.setStyleSheet("font-size: 12px; color: palette(placeholder-text);")
         self.empty_sub.setAlignment(Qt.AlignCenter)
         empty_layout.addWidget(self.empty_sub)
 
@@ -285,3 +287,32 @@ class HistoryTab(QWidget):
                 self.content_splitter.restoreState(byte_array)
             except Exception as e:
                 logger.warning("Could not restore history splitter state: %s", e)
+
+    def changeEvent(self, event: QEvent) -> None:
+        super().changeEvent(event)
+        if getattr(self, "_refreshing_theme", False):
+            return
+        if event.type() in (
+            QEvent.PaletteChange,
+            QEvent.ApplicationPaletteChange,
+            QEvent.ThemeChange,
+            QEvent.StyleChange,
+        ):
+            self._refreshing_theme = True
+            try:
+                self.refresh_theme()
+            finally:
+                self._refreshing_theme = False
+
+    def refresh_theme(self) -> None:
+        """Propagates theme change to detail panel, graph, and empty-state labels."""
+        if hasattr(self, "detail_panel"):
+            self.detail_panel.refresh_theme()
+        if hasattr(self, "graph_widget"):
+            self.graph_widget.viewport().update()
+        if hasattr(self, "empty_title"):
+            self.empty_title.setStyleSheet(
+                "font-size: 16px; font-weight: bold; color: palette(placeholder-text);"
+            )
+        if hasattr(self, "empty_sub"):
+            self.empty_sub.setStyleSheet("font-size: 12px; color: palette(placeholder-text);")

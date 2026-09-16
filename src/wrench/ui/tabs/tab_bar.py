@@ -100,7 +100,7 @@ class TabButton(QWidget):
         self.close_btn.setAccessibleName(self.tr("Close Tab"))
         self.close_btn.setStyleSheet(
             "QToolButton { border: none; font-size: 14px; font-weight: bold; "
-            "padding: 0px 3px; color: gray; } "
+            "padding: 0px 3px; color: palette(placeholder-text); } "
             "QToolButton:hover { color: #e55b5b; background: transparent; }"
         )
         self.close_btn.clicked.connect(self.close_requested.emit)
@@ -112,6 +112,24 @@ class TabButton(QWidget):
         self.setContextMenuPolicy(Qt.CustomContextMenu)
         self.customContextMenuRequested.connect(self._show_context_menu)
 
+        self._update_style()
+
+    def changeEvent(self, event: QEvent) -> None:
+        super().changeEvent(event)
+        if getattr(self, "_updating_style", False):
+            return
+        if event.type() in (
+            QEvent.PaletteChange,
+            QEvent.ApplicationPaletteChange,
+        ):
+            self._updating_style = True
+            try:
+                self._update_style()
+            finally:
+                self._updating_style = False
+
+    def refresh_theme(self) -> None:
+        """Refreshes tab button styling for the current theme."""
         self._update_style()
 
     def set_tab_index(self, index: int) -> None:
@@ -228,28 +246,35 @@ class TabButton(QWidget):
         self._update_style()
 
     def _update_style(self) -> None:
-        pal = self.palette()
-        highlight_color = pal.color(QPalette.Highlight).name()
-        bg_highlight = pal.color(QPalette.AlternateBase).name()
+        if getattr(self, "_updating_style", False):
+            return
+        self._updating_style = True
+        try:
+            pal = self.palette()
+            highlight_color = pal.color(QPalette.Highlight).name()
+            bg_highlight = pal.color(QPalette.AlternateBase).name()
 
-        if self._is_active:
-            if self._orientation == Qt.Vertical:
-                border_style = f"border-left: 3px solid {highlight_color};"
+            if self._is_active:
+                if self._orientation == Qt.Vertical:
+                    border_style = f"border-left: 3px solid {highlight_color};"
+                else:
+                    border_style = f"border-bottom: 3px solid {highlight_color};"
+                self.setStyleSheet(
+                    f"TabButton {{ background-color: {bg_highlight}; {border_style} "
+                    f"font-weight: bold; }} "
+                    f"QPushButton {{ text-align: left; border: none; font-weight: bold; "
+                    f"padding: 4px; background: transparent; color: palette(window-text); }}"
+                )
             else:
-                border_style = f"border-bottom: 3px solid {highlight_color};"
-            self.setStyleSheet(
-                f"TabButton {{ background-color: {bg_highlight}; {border_style} "
-                f"font-weight: bold; }} "
-                f"QPushButton {{ text-align: left; border: none; font-weight: bold; "
-                f"padding: 4px; background: transparent; }}"
-            )
-        else:
-            self.setStyleSheet(
-                "TabButton { background-color: transparent; border: none; } "
-                "QPushButton { text-align: left; border: none; padding: 4px; "
-                "background: transparent; } "
-                "TabButton:hover { background-color: rgba(128, 128, 128, 0.15); }"
-            )
+                self.setStyleSheet(
+                    "TabButton { background-color: transparent; border: none; } "
+                    "QPushButton { text-align: left; border: none; padding: 4px; "
+                    "background: transparent; color: palette(placeholder-text); } "
+                    "TabButton:hover { background-color: rgba(128, 128, 128, 0.15); } "
+                    "TabButton:hover QPushButton { color: palette(window-text); }"
+                )
+        finally:
+            self._updating_style = False
 
 
 class TabStripWidget(QWidget):
@@ -763,3 +788,8 @@ class TabContainer(QWidget):
             disabled_act.setEnabled(False)
 
         menu.exec(self._add_btn.mapToGlobal(QPoint(0, self._add_btn.height())))
+
+    def refresh_theme(self) -> None:
+        """Refreshes all tab buttons when theme changes."""
+        for btn in self._tab_buttons:
+            btn.refresh_theme()

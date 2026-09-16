@@ -81,20 +81,20 @@ def create_pastel_light_palette() -> QPalette:
 def create_pastel_dark_palette() -> QPalette:
     """Creates the Catppuccin Mocha Velvet Pastel palette."""
     pal = QPalette()
-    # Base backgrounds
-    pal.setColor(QPalette.Window, QColor("#1e1e2e"))  # Deep twilight slate
+    # Base backgrounds - deeper, darker tones for enhanced contrast
+    pal.setColor(QPalette.Window, QColor("#181825"))  # Midnight slate canvas (Mantle)
     pal.setColor(QPalette.WindowText, QColor("#cdd6f4"))  # Frosted soft white
-    pal.setColor(QPalette.Base, QColor("#181825"))  # Midnight card base
-    pal.setColor(QPalette.AlternateBase, QColor("#313244"))  # Surface row tint
-    pal.setColor(QPalette.ToolTipBase, QColor("#1e1e2e"))
+    pal.setColor(QPalette.Base, QColor("#11111b"))  # Deep crust base (Crust)
+    pal.setColor(QPalette.AlternateBase, QColor("#1e1e2e"))  # Surface row tint
+    pal.setColor(QPalette.ToolTipBase, QColor("#181825"))
     pal.setColor(QPalette.ToolTipText, QColor("#cdd6f4"))
     pal.setColor(QPalette.Text, QColor("#cdd6f4"))
-    pal.setColor(QPalette.Button, QColor("#313244"))
+    pal.setColor(QPalette.Button, QColor("#252638"))
     pal.setColor(QPalette.ButtonText, QColor("#cdd6f4"))
     pal.setColor(QPalette.BrightText, QColor("#f38ba8"))
     pal.setColor(QPalette.Link, QColor("#89b4fa"))  # Pastel sky
     pal.setColor(QPalette.Highlight, QColor("#89b4fa"))  # Pastel sky blue
-    pal.setColor(QPalette.HighlightedText, QColor("#1e1e2e"))
+    pal.setColor(QPalette.HighlightedText, QColor("#11111b"))
     pal.setColor(QPalette.PlaceholderText, QColor("#6c7086"))
     return pal
 
@@ -140,7 +140,7 @@ DIFF_STYLES = {
     },
     "dark": {
         "container": (
-            "QTextEdit { background-color: #181825; color: #cdd6f4; "
+            "QTextEdit { background-color: #11111b; color: #cdd6f4; "
             "border: 1px solid rgba(205, 214, 244, 0.15); border-radius: 4px; }"
         ),
         "add": (

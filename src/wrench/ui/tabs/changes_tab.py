@@ -224,17 +224,7 @@ class ChangesTab(QWidget):
 
         # Top: Repo dropdown
         self.repo_combo = QComboBox(self)
-        self.repo_combo.setStyleSheet(
-            "QComboBox { border: none; font-weight: bold; font-size: 13px; "
-            "padding: 4px; background: transparent; color: palette(window-text); } "
-            "QComboBox:hover { background-color: rgba(128, 128, 128, 0.1); border-radius: 3px; } "
-            "QComboBox::drop-down { border: none; width: 16px; } "
-            "QComboBox QAbstractItemView { "
-            "background-color: palette(base); color: palette(text); "
-            "selection-background-color: palette(highlight); "
-            "selection-color: palette(highlighted-text); "
-            "border: 1px solid rgba(128, 128, 128, 0.25); border-radius: 4px; padding: 2px; }"
-        )
+        self._update_repo_combo_theme()
         self.repo_combo.currentIndexChanged.connect(self._on_repo_combo_changed)
         left_layout.addWidget(self.repo_combo)
 
@@ -325,6 +315,7 @@ class ChangesTab(QWidget):
         btn_row.addStretch()
 
         self.commit_btn = QPushButton(self.tr("Commit"), commit_group)
+        self._update_commit_btn_theme()
         self.commit_btn.setEnabled(False)
         self.commit_btn.clicked.connect(self._on_commit_clicked)
         btn_row.addWidget(self.commit_btn)
@@ -548,6 +539,57 @@ class ChangesTab(QWidget):
         else:
             self.conflict_banner.setVisible(False)
 
+    def _update_repo_combo_theme(self) -> None:
+        """Updates repo combo styling based on active theme."""
+        if not hasattr(self, "repo_combo"):
+            return
+        if is_dark_theme(self):
+            # In dark mode: exactly untouched original stylesheet
+            self.repo_combo.setStyleSheet(
+                "QComboBox { border: none; font-weight: bold; font-size: 13px; "
+                "padding: 4px; background: transparent; color: palette(window-text); } "
+                "QComboBox:hover { background-color: rgba(128, 128, 128, 0.1); "
+                "border-radius: 3px; } "
+                "QComboBox::drop-down { border: none; width: 16px; } "
+                "QComboBox QAbstractItemView { "
+                "background-color: palette(base); color: palette(text); "
+                "selection-background-color: palette(highlight); "
+                "selection-color: palette(highlighted-text); "
+                "border: 1px solid rgba(128, 128, 128, 0.25); border-radius: 4px; padding: 2px; }"
+            )
+        else:
+            # In light mode: dark text (#4c4f69) so repository name is never white/invisible
+            self.repo_combo.setStyleSheet(
+                "QComboBox { border: none; font-weight: bold; font-size: 13px; "
+                "padding: 4px; background: transparent; color: #4c4f69; } "
+                "QComboBox:hover { background-color: rgba(0, 0, 0, 0.06); border-radius: 3px; } "
+                "QComboBox::drop-down { border: none; width: 16px; } "
+                "QComboBox QAbstractItemView { "
+                "background-color: #ffffff; color: #4c4f69; "
+                "selection-background-color: #1e66f5; "
+                "selection-color: #ffffff; "
+                "border: 1px solid rgba(76, 79, 105, 0.2); border-radius: 4px; padding: 2px; }"
+            )
+
+    def _update_commit_btn_theme(self) -> None:
+        """Updates commit button styling based on active theme."""
+        if not hasattr(self, "commit_btn"):
+            return
+        if is_dark_theme(self):
+            # In dark mode: untouched native Qt styling (no stylesheet)
+            self.commit_btn.setStyleSheet("")
+        else:
+            # In light mode: sapphire primary button with white text (not washed-out grey)
+            self.commit_btn.setStyleSheet(
+                "QPushButton { background-color: #1e66f5; color: #ffffff; font-weight: bold; "
+                "font-size: 12px; padding: 5px 12px; border: none; border-radius: 4px; } "
+                "QPushButton:hover { background-color: #1857d4; color: #ffffff; } "
+                "QPushButton:pressed { background-color: #154bb8; color: #ffffff; } "
+                "QPushButton:disabled { background-color: #e6e9ef; color: #7c7f93; "
+                "font-weight: bold; font-size: 12px; padding: 5px 12px; "
+                "border: 1px solid rgba(76, 79, 105, 0.2); border-radius: 4px; }"
+            )
+
     def _update_conflict_banner_theme(self) -> None:
         """Updates the conflict banner styling according to current theme."""
         if not hasattr(self, "conflict_banner") or not hasattr(self, "conflict_label"):
@@ -576,6 +618,8 @@ class ChangesTab(QWidget):
 
     def refresh_theme(self) -> None:
         """Refreshes all theme-dependent elements in ChangesTab."""
+        self._update_repo_combo_theme()
+        self._update_commit_btn_theme()
         self._update_conflict_banner_theme()
         if hasattr(self, "branch_switcher"):
             self.branch_switcher._update_display()

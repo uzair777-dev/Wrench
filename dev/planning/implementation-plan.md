@@ -146,6 +146,9 @@ wrench/
 │   │   ├── backup.py              # FR-8.1-8.5: git bundle create/restore
 │   │   ├── paths.py               # FR-11.2: platformdirs wrapper — the only file that resolves data/config dirs, §4.7
 │   │   ├── ssh_agent.py           # FR-11.3: isolates $SSH_AUTH_SOCK access, §4.7
+│   │   ├── git_credential_helper.py # §5 Phase 3: git credential helper entrypoint (git-credential-wrench)
+│   │   ├── lfs.py                 # FR-6.1: LFS detect/track/pull/push + pointer-file detection (§5 Phase 5)
+│   │   ├── submodules.py          # FR-6.2: submodule list/status/init/update/add (§5 Phase 5)
 │   │   └── exceptions.py          # WrenchGitError and subclasses
 │   ├── forge/
 │   │   ├── __init__.py
@@ -202,7 +205,8 @@ wrench/
 │   │   │   ├── identity_dialog.py  # Git identity override dialog (FR-1.5, ui-planning §6.5)
 │   │   │   ├── reflog_dialog.py    # Reflog history & restore dialog (FR-1.10, ui-planning §6.7)
 │   │   │   ├── remotes_dialog.py   # Manage remotes configuration dialog (FR-4.4, ui-planning §6.8)
-│   │   │   └── backup_dialog.py    # On-demand backup & restore dialogs (FR-8.1-8.4, ui-planning §6.9)
+│   │   │   ├── backup_dialog.py    # On-demand backup & restore dialogs (FR-8.1-8.4, ui-planning §6.9)
+│   │   │   └── submodule_dialog.py # FR-6.2: add-submodule dialog (§5 Phase 5 step 3)
 │   │   ├── diff_view/              # FR-2.1 (re-parented into changes_tab in Phase 1.5)
 │   │   ├── commit_graph/           # FR-2.2/2.3 (plugs into history_tab's graph slot in Phase 2)
 │   │   │   ├── graph_widget.py     # custom QPainter commit graph + accessible tree fallback

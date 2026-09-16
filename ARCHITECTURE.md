@@ -171,17 +171,17 @@ graph TD
     - Handles `QEvent.PaletteChange` and `ApplicationPaletteChange` with an internal recursion guard (`_updating_style`) to eliminate stylesheet re-entry loops.
     - `TabContainer` provides `refresh_theme()` to synchronously trigger styling updates across all tab buttons when themes change.
 - **`ChangesTab` (`ui/tabs/changes_tab.py`)**: Primary working tree changes workspace.
-  - Flush borderless repository selector `QComboBox` with `color: palette(window-text);` and `QComboBox QAbstractItemView` styling ensuring legible text in both light and dark themes.
+  - Flush borderless repository selector `QComboBox` with mode-isolated theme styling (`_update_repo_combo_theme()`): retains original stylesheet with `color: palette(window-text);` in dark mode, and applies explicit `#4c4f69` (charcoal slate) text on `#ffffff` card base in light mode to prevent invisible white text caused by static palette stylesheet binding.
   - Embedded `BranchSwitcherWidget` with theme-adaptive colors.
   - Visible 1px divider `QSplitter::handle` with interactive hover highlight.
   - Theme-adaptive merge conflict banner when merge conflicts are in progress.
   - Unified changed files list (staged + unstaged + untracked) with status badges (`M`, `A`, `D`, `R`, `?`, `⚠ C`) and path tooltips.
   - Tri-state select-all checkbox cycling `Unchecked ➔ All Checked ➔ All Unchecked`.
   - Right-click file context menu (`Stage`, `Unstage`, `Discard`, `Copy Relative/Absolute Path`).
-  - Commit section with forge account avatar button, 72-character soft limit summary warning (using theme-aware warning ambers), description editor, amend toggle (pre-filled from last commit), and dynamic commit button.
+  - Commit section with forge account avatar button, 72-character soft limit summary warning (using theme-aware warning ambers), description editor, amend toggle (pre-filled from last commit), and dynamic commit button (`commit_btn`) with mode-isolated theme styling (`_update_commit_btn_theme()`): preserves native unstyled Qt button rendering (`setStyleSheet("")`) in dark mode, and applies vibrant Catppuccin Sapphire (`#1e66f5`) with `#ffffff` text (disabled: `#e6e9ef` with `#7c7f93` text) in light mode to eliminate washed-out grey buttons.
   - Per-repo selections and draft text snapshotting (`get_current_repo_state()` / `restore_repo_state()`) during repository switches.
   - Right column embedded `DiffView` with clean state and programming quotes.
-  - **Theme Lifecycle (`refresh_theme`)**: Propagates theme refreshes across `repo_combo`, `branch_switcher`, `files_list` item badges, `diff_view`, conflict banners, and secondary labels (`files_count_label`, `clean_title`, `clean_quote`, `clean_author` bound to `palette(placeholder-text)`), protected by recursion guards.
+  - **Theme Lifecycle (`refresh_theme`)**: Propagates theme refreshes across `_update_repo_combo_theme()`, `_update_commit_btn_theme()`, `branch_switcher`, `files_list` item badges, `diff_view`, conflict banners, and secondary labels (`files_count_label`, `clean_title`, `clean_quote`, `clean_author` bound to `palette(placeholder-text)`), protected by recursion guards.
 - **`BranchSwitcherWidget` (`ui/widgets/branch_switcher.py`)**: Branch indicator and switcher.
   - Displays active branch (`🌿 main ▾`), detached HEAD (`🔗 HEAD detached at {sha}`), or unborn branch (`🌿 main (initial)`).
   - Searchable branch picker popup listing local and remote tracking branches.
@@ -216,7 +216,7 @@ graph TD
 - **`Theme Engine` (`ui/theme.py`)**: Centralized styling and color management.
   - Implements the **Catppuccin Velvet Pastel** design system:
     - **Latte Pastel (Light Mode)**: `#eff1f5` warm mist canvas, `#ffffff` card bases, `#4c4f69` soft charcoal slate text, `#1e66f5` sapphire accents, `#7c7f93` muted slate subtext.
-    - **Mocha Velvet Pastel (Dark Mode)**: `#1e1e2e` deep twilight slate canvas, `#181825` midnight card bases, `#cdd6f4` frosted white text, `#89b4fa` pastel sky accents, `#9399b2` soft lavender-gray subtext.
+    - **Mocha Velvet Pastel (Dark Mode)**: `#181825` deep midnight slate canvas, `#11111b` deep crust card bases, `#cdd6f4` frosted white text, `#89b4fa` pastel sky accents, `#9399b2` soft lavender-gray subtext.
   - **Luminance-Based Detection (`is_dark_theme`)**: Calculates average luminance of `QPalette.Window` and `QPalette.Base` to avoid desktop environment color scheme mismatches on KDE Plasma and GNOME.
   - **Recursive Descendant Palette Propagation (`apply_theme`)**: Sets the palette on `QApplication` and traverses all `topLevelWidgets()` and their child widgets recursively. This overcomes Qt container stylesheet isolation contexts (`QStyleSheetStyle` on `QSplitter`, `QGroupBox`, etc.) where child widgets otherwise retain stale palettes.
   - **Design Tokens**: Centralized maps for `DIFF_STYLES`, `BADGE_STYLES`, `CONFLICT_BANNER_STYLES`, `SECONDARY_TEXT`, `ACCENT_COLORS`, and `COMMIT_STAT_COLORS`.
@@ -502,8 +502,8 @@ If $\text{Luminance} < 0.5$, the widget/app is dark; otherwise it is light. This
 #### 4.7.4 Design Tokens & Contrast System
 | Component | Catppuccin Latte Pastel (Light) | Catppuccin Mocha Velvet Pastel (Dark) |
 |---|---|---|
-| **Window Canvas** | `#eff1f5` (Warm pastel mist) | `#1e1e2e` (Velvety twilight slate) |
-| **Card / Editor Base** | `#ffffff` (Crisp card white) | `#181825` (Midnight card base) |
+| **Window Canvas** | `#eff1f5` (Warm pastel mist) | `#181825` (Velvety midnight slate) |
+| **Card / Editor Base** | `#ffffff` (Crisp card white) | `#11111b` (Deep crust base) |
 | **Primary Text** | `#4c4f69` (Charcoal slate) | `#cdd6f4` (Frosted mist white) |
 | **Secondary Subtext** | `#7c7f93` (Muted slate) | `#9399b2` (Soft lavender-gray) |
 | **Highlight Accent** | `#1e66f5` (Sapphire blue) | `#89b4fa` (Pastel sky blue) |
@@ -515,6 +515,8 @@ If $\text{Luminance} < 0.5$, the widget/app is dark; otherwise it is light. This
 | **Status Badge: Deleted (D)** | `#d20f39` fg / `#fee2e2` bg | `#f38ba8` fg / `#3b1c28` bg |
 | **Status Badge: Untracked (?)** | `#7c7f93` fg / `#e6e9ef` bg | `#9399b2` fg / `#282a3a` bg |
 | **Warning / Detached HEAD** | `#df8e1d` (Amber Latte) | `#f9e2af` (Amber Mocha) |
+| **Primary Commit Button** | `#1e66f5` (Sapphire) bg / `#ffffff` text (disabled: `#e6e9ef` bg / `#7c7f93` text) | Native Qt button (`setStyleSheet("")`, untouched) |
+| **Repo Dropdown Text** | `#4c4f69` (Charcoal slate) on transparent / `#ffffff` popup | `palette(window-text)` (untouched) |
 
 ### 4.8 Commit Graph Rendering & Synchronized Pixel Scrolling Architecture
 ```

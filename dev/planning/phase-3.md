@@ -48,12 +48,15 @@ Phase 3 delivered the complete remote transport, credential management, and back
 7. **Catppuccin Velvet Pastel Design System & Instant Theme Switching**:
    - Implemented the complete **Catppuccin Velvet Pastel** theme system across all application surfaces:
      - **Catppuccin Latte Pastel (Light Mode)**: Warm mist canvas (`#eff1f5`), card bases (`#ffffff`), charcoal slate text (`#4c4f69`), sapphire accents (`#1e66f5`), muted slate subtext (`#7c7f93`).
-     - **Catppuccin Mocha Velvet Pastel (Dark Mode)**: Deep twilight slate canvas (`#1e1e2e`), midnight card bases (`#181825`), frosted white text (`#cdd6f4`), pastel sky accents (`#89b4fa`), soft lavender-gray subtext (`#9399b2`).
+     - **Catppuccin Mocha Velvet Pastel (Dark Mode)**: Deep twilight slate canvas (`#181825`), deep crust card bases (`#11111b`), frosted white text (`#cdd6f4`), pastel sky accents (`#89b4fa`), soft lavender-gray subtext (`#9399b2`).
    - Centralized theme engine in `src/wrench/ui/theme.py` with **View → Theme** menu options (`Auto`, `Pastel Light`, `Pastel Dark`).
    - Solved Qt container stylesheet palette isolation (`QSplitter`, `QGroupBox`) by implementing recursive descendant palette propagation across all `topLevelWidgets()` and their child widgets.
    - Implemented event recursion protection (`_updating_style`, `_refreshing_theme`, `_updating_display_active`) to eliminate `maximum recursion depth exceeded` when `setStyleSheet` triggers `QEvent.PaletteChange`.
    - Luminance-based detection `is_dark_theme(widget)` evaluating `(Window.lightnessF() + Base.lightnessF()) / 2.0 < 0.5` to eliminate host desktop color scheme mismatches on Linux (KDE Plasma / GNOME).
    - Explicitly bound `TabButton` text colors (`palette(window-text)` on active tabs, `palette(placeholder-text)` on inactive tabs) and added `refresh_theme()` to `TabContainer` and `TabButton`.
+   - **Mode-Isolated ChangesTab Styling**: Resolved light mode visibility issues without altering dark mode appearance:
+     - Repository dropdown (`repo_combo`): in dark mode, keeps original stylesheet (`color: palette(window-text);`); in light mode, uses explicit `#4c4f69` charcoal text on `#ffffff` popup to prevent white-on-light illegibility.
+     - Commit button (`commit_btn`): in dark mode, preserves native Qt button rendering (`setStyleSheet("")`) completely untouched; in light mode, applies Catppuccin Sapphire (`#1e66f5`) with crisp white `#ffffff` text (disabled: `#e6e9ef` with `#7c7f93`), eliminating washed-out flat grey buttons.
 
 8. **Commit Graph Smooth Scrolling & Synchronized DAG Scrollbar**:
    - Configured `CommitGraphWidget` with `ScrollPerPixel` to deliver fluid, continuous horizontal scrolling across table columns without column snapping.
@@ -142,7 +145,7 @@ Phase 3 delivered the complete remote transport, credential management, and back
 - **Theme Lifecycles**:
   - `TabButton`: Recursion-guarded `changeEvent` and `_update_style()` applying `color: palette(window-text)` (active) and `color: palette(placeholder-text)` (inactive).
   - `TabContainer`: `refresh_theme()` method propagating changes to all child tab buttons.
-  - `ChangesTab`: `refresh_theme()` re-evaluating `repo_combo`, `branch_switcher`, status badges, conflict banner, and secondary labels.
+  - `ChangesTab`: `refresh_theme()` re-evaluating mode-isolated `repo_combo` (`_update_repo_combo_theme()`), `commit_btn` (`_update_commit_btn_theme()`), `branch_switcher`, status badges, conflict banner, and secondary labels.
   - `HistoryTab`: `refresh_theme()` forwarding updates to `detail_panel` and requesting graph viewport repaints.
   - `BranchSwitcherWidget`: Adapts to theme changes with `ACCENT_COLORS` and `palette(placeholder-text)`.
 
@@ -179,7 +182,7 @@ Phase 3 delivered the complete remote transport, credential management, and back
   - `test_is_dark_theme`: Verified luminance-based theme detection.
   - `test_badge_colors`: Verified pastel foreground and background pairs for all 6 change types.
   - `test_diff_widget_theme_switching`: Verified HTML diff rendering and container styling in light and dark modes.
-  - `test_repo_combo_stylesheet_and_file_item_badge`: Verified `repo_combo` text color and badge styling.
+  - `test_repo_combo_stylesheet_and_file_item_badge`: Verified mode-isolated theme styling — dark mode untouched native `commit_btn` (`setStyleSheet("")`) and `palette(window-text)` on `repo_combo`; light mode explicit `#4c4f69` on `repo_combo` and Sapphire `#1e66f5` / `#ffffff` / `#7c7f93` on `commit_btn`, plus badge styling across modes.
   - `test_main_window_theme_menu_and_persistence`: Verified `View → Theme` menu actions and SQLite persistence.
   - `test_tab_button_and_container_theme_refresh`: Verified tab button active and inactive text color updates.
   - `test_changes_tab_palette_propagation`: Verified recursive palette propagation down to `files_list` and `commit_desc_input`.

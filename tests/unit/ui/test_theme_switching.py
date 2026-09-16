@@ -35,8 +35,8 @@ def test_pastel_palettes():
     assert light_pal.windowText().color().name().lower() == "#4c4f69"
 
     dark_pal = create_pastel_dark_palette()
-    assert dark_pal.window().color().name().lower() == "#1e1e2e"
-    assert dark_pal.base().color().name().lower() == "#181825"
+    assert dark_pal.window().color().name().lower() == "#181825"
+    assert dark_pal.base().color().name().lower() == "#11111b"
     assert dark_pal.windowText().color().name().lower() == "#cdd6f4"
 
 
@@ -118,7 +118,7 @@ def test_diff_widget_theme_switching():
     assert "#a6e3a1" in html_dark  # dark pastel green add text
     assert "#3b1d28" in html_dark  # dark pastel red del bg
     assert "#f38ba8" in html_dark  # dark pastel red del text
-    assert "#181825" in widget.editor.styleSheet()
+    assert "#11111b" in widget.editor.styleSheet()
 
     # 3. Simulate PaletteChange event
     widget.setPalette(create_pastel_light_palette())
@@ -133,9 +133,22 @@ def test_repo_combo_stylesheet_and_file_item_badge():
     run_migrations(conn)
 
     tab = ChangesTab(conn=conn)
-    sheet = tab.repo_combo.styleSheet()
-    assert "color: palette(window-text);" in sheet
-    assert "QComboBox QAbstractItemView" in sheet
+
+    # 1. Dark mode: untouched native button and original dark combo stylesheet
+    tab.setPalette(create_pastel_dark_palette())
+    tab.refresh_theme()
+    assert "color: palette(window-text);" in tab.repo_combo.styleSheet()
+    assert "QComboBox QAbstractItemView" in tab.repo_combo.styleSheet()
+    assert tab.commit_btn.styleSheet() == ""  # Untouched native Qt button
+
+    # 2. Light mode: readable dark text on combo and sapphire commit button
+    tab.setPalette(create_pastel_light_palette())
+    tab.refresh_theme()
+    assert "#4c4f69" in tab.repo_combo.styleSheet()
+    assert "QComboBox QAbstractItemView" in tab.repo_combo.styleSheet()
+    assert "#1e66f5" in tab.commit_btn.styleSheet()
+    assert "#ffffff" in tab.commit_btn.styleSheet()
+    assert "#7c7f93" in tab.commit_btn.styleSheet()
 
     # Badge style in light vs dark
     item_widget = FileListItemWidget("test.txt", "M")
@@ -208,8 +221,8 @@ def test_changes_tab_palette_propagation():
     # 1. Switch to Dark
     win._set_theme("dark")
     assert is_dark_theme(win.changes_tab) is True
-    assert win.changes_tab.files_list.palette().base().color().name().lower() == "#181825"
-    assert win.changes_tab.commit_desc_input.palette().base().color().name().lower() == "#181825"
+    assert win.changes_tab.files_list.palette().base().color().name().lower() == "#11111b"
+    assert win.changes_tab.commit_desc_input.palette().base().color().name().lower() == "#11111b"
 
     # 2. Switch to Light
     win._set_theme("light")

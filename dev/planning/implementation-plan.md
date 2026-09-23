@@ -65,6 +65,22 @@ Stop and report exactly which numbered step you're on, what you tried, and what 
 
 ---
 
+### 0.5 Executor failure-mode guardrails (mandatory for stepwise/automated execution)
+
+The phases below assume a rigorous executor; these rules defend against the mistakes a rushed or weak executor reliably makes. They apply to **every** phase:
+
+1. **Read the referenced interface sections before writing any code.** When a step cites §4.x or ui-planning §6.x, open and read that section FIRST — never write code from a one-line summary of an interface. The signatures in §4 are the contract; deviating from them breaks every other phase that imports them.
+2. **Never invent paths, symbols, or dependencies.** If a needed function/class/file isn't named in §3/§4 or the step text, STOP and add an entry to §11 (Open Decisions Log) describing the gap — "the plan didn't say" means pause, not improvise.
+3. **Stubs are not completion.** A step that ends in `raise NotImplementedError` or `pass` is not done. A step is done when its per-step **gate** (each phase carries one) passes on a real run.
+4. **Never weaken a failure to make a test pass.** Deleting an assertion, broadening an `except`, or loosening a timeout to get green hides a bug; it completes nothing. Fix the cause or stop.
+5. **Never swallow exceptions.** No bare `except:`; no `except Exception: pass` without a specific, logged justification in a comment. UI surfaces the typed exceptions from `core/exceptions.py`/`forge/exceptions.py` — it never invents a new error string for a situation core already classified.
+6. **Run the gates, actually.** `bin/wrench-ci-check` (format + lint + tests) must be green at the end of **every numbered step**, not just phase end. A broken intermediate state that "will be fixed later" compounds.
+7. **Do not touch what the step doesn't name.** No drive-by refactors, no reformatting unrelated files, no "while I'm here" fixes — each silently invalidates verification earlier phases already passed. Note observations in §11 instead.
+8. **Completed `dev/planning/phase-*.md` summaries are historical records.** Never edit them to match new work; drift is reconciled only in this plan's §4/§5 and SRS §3 (Phase 7's reconcile item).
+9. **No new runtime dependencies** beyond §2 and `pyproject.toml` as it stands at the phase's start. If a step seems to require one, that's a stop-and-flag, not an install.
+
+---
+
 ## 1. Architecture Overview
 
 ```
@@ -148,6 +164,7 @@ wrench/
 │   │   ├── ssh_agent.py           # FR-11.3: isolates $SSH_AUTH_SOCK access, §4.7
 │   │   ├── git_credential_helper.py # §5 Phase 3: git credential helper entrypoint (git-credential-wrench)
 │   │   ├── lfs.py                 # FR-6.1: LFS detect/track/pull/push + pointer-file detection (§5 Phase 5)
+│   │   ├── discovery.py           # FR-1.12: bounded multi-repo directory scan (§5 Phase 4.5)
 │   │   ├── submodules.py          # FR-6.2: submodule list/status/init/update/add (§5 Phase 5)
 │   │   └── exceptions.py          # WrenchGitError and subclasses
 │   ├── forge/
@@ -206,7 +223,8 @@ wrench/
 │   │   │   ├── reflog_dialog.py    # Reflog history & restore dialog (FR-1.10, ui-planning §6.7)
 │   │   │   ├── remotes_dialog.py   # Manage remotes configuration dialog (FR-4.4, ui-planning §6.8)
 │   │   │   ├── backup_dialog.py    # On-demand backup & restore dialogs (FR-8.1-8.4, ui-planning §6.9)
-│   │   │   └── submodule_dialog.py # FR-6.2: add-submodule dialog (§5 Phase 5 step 3)
+│   │   │   ├── submodule_dialog.py # FR-6.2: add-submodule dialog (§5 Phase 5 step 3)
+│   │   │   └── discover_repos_dialog.py # FR-1.12: multi-repo discovery results (§5 Phase 4.5, ui-planning §6.10)
 │   │   ├── diff_view/              # FR-2.1 (re-parented into changes_tab in Phase 1.5)
 │   │   ├── commit_graph/           # FR-2.2/2.3 (plugs into history_tab's graph slot in Phase 2)
 │   │   │   ├── graph_widget.py     # custom QPainter commit graph + accessible tree fallback
@@ -572,7 +590,11 @@ class LogFilter:
     # matching is plain case-insensitive substring search, not regex — see §5 Phase 2 step 2
 
 def init_repo(path: Path) -> None: ...
-def clone_repo(url: str, dest: Path, *, progress_cb: "ProgressCallback | None" = None) -> "CloneResult": ...
+def clone_repo(url: str, dest: Path, *, recursive: bool = False,
+               progress_cb: "ProgressCallback | None" = None) -> "CloneResult": ...
+    # `recursive=True` passes `git clone --recurse-submodules` — back-end of the
+    # clone dialog's "Clone recursively" checkbox (ui-planning §6.2). The flag is a
+    # no-op on repos without submodules, so no capability pre-check is needed.
     # Phase 3 (§5 Phase 3 steps 2–3): clones into tempfile.mkdtemp() first, moves to
     # `dest` only on success, and writes the credential helper config into the new
     # repo (§5 Phase 3 steps 2a–2b apply — every repo that enters the app gets this
@@ -679,6 +701,55 @@ def rebase_continue(repo: "RepoHandle") -> None: ...   # run_git(["rebase", "--c
                                                        # non-zero exit means another conflict —
                                                        # NOT an exception (§5 Phase 2 step 5)
 def rebase_abort(repo: "RepoHandle") -> None: ...      # run_git(["rebase", "--abort"])
+
+# --- Phase 4.5 surface (multi-repo directory discovery; implementation in
+#     core/discovery.py, engine.py re-exports — the UI still imports only the
+#     façade, §1) ---
+
+def discover_repos(root: Path, *, max_depth: int = 3,
+                   cancel_event: "threading.Event | None" = None,
+                   on_progress: "Callable[[int], None] | None" = None) -> list[Path]: ...
+    # Bounded walk under `root` — full rules and edge cases in §5 Phase 4.5
+    # step 1: dot-dirs skipped, symlinks never followed, prune at repo roots,
+    # `.git` as file-or-directory counts (worktrees), permission errors skipped,
+    # cancellable between directory visits, results resolved + sorted.
+    # Pure os/pathlib — never shells out to git. Bare repos: documented non-goal.
+
+# --- Phase 5 surface (LFS & submodules; implementations in core/lfs.py and
+#     core/submodules.py; engine.py delegates so the UI keeps importing only the
+#     façade. Submodule/SubmoduleStatus dataclasses are defined above.) ---
+
+def list_submodules(repo: "RepoHandle") -> list[Submodule]: ...
+    # read-only, pygit2-backed: path, url, initialized (via repo.listall_submodules)
+def submodule_status(repo: "RepoHandle", path: str) -> SubmoduleStatus: ...
+    # per-submodule dirty/current-commit probe for the Changes tab badge
+def init_submodules(repo: "RepoHandle") -> None: ...    # long I/O — only via
+    # run_in_background (§4.8); run_git(["submodule", "update", "--init", "--recursive"])
+def update_submodules(repo: "RepoHandle") -> None: ...  # same threading treatment;
+    # run_git(["submodule", "update", "--recursive"])
+def add_submodule(repo: "RepoHandle", url: str, path: str) -> None: ...
+    # run_git(["submodule", "add", url, path]) — writes, so credential-helper config
+    # must already be present on the repo (Phase 3 guarantees it at add/open time)
+def lfs_available() -> bool: ...
+    # one `git lfs version` probe, cached for the process lifetime — the UI's
+    # "git-lfs missing" state; a failed probe means track/pull/push raise
+    # LfsUnavailableError instead of a bare "git: 'lfs' is not a git command"
+def lfs_files(repo: "RepoHandle", paths: list[str]) -> set[str]: ...
+    # which of `paths` are LFS-tracked, via `git check-attr filter -- <paths>` —
+    # matching .gitattributes patterns in Python is a losing game (dir rules,
+    # negations); one batched subprocess per Changes-tab refresh, not per row
+def is_lfs_pointer(content: str) -> bool: ...
+    # text begins with "version https://git-lfs.github.com/spec/v1" — the rendering
+    # check for "file is an LFS pointer, not real content" in the diff view.
+    # Match the complete header line, not a bare "version " prefix — a real file
+    # that happens to start with that word must not false-positive
+def parse_lfs_pointer(content: str) -> tuple[str, str] | None: ...
+    # (oid, size) parsed from a pointer body ("oid sha256:<hex>" / "size <n>");
+    # None if not a pointer — the diff view shows the two OIDs per ui-planning
+    # §6.3 ("pointer changed: old → new")
+def lfs_track(repo: "RepoHandle", pattern: str) -> None: ...  # git lfs track
+def lfs_pull(repo: "RepoHandle") -> None: ...                 # long I/O — background
+def lfs_push(repo: "RepoHandle") -> None: ...                 # long I/O — background
 ```
 
 #### 4.1.A `core/exceptions.py` — Phase 3 additions (exact definitions)
@@ -732,6 +803,15 @@ class CLITimeoutError(GitCommandError):
     timeout table, not the generic 30s default). Distinct from a network
     failure: the process may still be alive server-side, so this message must
     not pretend to know the remote state."""
+
+class LfsUnavailableError(WrenchGitError):
+    """Any `git lfs ...` operation while the git-lfs extension is absent: the
+    §4.1 `lfs_available()` probe already returned False and a UI surface called
+    an LFS op anyway (a UI bug — the menu should be disabled), or git-lfs
+    genuinely vanished mid-session. Carries no fields; the message is fixed,
+    actionable guidance ('install the git-lfs package' on host checkouts; on
+    packaged builds it's a bundle bug — Phase 6 bundles git-lfs, so report it).
+    git's own "'lfs' is not a git command" stderr must never reach the user raw."""
 ```
 
 `RepoHandle` wraps a `pygit2.Repository` for reads and the repo's filesystem `Path` for subprocess calls. It is created once per opened repo and cached by `ui/main_window.py`; never re-open a repo per operation.
@@ -1300,7 +1380,7 @@ def run_in_background(
 ```
 
 **Which calls need this, which don't:**
-- **Always background**: `clone_repo`, `push`, `pull`, `fetch`, `merge`, `rebase` — all subprocess-based, all can run long. Never call these synchronously from a slot.
+- **Always background**: `clone_repo`, `push`, `pull`, `fetch`, `merge`, `rebase` — all subprocess-based, all can run long. Never call these synchronously from a slot. Phase 5 adds four more to this list — `init_submodules`, `update_submodules`, `lfs_pull`, `lfs_push` — for the same reason (network or bulk-disk I/O of unbounded duration); their §4.1 signatures carry the reminder inline. Phase 4.5's `discover_repos` joins the list too — a directory walk under a `$HOME`-scale tree is unbounded filesystem I/O.
 - **Synchronous is fine by default**: `get_status`, `get_diff`, `blame` on typical repos — these complete well within the NFR's 200ms budget and a worker-thread round-trip would add more latency than it saves for the common case.
 - **The exception that proves the rule**: `get_log` on a 100k+-commit repo (the same repo size the commit-graph NFR explicitly targets) can itself take long enough to matter. `ui/commit_graph/`'s initial load calls `get_log` through `run_in_background` too, not synchronously — the one read-path operation this applies to.
 
@@ -1695,6 +1775,18 @@ Each phase should be independently shippable/testable — don't let phases bleed
 ### Phase 4 — Forge Integration Layer
 **Prerequisites:** Phase 3's acceptance check passed (push/pull/fetch working with Secret-Service-backed credentials, at least over plain ssh-agent and HTTPS).
 
+**Executor guardrails (phase-specific §0.5 enforcement):**
+- READ FIRST, in order, before writing any code: §4.3 + §4.3.A (interface & exception hierarchy — verbatim contracts), §4.4 (registry + entry-points), §3.1 (`forge_accounts`/`repo_forge_links` columns, incl. `tls_ca_bundle_path`/`tls_insecure`), §5 Phase 3 step 2 (the credential helper's account-matching order you integrate with), §4.8 (ALL adapter HTTP runs inside `run_in_background`, never the GUI thread).
+- DO NOT: use `requests` or any provider SDK (PyGithub, python-gitlab, …) — `httpx` is the only client and every adapter call goes through `ForgeAdapter._request`; store tokens anywhere but `credentials.get_backend().store_secret(...)` under the `wrench:forge:{id}` key — no tokens in SQLite, fixtures, logs, or tests; hand-invent provider endpoints or pagination beyond step 5's listed shapes — if a needed endpoint isn't listed, STOP and add a §11 question instead of guessing; create fixture JSON from memory — copy provider docs' example payloads and comment the source URL.
+- Per-step gates (do not proceed until green):
+  1. Steps 1+2: `pytest tests/unit/forge/test_models.py tests/unit/forge/test_capability.py -x -q` green (create these exact paths; add them to §3's tree in the same commit); `python -c "from wrench.forge.exceptions import ForgeError, ForgeAuthenticationError, ForgeInsufficientScopeError, ForgeRateLimitedError, ForgeUnreachableError"` and `python -c "from wrench.forge.capability import ForgeAdapter, ForgeCapability"` both exit 0.
+  2. Step 3 (registry): `pip install -e .` FIRST — entry points only resolve on an installed package, and a forgotten re-install is the classic silent cause of "discovery returns nothing"; then `pytest tests/unit/forge/test_registry.py -x -q` green.
+  3. Step 4 (storage): `pytest tests/unit/storage/test_forge_accounts.py -x -q` green, **including the rollback path** (secret-store failure deletes the row) — never assert only the happy path here.
+  4. Step 5 (adapters): `pytest tests/unit/forge/adapters/ -x -q` green; every row of step 5's 10-item matrix maps to at least one named test — a matrix row without a test means the step is not done.
+  5. Step 6 (UI tabs): `pytest tests/ui/ -x -q` green; confirm zero synchronous HTTP on the GUI thread (debug log shows adapter calls only inside worker threads).
+  6. Step 7 (accounts dialog): invalid token → error WITHOUT persisting; valid token → row + keyring entry both exist (verify via re-auth or `secret-tool lookup`).
+  7. Step 8: `bin/wrench-ci-check` green on a **clean clone** into a temp dir — editable-install drift hides entry-point mistakes.
+
 **Step 0 — repo-state reconciliation (verified against the tree at Phase 3 completion; per Phase 3's precedent, corrections here beat greenfield assumptions):**
    - `forge/` exists with `models.py`, `capability.py`, `registry.py`, and `adapters/{github,gitlab,forgejo,bitbucket}.py` — **all stubs raising `NotImplementedError`**. The class names and module paths are already correct per §3; this phase fills bodies, not files. There is **no `forge/exceptions.py`** — step 1 creates it per §4.3.A.
    - `pyproject.toml` **already** registers all four adapters under `[project.entry-points."wrench.forge_adapters"]` (§4.4) — step 3 only verifies; do not re-add duplicate entries.
@@ -1775,27 +1867,133 @@ Each phase should be independently shippable/testable — don't let phases bleed
    - **Failure-path QA** (do not skip — these are the dialogs hours-of-debugging turned into): revoke one account's token at the provider, trigger a forge tab load → the 401 banner offers re-entry, replace the token, retry → works; firewall-block one instance's host (`iptables` or a hosts-file blackhole) → `ForgeUnreachableError` banner with actionable text; paste a deliberately-under-scoped token (e.g. GitHub `public_repo` on a private repo) → 403 banner names the missing scope; revoke the Secret Service daemon (`killall gnome-keyring-daemon` on a GNOME session) mid-session → add-account fails cleanly with the no-row-orphan behavior from step 4, existing accounts that were already running keep working until the next secret read.
    - **Documentation gate**: §11 items 13 and 14 are resolved (per-account TLS policy; in-app review actions) — this gate is now a *confirmation* checklist: review the three TLS-policy UI texts (CA-bundle picker label, insecure-mode warning, self-signed failure hint) against what's written in step 7, and confirm the review action flows (approve/request-changes/comment on a test PR per provider, plus the GitLab grayed-button case) behaving as step 5's adapter notes describe — sign-off requires both, since these were the two items that reshaped this phase's scope.
 
+### Phase 4.5 — Multi-Repository Directory Discovery
+**Prerequisites:** Phase 4's acceptance check passed. Inserted with the Phase 1.5 X.5 convention so no later phase number (and no existing §8.1/§12 cross-reference) moves. Delivers SRS FR-1.12.
+
+**Executor guardrails (phase-specific §0.5 enforcement):**
+- READ FIRST: §4.1's "Phase 4.5 surface" signature; ui-planning §6.10; the existing `mark_missing`/`add_repo`/`get_repo_by_path` in `storage/repo_registry.py` (copy their shape for `clear_missing` — same lock, same key handling, only the written value differs); `main_window._on_open_repo` as it exists NOW (the is-a-repo fast path stays byte-identical).
+- DO NOT: pass `followlinks=True` (symlink cycles); descend into dot-directories or `.git`; register submodule worktrees (they carry a `.git` file — the prune-at-repo-root rule keeps them out); scan at startup or on a timer (user-picked, one-shot only); add a bare-repo heuristic (documented non-goal); write to SQLite from the scan thread (scan in background, register on the GUI thread after Accept — keeps the Phase 1.5 session engine's invariants intact).
+- Step 1's walk skeleton — transcribe this shape; the two `dirnames[:]` mutations ARE the correctness story:
+
+  ```python
+  for dirpath, dirnames, _files in os.walk(root, followlinks=False,
+                                           onerror=lambda e: skipped.append(e)):
+      if cancel_event is not None and cancel_event.is_set():
+          break
+      current = Path(dirpath)
+      if (current / ".git").exists():        # file OR directory (worktree)
+          found.add(current.resolve())
+          dirnames[:] = []                   # never descend into a repo root
+          if on_progress:
+              on_progress(len(found))
+          continue
+      depth = len(current.relative_to(root).parts)
+      dirnames[:] = [d for d in dirnames
+                     if not d.startswith(".")     # hides .git itself too
+                     and not (current / d).is_symlink()
+                     and depth < max_depth]
+  return sorted(found)
+  ```
+- Per-step gates: 1) `pytest tests/unit/core/test_discovery.py -x -q` covering every `make_repo_forest` case (symlink cycle terminates, chmod-000 skipped, submodule not discovered, `.git`-file worktree discovered); 2) `pytest tests/unit/storage/test_repo_registry.py -x -q` with the `clear_missing` round-trip; 3) `pytest tests/ui/ -x -q -k discover` green, plus a manual File ▸ Open run on a throwaway two-repo fixture dir before moving on.
+
+**Step 0 — repo-state reconciliation (verified against the tree at Phase 4 completion):**
+   - `main_window._on_open_repo` is the single entry point for adding a repo directory (the Changes tab's `open_repo_dialog_requested` signal routes into it). Today it does: `QFileDialog.getExistingDirectory` → `engine.open_repo(dir_path)` → `repo_registry.add_repo(...)`; a picked directory that isn't a git repo raises `WrenchRepoNotFoundError` out of `open_repo` and surfaces as an error dialog. This phase turns that dead end into the discovery branch; the is-a-repo fast path stays byte-identical.
+   - `storage/repo_registry.py` already provides `add_repo` / `get_repo_by_path` / `mark_missing` / `relocate_repo`. **No bulk helper is added** — the dialog loops `add_repo` under the module lock §4.8 requires — but there is currently no way to un-flag a missing repo: step 2 adds `clear_missing`, the mirror of `mark_missing`, for the "discovery re-found a registered-but-missing path" case.
+   - The Changes-tab repo selector already repopulates from `list_repos()` (Phase 1.5) — newly registered repos need only a refresh call, no selector code changes.
+   - FR-1.2 ("registry independent of filesystem scanning") stays intact: discovery is a one-shot, user-initiated scan of a directory the user just picked — registration input, not passive background crawling. No watcher, no startup scan, no periodic re-scan.
+   - `core/discovery.py` and `ui/dialogs/discover_repos_dialog.py` do not exist — this phase creates both at their §3 paths; the dialog is specified in ui-planning §6.10.
+
+1. `core/discovery.py` — implement `discover_repos` exactly as §4.1 declares it (engine-façade re-exported). Walk rules, each unit-tested in step 4: depth cap 3 under the picked root; dot-directories skipped (and `.git` itself is never descended into); symlinks never followed — cycle-proof by construction; a directory containing `.git` **as file or directory** (worktrees and submodules use the file form) is yielded and then pruned — repo roots are never descended into, which makes submodule worktrees unreachable and nested worktree internals invisible; `PermissionError`/`OSError` on any directory is skipped-and-counted (count surfaced through `on_progress`), never aborts the scan; `cancel_event` checked between directory visits so cancelling even a `$HOME`-scale scan is prompt; results de-duplicated, `Path.resolve()`-canonicalized (matching registry path semantics), and sorted. Pure `os`/`pathlib` — no git subprocesses; `.git` existence is cheap on cold filesystem caches. Bare repositories are a documented **non-goal** (module docstring) — no `.git` marker to key on.
+2. `storage/repo_registry.py` — add `clear_missing(conn, path_or_id) -> None` (mirror of `mark_missing`; sets `is_missing = 0`). Registration semantics the dialog applies per checked path: resolve-canonicalize; `get_repo_by_path` hit with `is_missing=1` → `clear_missing` (re-home by rediscovery); hit without missing → skip silently (idempotent re-add); miss → `add_repo(conn, path, Path(path).name)`.
+3. UI — extend `_on_open_repo` and create `ui/dialogs/discover_repos_dialog.py` per ui-planning §6.10: after the folder pick, run the existing fast path unchanged; on `WrenchRepoNotFoundError` from `open_repo`, branch into discovery — background `discover_repos` per §4.8 (returned thread retained per its GC warning, Cancel wired to `cancel_event`), dialog shows a spinner plus a running "Found N repositories so far…" counter from `on_progress`. Outcomes per §6.10: N ≥ 1 → checkable list (all checked by default) → Accept applies step 2's semantics, refreshes the repo selector, and posts the status-bar summary ("Added N repositories (M already known)"); N = 0 → a plain message naming the searched depth, no dialog. All strings `tr()`-wrapped; icon-only controls carry accessible names.
+4. Tests & **acceptance check**: `tests/fixtures/git_repos.py` gains `make_repo_forest(tmp_path)` — top-level repos, a one-level container dir of repos, a depth-cap boundary case, a dot-directory repo (skipped), a symlink cycle (walk terminates), a chmod-000 directory (skipped), a repo with an initialized submodule in its worktree (submodule NOT discovered), and a `git worktree` with a `.git` file (discovered). Unit tests cover each walk rule, the `clear_missing` round-trip, and the registration-loop dedup/missing-restore semantics. UI test: the dialog over a monkeypatched `discover_repos` (populate → uncheck one → accept → assert the registry calls), plus an assertion that `_on_open_repo`'s is-a-repo fast path is unchanged. **Acceptance check**: `bin/wrench-ci-check` green; manual QA — File ▸ Open on a real multi-repo directory (e.g. `~/Projects`) finds every repo including nested one-level containers and worktrees, all appear in the Changes-tab selector and switch correctly, and re-opening the same parent is a clean no-op.
+
 ### Phase 5 — LFS & Submodules
-**Prerequisites:** Phase 4's acceptance check passed (all four forge adapters' integration tests green).
-1. FR-6.1: `core/lfs.py` — on `open_repo`, check for a `.gitattributes` entry containing `filter=lfs` to detect LFS-tracked repos; wrap `git lfs pull` / `git lfs push` / `git lfs track <pattern>` via `run_git` (LFS is a real git subcommand once the `git-lfs` extension is installed, not a separate binary invocation — but the extension itself must be present on the system/in the Flatpak bundle, see §6.2). Before any LFS operation, run `run_git(["lfs", "version"])` and surface a clear, specific error ("Git LFS isn't installed") if that fails, rather than letting a missing-subcommand git error ("git: 'lfs' is not a git command") reach the user unexplained. In `get_status`/`get_diff` (§4's read path), LFS-tracked files that haven't been pulled show as small text pointer files at the git-object level — detect this (pointer files start with `version https://git-lfs.github.com/spec/v1`) and render them in the diff view as "LFS file, not downloaded" rather than showing the pointer file's literal text content as if it were the real file.
-2. FR-6.2: `core/submodules.py` — `list_submodules(repo) -> list[Submodule]` and `submodule_status(repo, path) -> SubmoduleStatus` via `pygit2.Repository.submodules` (reads: path, url, current commit, whether initialized); `init_submodules(repo)` (`run_git(["submodule", "update", "--init", "--recursive"])`), `update_submodules(repo)` (`run_git(["submodule", "update", "--recursive"])`), `add_submodule(repo, url, path)` (`run_git(["submodule", "add", url, path])`) — writes go through `run_git`, consistent with the read/write split in §1, since submodule operations have the same "trust git's own tested behavior" rationale as merge/rebase. **Credential limitation**: a submodule is never itself a row in the `repos` table, so it has no `repo_forge_links` entry of its own — if a submodule's remote host matches multiple configured accounts, the credential helper's "exactly one account per host" fallback (§5 Phase 3 step 2) can't disambiguate for it the way it can for a top-level linked repo, and falls through to "not found" like any other ambiguous case. This is a known v1 gap, not a bug to chase down: surface it in documentation rather than building submodule-specific account linking, which the multi-account UI (§5 Phase 4 step 7) doesn't currently support at that granularity.
-3. **Acceptance check**: unit tests against a fixture repo containing both a submodule and an LFS-tracked binary file (a small fixture image is enough — the point is exercising the pointer-file-detection path, not testing with a large file); manual QA on a real-world repo with both, confirming submodule status displays correctly uninitialized vs initialized, and an un-pulled LFS file renders as "not downloaded" rather than garbled pointer text.
+**Prerequisites:** Phase 4.5's acceptance check passed (discovery suite green; manual multi-repo QA done).
+
+**Executor guardrails (phase-specific §0.5 enforcement):**
+- READ FIRST: §4.1's Phase-5 surface block (fixed signatures), §4.1.A (`LfsUnavailableError`), §4.2 (`run_git` env/timeout conventions — every LFS/submodule subprocess goes through it, never a raw `subprocess` call), §4.8 (the four long ops are background-only), ui-planning §6.3 (badge/diff rendering contract).
+- DO NOT: look for a `git-lfs` pip package (it's a system binary; absence is a normal, handled state — never an import error); shell out to git-lfs as anything but `run_git(repo.path, ["lfs", ...])`; hand-parse `.gitattributes` globs in Python (batched `git check-attr -z` only); hand-write `.gitattributes` lines (that's `git lfs track`'s job — the commit stays the user's act); modify the §4.1 `Diff`/`RepoStatus` dataclasses to carry badge state (badges are computed in the Changes tab per refresh); install LFS filters with `--global` (the Flatpak HOME trap — §8.1); persist `-c protocol.file.allow=always` into repo config (per-invocation only, behind the confirmation dialog).
+- Per-step gates: 1) `pytest tests/unit/test_lfs.py -x -q` green INCLUDING skipif-marked rows when git-lfs is absent (skips reported, zero failures); 2) `pytest tests/unit/test_submodules.py -x -q` green, incl. uninitialized-never-raises and `.git`-file/submodule-skip cases; 3) `pytest tests/ui/ -x -q -k "lfs or submodule"` green, plus a manual badge/diff check against ui-planning §6.3's mockups; 4) full `bin/wrench-ci-check` green with git-lfs present AND again with it unavailable — the degraded path is part of the spec.
+
+**Step 0 — repo-state reconciliation (verified against the tree at Phase 4 completion):**
+   - `core/lfs.py` and `core/submodules.py` **do not exist** — this phase creates both at their §3 paths. Implementations live in those modules; `core/engine.py` re-exports them through the façade signatures §4.1 already declares (the "Phase 5 surface" block), so the UI keeps importing only the façade (§1's dependency rule).
+   - The `Submodule`/`SubmoduleStatus` dataclasses **already exist** in §4.1 (written with the Phase 1 dataclasses) — reuse them verbatim; do not redefine or extend.
+   - `LfsUnavailableError` is specified in §4.1.A alongside the other Phase 3+ exceptions — implement against it; if it isn't in `core/exceptions.py` yet, add it exactly as §4.1.A says, as part of this phase.
+   - §4.1's `clone_repo` already declares `recursive: bool = False` (back-end of the clone dialog's "Clone recursively" checkbox, ui-planning §6.2), but the Phase 3 implementation was written before the flag existed — verify and, if missing, add the `--recurse-submodules` pass-through here; don't ship a checkbox that does nothing.
+   - `ui-planning.md §6.3` is the authoritative spec for the Changes-tab indicators (LFS badge, submodule badge, pointer-OID diff rendering) and explicitly defers the *full management UI* to this phase — step 3 owns it. `ui/dialogs/submodule_dialog.py` is in the §3 tree listing but does not exist on disk yet.
+   - git-lfs is a **binary dependency, not a pip package** — dev machines and CI may or may not have it installed. Every part of this phase degrades gracefully without it (step 4's suite runs in both states); the packaged app bundles it (Phase 6 step 1).
+
+1. FR-6.1 — `core/lfs.py`, function by function:
+   - `lfs_available() -> bool`: one `run_git(["lfs", "version"])` probe, result cached in a module-level `bool | None` for the process lifetime. `run_git` (§4.2) requires a cwd path — the probe is cwd-independent, so pass the app data dir (§4.7 paths), never a repo path: the UI needs this answer with no repo open. Note `["lfs", "version"]` is a git *subcommand* through the normal `run_git` entry point — git-lfs is an extension git dispatches to, not a separately-invoked binary.
+   - A module-private `_require_lfs()` guard at the top of `lfs_track`/`lfs_pull`/`lfs_push` raises `LfsUnavailableError` (§4.1.A) when the probe is False. The normal path to this exception is "a UI surface called an op it should have disabled" (a bug) or git-lfs vanishing mid-session — so its message must stand alone, per §4.1.A's guidance text.
+   - `lfs_files(repo, paths) -> set[str]`: one batched `run_git(repo.path, ["check-attr", "-z", "filter", "--", *paths])` per call, parsed for `filter: lfs` entries. Per the §4.1 comment: reproducing `.gitattributes` glob semantics (dir rules, negations) in Python is a losing game, and this is one subprocess per Changes-tab refresh, not per row.
+   - `is_lfs_pointer` / `parse_lfs_pointer`: exactly per §4.1 — `parse_lfs_pointer` extracts the `oid sha256:<hex>` and `size <n>` lines; the diff view (step 3) consumes both.
+   - `lfs_track(repo, pattern)`: `run_git(repo.path, ["lfs", "track", pattern])` — git-lfs writes the `.gitattributes` line itself; committing that change stays the user's explicit act (the file simply appears in the Changes tab, which is correct and expected).
+   - `lfs_pull(repo)`: `run_git(repo.path, ["lfs", "pull"], timeout=600)` — a network op, so §4.2's network timeout applies, not the 30s default. `lfs_push(repo)`: resolve the current branch shorthand via pygit2, then `run_git(repo.path, ["lfs", "push", <remote>, <branch>], timeout=600)` — this exists as the repair surface for a failed LFS upload; the *normal* path needs nothing from us, because `push` (Phase 3) already uploads LFS objects through git-lfs's pre-push hook whenever filters are installed. Don't build UI that duplicates the normal path.
+   - **Per-repo filter install on open**: extend the façade's `open_repo` so that after a successful open, if the repo-root `.gitattributes` contains `filter=lfs` and `lfs_available()`, it runs `lfs install --local` via `run_git` — logging and continuing (never raising) if it fails. The code comment must carry the rationale: git-lfs only hooks pull/checkout where its clean/smudge filters are configured, and the common `git lfs install --global` writes to `~/.gitconfig`, **which the Flatpak sandbox never sees** (sandboxed HOME). Per-repo `--local` is the only mechanism that behaves identically across host install, Flatpak, and AppImage.
+2. FR-6.2 — `core/submodules.py`:
+   - `list_submodules(repo)`: pygit2's `repo.listall_submodules()` → `list[Submodule]` (path, url, initialized — pygit2 reports the last directly).
+   - `submodule_status(repo, path)`: current commit via the submodule's head oid; `is_dirty` by opening the submodule path as its own `pygit2.Repository` and consulting `.status()`. **An uninitialized submodule has no workdir to open — return `initialized=False, is_dirty=False` rather than raising**; both the Changes-tab badge and the dialog depend on this never throwing.
+   - `init_submodules` / `update_submodules` / `add_submodule`: the exact `run_git` command lines sit in the §4.1 signatures — writes go through `run_git`, consistent with the §1 read/write split and the merge/rebase precedent ("trust git's own tested behavior"). `add_submodule` additionally needs the repo's credential helper configured (Phase 3 guarantees this at add/open time) since it fetches.
+   - **`file://` transport policy (a tested, UI-visible edge)**: git's default `protocol.file.allow=user` permits a user-typed `git clone file://...` but **blocks** the child fetch inside `git submodule update` for `file://` URLs ("transport 'file' not allowed"). The app's response: on that specific stderr, show a confirmation dialog ("This submodule points at a local path — allow fetching from local storage?") and retry the operation once with `-c protocol.file.allow=always` scoped to that invocation. Never persist this into user-repo config — per-invocation scoping keeps git's transport hardening intact everywhere else. Test fixtures (step 4) pass the override unconditionally; fixture repos are local by construction.
+   - **LFS inside submodules**: a submodule is its own repo with its own config — the parent's `lfs install --local` does not propagate into it. After a successful init/update, walk the now-initialized submodules and run the same guarded `lfs install --local` in any whose `.gitattributes` matches (same `lfs_available()` gate, same log-don't-raise rule as step 1). Skip this and LFS silently stays pointer-mode inside submodules on the Flatpak build.
+   - **Credential limitation**: a submodule is never itself a row in the `repos` table, so it has no `repo_forge_links` entry of its own — if a submodule's remote host matches multiple configured accounts, the credential helper's "exactly one account per host" fallback (§5 Phase 3 step 2) can't disambiguate for it the way it can for a top-level linked repo, and falls through to "not found" like any other ambiguous case. This is a known v1 gap, not a bug to chase down: surface it in documentation rather than building submodule-specific account linking, which the multi-account UI (§5 Phase 4 step 7) doesn't currently support at that granularity.
+3. UI surfaces — ui-planning §6.3 governs presentation; this step implements exactly it, plus the management UI that doc defers to this phase:
+   - **Changes-tab badges** (`ui/tabs/changes_tab.py`): after each `get_status` refresh, one `lfs_files(repo, changed_paths)` call and one `list_submodules(repo)` call; rows whose path is in the LFS set get the `LFS` badge, rows whose path is a submodule path get the submodule indicator (`📦` per §6.3, with `setAccessibleName("submodule")` — an icon alone announces nothing to a screen reader). Both computed **once per refresh**, never per row — §4.1's `lfs_files` is batched for exactly this.
+   - **Diff view rendering**: when either side of the diff content passes `is_lfs_pointer`, replace the raw pointer text with the §6.3 rendering — "LFS tracked file (pointer changed): `{old_oid}` → `{new_oid}`" when both sides parse as pointers, or "LFS file, not downloaded — Repository ▸ Git LFS ▸ Pull fetches it" when the working-tree side is an un-smudged pointer. Submodule rows render "Submodule {name} updated: {old_sha} → {new_sha}", parsed from the `Subproject commit ±<sha>` lines git already emits — never the raw gitlink diff.
+   - **`ui/dialogs/submodule_dialog.py`** (opened from Repository ▸ Submodules…): one row per submodule — path, url, short current-commit, status text (uninitialized / clean / dirty) — with per-row Init and Update buttons, an "Update all (recursive)" header button, and an Add section (URL + path fields → `add_submodule` → refresh the list and the Changes tab). Every operation runs via `run_in_background` (§4.8's list now covers these four), with the returned thread retained on the dialog per §4.8's GC warning, a spinner while running, and typed-exception banners on failure (including the `file://` confirmation flow from step 2).
+   - **Repository ▸ Git LFS submenu**: Track Pattern… (single-field dialog → `lfs_track`), Pull LFS Objects (`lfs_pull`), Push LFS Objects (`lfs_push`) — all background. When `lfs_available()` is False the submenu collapses to one disabled item, "Git LFS is not installed", whose tooltip explains the fix (install the distro's `git-lfs` package on host checkouts; on packaged builds it's a bundle bug to report). The Changes-tab badges keep working in this state — `git check-attr` is plain git and needs no extension.
+   - All new strings `tr()`-wrapped; every icon-only control gets `setAccessibleName` — the Phase 7 audit will grep-check these files, but they ship correct now, not as audit catch-up.
+4. Tests & **acceptance check** — fixtures land in `tests/fixtures/git_repos.py` alongside the existing helpers:
+   - `make_lfs_repo`: hand-write `.gitattributes` (`*.bin filter=lfs diff=lfs merge=lfs -text`) and a **hand-crafted pointer blob** — pointer files are plain text (`version https://git-lfs.github.com/spec/v1` + `oid sha256:<64 hex>` + `size <n>`) committed as a `*.bin` path — so pointer-detection and badge tests run with **no git-lfs installed at all**. Only the track/pull/push integration tests need the real binary; mark those `@pytest.mark.skipif(not lfs_available(), reason="git-lfs not installed")`. Both states are spec: the acceptance check runs the suite twice, once with git-lfs present and once with it removed from `PATH`.
+   - `make_submodule_repo`: a child repo, then a parent built with `git -c protocol.file.allow=always submodule add <child-path> child`, plus a fresh `file://` clone of the parent for the uninitialized-submodule case.
+   - Unit matrix: probe caching (one `run_git` call across repeated `lfs_available()` calls); `_require_lfs` raising the typed error on a failed probe; `lfs_files` NUL-separated batch parsing (mocked `run_git`); `is_lfs_pointer` edge cases (empty string, truncated header, a real file whose content merely starts with the word "version"); `parse_lfs_pointer` on valid and near-miss bodies; `submodule_status` on initialized/dirty vs uninitialized (must not raise); arg-shape assertions for the three write ops against a mocked `run_git`.
+   - **Acceptance check**: `pytest tests/unit/test_lfs.py tests/unit/test_submodules.py` green **both with and without git-lfs on `PATH`** (the skip-path is part of the spec, not an excuse); manual QA on a real-world repo with both features — init a submodule from the dialog and watch its badge flip to initialized, pull LFS content for a pointer-state file via the menu and watch real content replace the pointer render, and confirm both Changes-tab badges + diff renderings match ui-planning §6.3's mockups.
 
 ### Phase 6 — Packaging Hardening & Flathub Submission
 **Prerequisites:** Phases 1–5 complete — this phase hardens packaging, it doesn't add features.
-- Finalize Flatpak permissions per §6.1's least-privilege list: audit `finish-args` in the manifest against what's actually used in code, remove anything left over from earlier exploratory testing, and confirm each remaining permission traces back to a specific, named feature (`--socket=ssh-auth` → SSH push/pull, `--talk-name=org.freedesktop.secrets` → credential storage, the document-portal folder picker → adding repos and choosing backup destinations). A permission nobody can point to a feature for gets removed, not left "just in case."
-- AppImage build: bundle the Python interpreter, all dependencies from §2, and `git` + `git-lfs` binaries (statically linked or vendored) into the AppImage via **Briefcase** (Docker-based, glibc-compatible by construction — see §6.3 for why this replaced the earlier "`python-appimage` or PyInstaller" placeholder). Wire up update checking via `zsync`/AppImageUpdate so the app isn't a dead-end binary users have to manually redownload.
-- Write and test the three build scripts from §6.3 (`packaging/flatpak/build-flatpak.sh`, `packaging/appimage/build-appimage.sh`, `packaging/build-all.sh`): run `packaging/build-all.sh all` on a clean checkout (no pre-existing `build-dir/`, `linux/`, or `dist/`) and confirm both a `.flatpak` bundle and a `.AppImage` land in `dist/` from that one command, with nonzero exit and a clear error message if `flatpak-builder`, `briefcase`, or `docker` is missing — a build script that fails silently or half-way is worse than no script.
-- AppStream metainfo (`packaging/flatpak/io.github.uzair.Wrench.metainfo.xml`): app name/summary/description, at least 2–3 real screenshots (light and dark Plasma theme, showing the diff view and commit graph — Flathub's review process specifically checks for representative screenshots, not placeholder UI), the AGPL-3.0 `<project_license>` tag, and a `<releases>` block with at least a v1.0.0 entry once tagged. Desktop file (`io.github.uzair.Wrench.desktop`): correct `Exec=`/`Icon=`/`Categories=` (`Development;RevisionControl;`) fields — Flathub's automated checks reject manifests with mismatched app-id/desktop-file-id naming, so confirm the desktop file's basename matches the app-id exactly.
-- **Acceptance check**: `flatpak-builder-lint manifest packaging/flatpak/io.github.uzair.Wrench.yaml` passes with zero errors (not just zero *fatal* errors — treat warnings as blocking too at this stage, since Flathub reviewers will raise anything the linter flags); AppImage runs on two distros without the Flatpak runtime present (e.g. a plain Debian and a plain Arch container, confirming the AppImage's bundled dependencies are actually sufficient and nothing was silently relying on a host library that happened to be present in the dev environment).
+
+**Executor guardrails (phase-specific §0.5 enforcement):**
+- READ FIRST: §6.1 (permission list + generator rule), §6.2 (bundling scope), §6.3 (the three scripts' exact text — replace the files with it VERBATIM, don't paraphrase), and Step 0's divergence list — that IS your to-do checklist; each bullet corresponds to a required edit, and none is optional.
+- DO NOT: hand-edit `pypi-dependencies.json` after generation (regenerate it like a lockfile); keep `--device=dri` "because it was already there" (Step 0 flags it for removal); give the BUILD sandbox network access (`--share=network` belongs in runtime finish-args only — builds stay network-isolated, which is exactly why the generator exists); skip the clean-clone `build-all.sh all` run (a build that only works on your machine's leftover `build-dir/` is not a build); hardcode the `gh-releases-zsync` URL without confirming the actual owner/repo slug first; add module sources without pinned version + sha256; declare victory before `flatpak-builder-lint` reports zero warnings on BOTH manifest and appstream.
+- Per-step gates: 1) probe output recorded in the commit message; each absent binary has a module that builds cleanly; 2) `flatpak-builder-lint manifest packaging/flatpak/io.github.uzair.Wrench.yaml` exits 0 with zero warnings, and §6.1's bullets/skeleton comment updated in the SAME commit as the manifest; 3) `bash packaging/build-all.sh all` on a genuine clean clone → both artifacts in `dist/`; re-run with each tool missing → named nonzero failures; 4) `briefcase create/build/package` succeed from a fresh venv after `pip install -e ".[dev]"`; 5) `flatpak-builder-lint appstream packaging/flatpak/io.github.uzair.Wrench.metainfo.xml` zero warnings; 6) every acceptance bullet leaves a recorded artifact (install log, HTTPS+SSH push transcripts, two container runs) — "worked on my machine" is not a gate.
+
+**Step 0 — repo-state reconciliation (verified against the tree at Phase 5 completion):** the `packaging/` files exist but are Phase-0 stubs, and the Flatpak manifest in particular has diverged from §6.1 in ways that would make the installed app **non-functional**, not merely unpolished:
+   - `packaging/flatpak/io.github.uzair.Wrench.yaml` finish-args: **missing `--share=network`** (every Phase 3 push/pull/fetch, Phase 4 forge API call, and Phase 5 LFS operation traverses the network — the sandbox would hard-fail all of them); **missing `--talk-name=org.freedesktop.secrets`** (Phase 3 credential storage — every account save/read would raise backend-unavailable); **missing `--share=ipc`** (§6.1's GUI baseline for fallback-x11). It **has `--device=dri`**, which §6.1 deliberately omits for a plain-QWidgets app. `runtime-version: '6.10'` is newer than §6.1's illustrative `'6.7'` — that was a confirmed Phase-0 value, keep it.
+   - The `python3-dependencies` module is an empty stub (`build-commands: []`) and there is **no** `pypi-dependencies.json` — as-is the bundle contains zero third-party Python packages and crashes on first import. Step 2 replaces this via §6.1's generator flow.
+   - The manifest has **no git, git-lfs, or ssh modules** — yet Wrench shells out to `git` for every write op (§4.2) and to git-lfs for Phase 5. Nothing in this document may assert what the KDE runtime ships; step 1 probes empirically and bundles whatever is absent.
+   - The three build scripts exist but diverge from §6.3: `build-flatpak.sh` does `flatpak-builder --user --install` (a local side-effect, no `dist/` artifact — §6.3's `build-bundle` flow is absent), `build-appimage.sh` lacks the idempotent create/update branch and the docker presence check, `build-all.sh` ignores its argument and lists nothing. Step 3 replaces all three with §6.3's exact text.
+   - `pyproject.toml` has no `[tool.briefcase]` section (only `briefcase` as a dev-dependency) — step 4 adds §6.3's block.
+   - `io.github.uzair.Wrench.metainfo.xml` is a stub: no screenshots, no `<releases>`, no OARS `<content_rating>`, no URLs — every one of those is individually Flathub-review-blocking. Step 5 fills it.
+
+1. **Probe the sandbox toolchain empirically — bundle from evidence, not assumption.** Build the current manifest, then `flatpak-builder --run build-dir/build packaging/flatpak/io.github.uzair.Wrench.yaml sh` and run `command -v git ssh git-lfs` inside the sandbox. Record the output in the commit message. For each binary **absent**, add a manifest module in this step:
+   - `git` — from a kernel.org release tarball (version + sha256 pinned; configure with `NO_GETTEXT=YesPlease NO_TCLTK=YesPlease`; curl + openssl enabled so HTTPS remotes work).
+   - `git-lfs` — upstream release tarballs are prebuilt near-standalone binaries (§6.2's AppImage reasoning applies identically here); declare **both** `x86_64` and `aarch64` sources gated by `only-arches`, since Flathub builds for both.
+   - `openssh` client — only if the probe found no `ssh`: `--socket=ssh-auth` grants the agent **socket**, not the `ssh` binary that git shells out to for SSH remotes.
+   Manifest comment to carry: Wrench is a shell-out-to-git app; the runtime's contents are the runtime's implementation detail, not a promise made to us.
+2. **Manifest finalization.** `finish-args` becomes exactly §6.1's list **plus `--share=network`** — and §6.1 gets updated in the same commit (add the network bullet to the permissions list, reword the skeleton's "added only once Phase 3/4 need it" comment: that phase has arrived). The audit rule stays as originally written: every remaining permission names its feature (`--socket=ssh-auth` → SSH push/pull, `--talk-name=org.freedesktop.secrets` → credential storage, document-portal picker → adding repos + backup destinations, wayland/fallback-x11/ipc → GUI baseline, network → remote ops + forge APIs), `--device=dri` is removed, and anything nobody can trace to a feature is removed, not kept "just in case." Generate `packaging/flatpak/pypi-dependencies.json` via `flatpak-pip-generator` against requirements exported from `pyproject.toml`'s `[project.dependencies]`, commit the output, and delete the empty stub module. Thereafter treat the json as a lockfile: regenerate on dependency change, never hand-edit (§6.1's rule, now actually executed).
+3. **Build scripts.** Replace all three scripts with §6.3's exact text — `build-flatpak.sh` gains the `flatpak build-bundle` → `dist/Wrench-${VERSION}.flatpak` flow, `build-appimage.sh` gains the `create`-vs-`update` branch and both tool checks, `build-all.sh` gains its argument dispatch and `dist/` listing. Re-apply `chmod +x` to all three (§6.3's executable-bit note — verify the mode survives the rewrite, since replacing file contents can reset it).
+4. **`pyproject.toml` + update mechanism.** Append §6.3's `[tool.briefcase]` block verbatim (alongside `[project]`, not replacing it), with the `version` field kept in sync with `[project.version]`. Wire AppImage updates concretely: export `UPDATE_INFORMATION="gh-releases-zsync|uzair|wrench|latest|Wrench-*x86_64.AppImage.zsync"` before `briefcase package` in `build-appimage.sh` — linuxdeploy embeds that string and AppImageUpdate gets binary-delta updates via zsync (§6.2's promise made real; confirm the exact owner/repo slug against the final GitHub remote before committing).
+5. **AppStream + desktop.** Fill `metainfo.xml`: name/summary/description; 2–3 **real** screenshots (diff view and commit graph, light and dark Plasma, captured from the actually-built app — stored under `packaging/flatpak/screenshots/` and referenced by raw-GitHub URLs, since Flathub requires fetchable URLs and rejects placeholder shots); `<project_license>AGPL-3.0-or-later</project_license>` (confirm against the actual LICENSE file, don't assume); a `<releases>` block with the v1.0.0 entry + date once tagged; an OARS `<content_rating type="oars-1.1">` (all attributes `none` — a git GUI surfaces no user-generated or network-browsed content); `<url type="homepage">` pointing at the GitHub repo. Verify the desktop file: `Categories=Development;RevisionControl;`, correct `Exec=`/`Icon=`, and basename equal to the app-id exactly (already true — Flathub's automated checks reject any mismatch).
+6. **Acceptance check** — this phase's checks are precisely what Step 0's missing permissions would have failed:
+   - `flatpak-builder-lint manifest packaging/flatpak/io.github.uzair.Wrench.yaml` **and** `flatpak-builder-lint appstream packaging/flatpak/io.github.uzair.Wrench.metainfo.xml`: zero errors *and* zero warnings (warnings block — Flathub reviewers raise anything the linter flags).
+   - From a **clean clone** (no `build-dir/`, `linux/`, or `dist/`): `packaging/build-all.sh all` produces both a `.flatpak` and a `.AppImage` in `dist/`; each script exits nonzero naming the missing tool when run without `flatpak-builder`/`briefcase`/`docker`.
+   - **In-sandbox functional test**: install the built bundle, add a test repo through the portal folder picker, store a credential, and push over HTTPS to a real forge test repo — one flow proving network access, Secret Service access, the bundled git binary, and portal persistence simultaneously — then push to an SSH remote (proving the ssh binary plus the agent socket). Any failure here blocks the phase; it is not a "packaging quirk" to note and move on from.
+   - AppImage on two clean containers without the Flatpak runtime (plain Debian, plain Arch): the app launches; stage/commit works (proving the bundled git); `lfs_available()` is True and an LFS pull works (proving the bundled git-lfs); and with no Secret Service provider running, the credential path shows Phase 3's `unavailable_help_text()` guidance instead of crashing.
 
 ### Phase 7 — v1 Polish
 **Prerequisites:** Phase 6's acceptance check passed (Flatpak passes `flatpak-builder-lint`, AppImage runs on two clean distro containers).
-- i18n scaffolding audit: every user-facing string in `ui/` wrapped in `self.tr("...")` — confirmed via a grep-based check (`grep -rn '"' src/wrench/ui | grep -v '\.tr('`) whose output is reviewed manually line-by-line for stragglers, not assumed complete just because the grep ran. Common misses to check for specifically: strings built via f-strings (`self.tr()` needs the *template* wrapped, with `{}` placeholders, not the already-interpolated result), and strings in exception messages that surface directly in dialogs.
+
+**Executor guardrails (phase-specific §0.5 enforcement):**
+- The i18n audit is grep-driven, not vibes: `grep -rn '"' src/wrench/ui --include='*.py' | grep -v '\.tr('` reviewed line-by-line, PLUS the f-string catch `grep -rn 'tr(f"' src/wrench/ui` (any hit is a bug — wrap the template, not the interpolated result). Every straggler gets fixed and the grep re-run until the reviewed remainder is empty.
+- DO NOT "fix" `core/`/`forge/` exception messages into `tr()` — they're English-only by design (§4.2's locale note); audit scope is `ui/` user-facing text only. DO NOT reformat unrelated files to silence lint noise. DO NOT count the unit suite as a substitute for the keyboard walkthrough — the walkthrough IS the gate: mouse unplugged or ignored, every flow in the acceptance list completed and recorded.
+- The docs-reconcile item updates ONLY SRS §3 and this plan's §4/§5 where reality drifted — never the completed `phase-*.md` summaries (§0.5 rule 8); every drift fix names the phase it deviates from in one clause.
+- i18n scaffolding audit: every user-facing string in `ui/` wrapped in `self.tr("...")` — confirmed via a grep-based check (`grep -rn '"' src/wrench/ui | grep -v '\.tr('`) whose output is reviewed manually line-by-line for stragglers, not assumed complete just because the grep ran. Common misses to check for specifically: strings built via f-strings (`self.tr()` needs the *template* wrapped, with `{}` placeholders, not the already-interpolated result), and strings in exception messages that surface directly in dialogs. The highest-risk files are the newest surfaces — the four forge tabs, the accounts dialog, `ui/dialogs/submodule_dialog.py`, and the Git LFS menu (Phases 4–5) — audit those first, not last.
 - Accessibility pass: keyboard navigation through every dialog and the main window — correct tab order (`setTabOrder` where Qt's default doesn't already match visual layout), sensible Enter/Escape behavior (Enter activates the default button, Escape closes non-destructive dialogs without confirmation but *does* prompt before closing anything mid-destructive-action). Screen reader labels (`setAccessibleName`) on every icon-only button (stage/unstage checkboxes, the sidebar's missing-repo indicator, toolbar icons) — anything conveyed only by an icon needs a text equivalent a screen reader can announce.
 - Documentation: `README.md` gets real build/run instructions now that the tooling is finalized (badges for license/CI status, `pip install -e ".[dev]"` + `python -m wrench` quickstart, links to the Flathub/AppImage release once published). `CONTRIBUTING.md` specifically documents how to add a new forge adapter, pointing directly at §4.3 (the `ForgeAdapter` interface) and §4.4 (entry-points registration) — this file *is* the extension-point documentation promised by the plugin architecture, so it should be usable by someone who has read nothing else in this document.
 - **Reconcile `dev/planning/` against what actually got built**: eight phases of real implementation will have deviated from this plan in small ways no amount of upfront design catches — a signature that changed shape, an edge case handled differently once it was actually hit, a dependency that got swapped. Before calling v1 done, do one pass updating `srs.md`/`implementation-plan.md` to match reality rather than leaving them as an increasingly-inaccurate historical record. This doesn't need to be exhaustive — the goal is that §4's interfaces and §5's phase descriptions are still trustworthy enough for the next person (including future-you) to read instead of re-deriving from the source.
-- **Acceptance check**: a full manual keyboard-only walkthrough of every v1 M-priority flow (SRS §3) with the mouse physically disconnected or ignored — not just tabbing through once, but actually completing each flow (open a repo, stage a hunk, commit, create a branch, open a PR) using only keyboard input, to catch any control that's clickable but not reachable via Tab/Enter/Space.
+- **Acceptance check**: a full manual keyboard-only walkthrough of every v1 M-priority flow (SRS §3) with the mouse physically disconnected or ignored — not just tabbing through once, but actually completing each flow (open a repo, stage a hunk, commit, create a branch, push, add and validate a forge account, open a PR and submit a review action, init a submodule from the dialog, track an LFS pattern, restore a snapshot) using only keyboard input, to catch any control that's clickable but not reachable via Tab/Enter/Space.
 
 ### Phase 8 — v2 Backlog (not started until v1 ships)
 **Prerequisites:** v1 shipped — every box in the Master Sequential Checklist (§12) through Phase 7 checked, and SRS §3's M-priority FRs all implemented. Do not start any Phase 8 item early, even opportunistically.
@@ -2183,7 +2381,16 @@ Every row below is detailed in full where cited — this table exists so none of
 | Forge APIs | GitHub's `/issues` endpoint returns pull requests mixed into the results | §5 Phase 4 step 5 — the GitHub adapter filters out `pull_request`-keyed items |
 | Multi-account | Ambiguous host match, no explicit link | §5 Phase 3 step 2 — falls through to "not found," never guesses |
 | Submodules | Not a `repos` row, so multi-account disambiguation can't target it specifically | §5 Phase 5 step 2 — documented v1 gap, not solved |
+| Submodules | `file://` submodule URLs blocked by git's default `protocol.file.allow=user` | §5 Phase 5 step 2 — confirmation dialog, then a per-invocation `-c` override only; fixtures set it unconditionally |
+| LFS | git-lfs extension absent (host checkouts/dev machines — the packaged app bundles it) | §5 Phase 5 step 1 — cached `lfs_available()` probe, `LfsUnavailableError`, disabled menu with guidance |
+| LFS | Un-pulled pointer file leaking into the diff view as literal text | §5 Phase 5 steps 1/3 — `is_lfs_pointer` + OID rendering per ui-planning §6.3 |
+| LFS | `git lfs install --global` writes to `$HOME/.gitconfig` — invisible inside the Flatpak sandbox's HOME | §5 Phase 5 step 1 — per-repo `lfs install --local` on open, and inside initialized submodules (step 2) |
+| Repo discovery | Symlink cycles under the picked tree | §5 Phase 4.5 step 1 — symlinks never followed, cycle-proof by construction |
+| Repo discovery | Unreadable directories mid-scan (permissions, stale NFS) | §5 Phase 4.5 step 1 — skipped and counted, never aborts the scan |
+| Repo discovery | Submodule worktrees carry a `.git` file and must not register as independent repos | §5 Phase 4.5 step 1 — pruning at repo roots makes them unreachable |
+| Repo discovery | `$HOME`-scale or huge picked trees | §5 Phase 4.5 — depth cap 3, cancellable background scan, no passive re-scanning |
 | Packaging | Flatpak build sandbox has no network access — plain `pip install` in a build step fails | §6.1 — `flatpak-pip-generator`, regenerated whenever dependencies change, never hand-edited |
+| Packaging | The Flatpak runtime does not promise the `git`/`git-lfs`/`ssh` binaries every write op shells out to | §5 Phase 6 step 1 — empirical probe first, then manifest modules for whatever's absent; contents never assumed |
 | Packaging | Flathub distribution isn't something CI can automate end-to-end | §7 stage 7 — initial listing is a one-time manual PR + human review; only later updates auto-build |
 | Locale | Git output parsing matches English strings ("Already up to date", "rejected") and silently stops matching for users with localized git | §4.2 — `LC_ALL=C` in `run_git`'s env; stderr/stdout decoded with `errors="replace"` |
 | Git state | Merge fully resolved but not yet committed — `has_conflicts` is already false while the merge is still open, and a banner keyed on conflicts alone vanishes early | §4.1 `merge_in_progress`/`rebase_in_progress`; §5 Phase 2 step 3 |
@@ -2330,23 +2537,31 @@ Flattened, in strict execution order, across every phase — the literal path th
 - [ ] 4.10 Accounts manager + link flow (FR-5.6/5.8/5.9): validate-before-save via background `authenticate()`; advanced TLS group (custom CA bundle / warning-gated insecure mode) on editable-instance providers; one-time picker on ambiguous host match, always confirmed, never re-prompted; linking upserts `repo_forge_links` **and** sets `credential.useHttpPath`
 - [ ] 4.11 **CHECK**: unit + adapter-integration tests green on a **clean clone** (entry-points behave differently editable-installed); real-account QA per provider, plus the two-accounts-same-host case with the picker, plus failure-path QA (401 re-entry, 429 banner, unreachable banner, keyring-down add); documentation-gate checklist — TLS-policy texts reviewed, review actions QA'd on a test PR per provider (§11 items 13, 14 resolved)
 
-**Phase 5 — LFS & Submodules** *(prerequisites: 4.11 checked)*
-- [ ] 5.1 `core/lfs.py`
-- [ ] 5.2 `core/submodules.py`
-- [ ] 5.3 **CHECK**: fixture-repo unit tests (submodule + LFS file) + manual QA on a real repo with both
+**Phase 4.5 — Multi-Repository Directory Discovery** *(prerequisites: 4.11 checked)*
+- [ ] 4.5.1 `core/discovery.py` — bounded cancellable walk (depth 3, dot-dirs skipped, symlinks unfollowed, prune at repo roots, `.git` file-or-directory counts, permission errors skipped-and-counted); façade re-export
+- [ ] 4.5.2 `storage/repo_registry.py` — `clear_missing`; registration loop semantics (missing → restore, known → skip, new → `add_repo`, resolve-canonicalized)
+- [ ] 4.5.3 `ui/dialogs/discover_repos_dialog.py` + `_on_open_repo` branch on `WrenchRepoNotFoundError` per ui-planning §6.10 — background scan with live count, checkbox results, idempotent accept, selector refresh, `tr()`/a11y
+- [ ] 4.5.4 **CHECK**: `make_repo_forest` unit suite green (symlink cycle, chmod-000, submodule-skip, `.git`-file worktree); manual QA — open a real multi-repo dir, all repos switchable, re-run is a no-op
 
-**Phase 6 — Packaging Hardening & Flathub Submission** *(prerequisites: 5.3 checked)*
-- [ ] 6.1 Finalize Flatpak permissions (least privilege, §6.1)
-- [ ] 6.2 AppImage build via Briefcase (§6.2/§6.3) — not `python-appimage`/PyInstaller
-- [ ] 6.3 AppStream metainfo, screenshots, desktop file
-- [ ] 6.4 Write + test `packaging/build-all.sh` and its two sub-scripts (§6.3): clean checkout, run `build-all.sh all`, confirm both artifacts land in `dist/`
-- [ ] 6.5 **CHECK**: `flatpak-builder-lint` zero errors; AppImage runs on two clean distro containers (e.g. plain Debian, plain Arch); `build-all.sh` exits nonzero with a clear message if a required tool is missing
+**Phase 5 — LFS & Submodules** *(prerequisites: 4.5.4 checked)*
+- [ ] 5.1 `core/lfs.py` — cached cwd-independent `lfs_available()` probe; `_require_lfs` → `LfsUnavailableError`; batched `lfs_files` via `check-attr -z`; `is_lfs_pointer`/`parse_lfs_pointer`; track/pull/push via `run_git` with network timeouts; per-repo `lfs install --local` on open (never global — Flatpak HOME)
+- [ ] 5.2 `core/submodules.py` — list/status via pygit2 (uninitialized never raises); init/update/add via `run_git`; `file://` transport confirmation dialog + per-invocation `-c protocol.file.allow=always`; LFS filters propagated into initialized submodules; credential-gap documented (§8.1)
+- [ ] 5.3 UI per ui-planning §6.3 — Changes-tab badges (batched, once per refresh), pointer-aware diff rendering, `ui/dialogs/submodule_dialog.py`, Repository ▸ Git LFS menu with git-lfs-missing degraded state; all ops via `run_in_background`; `tr()` + `setAccessibleName` throughout
+- [ ] 5.4 **CHECK**: `pytest tests/unit/test_lfs.py tests/unit/test_submodules.py` green WITH and WITHOUT git-lfs on `PATH`; fixtures `make_lfs_repo` (hand-built pointer blob) + `make_submodule_repo` (file:// child); manual QA on a real repo with both features
 
-**Phase 7 — v1 Polish** *(prerequisites: 6.5 checked)*
-- [ ] 7.1 i18n audit — grep-verified, not assumed complete
+**Phase 6 — Packaging Hardening & Flathub Submission** *(prerequisites: 5.4 checked)*
+- [ ] 6.1 Probe sandbox toolchain (`command -v git ssh git-lfs` inside `flatpak-builder --run`), add manifest modules for whatever's absent (git tarball pinned+sha256, git-lfs both arches, openssh only if needed) — probe output recorded in the commit
+- [ ] 6.2 Manifest finalization: finish-args = §6.1's list + `--share=network`, `--device=dri` removed; §6.1 updated in the same commit; `pypi-dependencies.json` generated via `flatpak-pip-generator`, committed, stub module deleted
+- [ ] 6.3 Three build scripts replaced with §6.3's exact text (bundle-to-`dist/`, briefcase create/update branch, `build-all.sh` dispatch); executable bits re-verified
+- [ ] 6.4 `[tool.briefcase]` block appended to pyproject.toml (§6.3, version synced); `UPDATE_INFORMATION` gh-releases-zsync wiring in build-appimage.sh
+- [ ] 6.5 AppStream metainfo: real screenshots (raw-GitHub URLs), `<releases>` v1.0.0, OARS rating, homepage URL, license tag; desktop-file basename == app-id verified
+- [ ] 6.6 **CHECK**: `flatpak-builder-lint` manifest + appstream zero errors/warnings; clean-clone `build-all.sh all` yields both artifacts with named-tool failures; in-sandbox HTTPS push + credential round-trip + SSH push; AppImage on two clean containers incl. git-lfs present and keyring-absent guidance path
+
+**Phase 7 — v1 Polish** *(prerequisites: 6.6 checked)*
+- [ ] 7.1 i18n audit — grep-verified, not assumed complete; Phase 4/5 surfaces (forge tabs, accounts dialog, submodule dialog, Git LFS menu) audited first
 - [ ] 7.2 Accessibility pass (keyboard nav, screen reader labels)
 - [ ] 7.3 `README.md` + `CONTRIBUTING.md` + reconcile `dev/planning/` docs against actual v1 implementation
-- [ ] 7.4 **CHECK**: full keyboard-only manual walkthrough of every M-priority flow (SRS §3), mouse disabled
+- [ ] 7.4 **CHECK**: full keyboard-only manual walkthrough of every M-priority flow (SRS §3), mouse disabled — incl. account validation, PR review actions, submodule init, LFS track, snapshot restore
 
 **v1 ships here.** Confirm every box above is checked, and every M-priority FR in SRS §3 is implemented, before touching anything below.
 

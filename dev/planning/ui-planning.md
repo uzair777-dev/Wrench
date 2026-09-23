@@ -1076,6 +1076,37 @@ Accessible via **File → Backup Repository…** and **File → Restore from Bac
 | Execution | Generates a full git bundle (`git bundle create`) + optional untracked changes archive via `workers.run_in_background` with live progress bar |
 | Restore Flow | **File → Restore from Backup…** opens a restore wizard: selects backup file/folder, validates bundle integrity, and unpacks to a chosen target folder with automatic registration in `repo_registry` |
 
+### 6.10 Repository Discovery Dialog (SRS FR-1.12)
+
+Reached from **File → Open** (or the Changes tab's Open action) when the picked directory is **not** itself a git repository — the not-a-repo dead end becomes a branch into discovery. The scan runs in the background (implementation-plan §4.8) with cooperative cancellation. The is-a-repo fast path is unchanged.
+
+```
+┌────────── Discover Repositories ─────────────[x]─┐
+│ Scanning /home/uzair/Projects…                   │
+│ ◌ Found 4 repositories so far…                   │
+│                                    [ Cancel ]    │
+└──────────────────────────────────────────────────┘
+
+┌────────── Discover Repositories ─────────────[x]─┐
+│ Found 6 git repositories under ~/Projects.       │
+│  ☑ website        ☑ wrench        ☑ dotfiles     │
+│  ☑ api-server     ☑ notes         ☑ sandbox      │
+│                    [ Add Selected ]  [ Cancel ]  │
+└──────────────────────────────────────────────────┘
+```
+
+| Property | Detail |
+|---|---|
+| Widget | `QDialog` (modal) |
+| Scan | `engine.discover_repos(root)` via `run_in_background`; spinner + live found-count via `on_progress`; Cancel sets `cancel_event` |
+| Results list | Checkable rows — label = path relative to the picked root, tooltip = absolute resolved path; all checked by default; Space toggles, full keyboard operation |
+| Accept | Registers each checked path (dedup by resolved path: already-known skipped silently, registered-but-missing restored via `clear_missing`, new → `add_repo`), then refreshes the Changes-tab repo selector |
+| Empty result | No dialog — plain message: "No git repositories found under `<path>` (searched 3 levels deep)". Offering `git init` here is out of scope |
+| Completion | Status-bar summary: "Added N repositories (M already known)" |
+| Non-goal | Bare repositories are never discovered (no `.git` marker) — implementation-plan §5 Phase 4.5 step 1 |
+
+All strings `tr()`-wrapped; Enter/Esc contract matches the other modal dialogs.
+
 ---
 
 ## 7. File/Component Mapping
@@ -1102,6 +1133,7 @@ Summary of new and modified files for implementation:
 | `src/wrench/ui/dialogs/remotes_dialog.py` | **NEW** | Remotes Configuration dialog (§6.8, FR-4.4) |
 | `src/wrench/ui/dialogs/backup_dialog.py` | **NEW** | Backup & Restore dialogs (§6.9, FR-8.1–8.4) |
 | `src/wrench/ui/dialogs/identity_dialog.py` | **NEW** | Git Identity override dialog (§6.5, FR-1.5) |
+| `src/wrench/ui/dialogs/discover_repos_dialog.py` | **NEW** | Repository Discovery dialog (§6.10, FR-1.12) |
 | `src/wrench/ui/snapshots_panel/__init__.py` | **NEW** | Snapshot browse/restore panel (§6.4, FR-10.6) |
 | `src/wrench/ui/widgets/branch_switcher.py` | **NEW** | Branch indicator/switcher widget (§3.2b, FR-1.6) |
 | `src/wrench/ui/diff_view/diff_widget.py` | **KEEP** | Reused as-is in Changes tab, History detail panel, and PR detail tab |

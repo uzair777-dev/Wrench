@@ -98,6 +98,7 @@ Priority key: **M** = Must have (v1), **S** = Should have (v1), **D** = Deferred
 | FR-1.9 | Detect and safely recover from stale `.git/index.lock` left by a crashed session | M |
 | FR-1.10 | Standard git safety net: reflog-based recovery accessible from the UI (view reflog, restore to a prior ref state) — no custom undo/redo stack in v1 | M |
 | FR-1.11 | GitButler-style undo/redo of recent git operations | **M — see §3.11** (reclassified from v2; bounded to the rolling snapshot window, not literally unlimited) |
+| FR-1.12 | Point Wrench at a directory that contains many git repositories: discover all of them with a bounded, user-initiated scan and bulk-register the results into the FR-1.2 registry (which stays authoritative — no passive background crawling), making them all switchable from the repo selector | S |
 
 ### 3.2 History & Diff Visualization
 | ID | Requirement | Priority |

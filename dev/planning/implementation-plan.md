@@ -1997,6 +1997,7 @@ Each phase should be independently shippable/testable — don't let phases bleed
 
 ### Phase 8 — v2 Backlog (not started until v1 ships)
 **Prerequisites:** v1 shipped — every box in the Master Sequential Checklist (§12) through Phase 7 checked, and SRS §3's M-priority FRs all implemented. Do not start any Phase 8 item early, even opportunistically.
+**This section is a summary stub.** The authoritative, expanded v2 plan lives in `dev/planning/v2-implementation-plan.md` (SRS FR rows marked **D (v2)** — see that document's phase structure, guardrails, and checklist). The four bullets below are carried over there as VP-15a–d and must not diverge from it.
 - Interactive drag-and-drop rebase (FR-2.4) — builds on the commit graph's lane-assignment rendering from §5 Phase 2 step 1, adding drag targets to reorder/squash commits visually; deliberately deferred because it needs the simplified v1 graph algorithm proven stable first.
 - Revisit GPG signing UX pending upstream Flatpak portal support — currently blocked on the same `--socket=gpg-agent` limitations noted in the risk register (§9); worth re-checking Flatpak/xdg-desktop-portal release notes periodically rather than assuming the landscape hasn't moved.
 - OAuth-based forge login, if there's real demand for it alongside the v1 PAT-only approach — would need its own account-disambiguation UX design (see the multi-account discussion in SRS §7, row 9) since OAuth's browser-session model doesn't map cleanly onto "which of my two accounts" the way PATs do.
@@ -2566,7 +2567,7 @@ Flattened, in strict execution order, across every phase — the literal path th
 **v1 ships here.** Confirm every box above is checked, and every M-priority FR in SRS §3 is implemented, before touching anything below.
 
 **Phase 8 — v2 Backlog** *(prerequisites: v1 shipped — do not start early, even opportunistically)*
-- [ ] 8.1 Interactive drag-and-drop rebase (FR-2.4)
-- [ ] 8.2 GPG signing UX (pending upstream Flatpak portal support)
-- [ ] 8.3 OAuth-based forge login, if there's real demand beyond v1's PAT-only approach
-- [ ] 8.4 SourceForge adapter (also serves as a live test of the third-party extension mechanism)
+- [ ] 8.1 Interactive drag-and-drop rebase (FR-2.4; VP-15a)
+- [ ] 8.2 GPG signing UX (pending upstream Flatpak portal support; VP-15b)
+- [ ] 8.3 OAuth-based forge login, if there's real demand beyond v1's PAT-only approach (VP-15c)
+- [ ] 8.4 SourceForge adapter (also serves as a live test of the third-party extension mechanism; VP-15d)

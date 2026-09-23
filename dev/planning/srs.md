@@ -99,6 +99,10 @@ Priority key: **M** = Must have (v1), **S** = Should have (v1), **D** = Deferred
 | FR-1.10 | Standard git safety net: reflog-based recovery accessible from the UI (view reflog, restore to a prior ref state) — no custom undo/redo stack in v1 | M |
 | FR-1.11 | GitButler-style undo/redo of recent git operations | **M — see §3.11** (reclassified from v2; bounded to the rolling snapshot window, not literally unlimited) |
 | FR-1.12 | Point Wrench at a directory that contains many git repositories: discover all of them with a bounded, user-initiated scan and bulk-register the results into the FR-1.2 registry (which stays authoritative — no passive background crawling), making them all switchable from the repo selector | S |
+| FR-1.13 | Tag management: create (lightweight and annotated), delete, and push tags from the UI — the commit graph already renders tag ref-labels, but no operation surface exists in v1 | **D (v2)** |
+| FR-1.14 | Batch operations over the FR-1.12 registry: fetch/pull across all registered repos or a user-defined workspace group, with a per-repo result summary | **D (v2)** |
+| FR-1.15 | Git worktree management: list, add, remove, and prune worktrees of a repository | **D (v2)** |
+| FR-1.16 | Shallow and partial clone options (`--depth`, `--filter=blob:none`) in the clone flow, with degraded-history states surfaced honestly in the UI | **D (v2)** |
 
 ### 3.2 History & Diff Visualization
 | ID | Requirement | Priority |
@@ -107,6 +111,8 @@ Priority key: **M** = Must have (v1), **S** = Should have (v1), **D** = Deferred
 | FR-2.2 | Commit graph as a separate tab: simple, colorful multi-branch visualization | M |
 | FR-2.3 | Commit log with search/filter (author, message, date range, path) | S |
 | FR-2.4 | Interactive drag-and-drop rebase within the commit graph | **D (v2)** |
+| FR-2.5 | Blame view: per-line author/commit attribution surfaced in the UI (the v1 engine already ships `blame()` — v2 adds the presentation surface) | **D (v2)** |
+| FR-2.6 | Pickaxe search (`git log -S`): search history by content change, complementing FR-2.3's message/author/date/path filters | **D (v2)** |
 
 ### 3.3 Merge & Conflict Resolution
 | ID | Requirement | Priority |
@@ -114,6 +120,8 @@ Priority key: **M** = Must have (v1), **S** = Should have (v1), **D** = Deferred
 | FR-3.1 | Merge branches with automatic fast-forward/3-way merge as applicable | M |
 | FR-3.2 | Built-in visual 3-way merge conflict resolution tool (not dependent on external tools) | M |
 | FR-3.3 | Rebase (non-interactive in v1) | M |
+| FR-3.4 | Cherry-pick and revert commits via commit-graph context actions, routed through the FR-3.1/3.2 conflict machinery when they produce conflicts | **D (v2)** |
+| FR-3.5 | Patch workflows: generate (`format-patch`) and apply (`am`/`apply`) patch series, supporting email-based collaboration like Forgejo/sr.ht communities use | **D (v2)** |
 
 ### 3.4 Remote Operations
 | ID | Requirement | Priority |
@@ -136,6 +144,9 @@ Priority key: **M** = Must have (v1), **S** = Should have (v1), **D** = Deferred
 | FR-5.7 | Entry-points-based adapter registration: adapters are discovered as plugins (Python packaging entry points) against the FR-5.1 capability interface, not hardcoded into core | M |
 | FR-5.8 | Multiple **accounts** on the same forge/instance (e.g. two separate github.com accounts) — each stored as an independent account row; each repo+remote explicitly assigned to exactly one | M |
 | FR-5.9 | Account selection UX: when a repo's remote host matches more than one configured account, prompt once and remember the choice per repo+remote (`repo_forge_links`) rather than prompting repeatedly | M |
+| FR-5.10 | In-app review threads: view and reply to PR/MR review comments, including inline diff comments (v1 ships review *actions* only — approve/request-changes/comment — with thread viewing deferred to Open-in-browser) | **D (v2)** |
+| FR-5.11 | CI run details: inspect individual check runs/jobs for a PR/MR (names, states, deep links; log viewing itself stays in the browser in v2.0) | **D (v2)** |
+| FR-5.12 | Forge notifications: aggregate review requests, mentions, and subscription updates into an in-app inbox per configured account (capability-gated — not every provider exposes this) | **D (v2)** |
 
 ### 3.6 Backend Extension Architecture
 The forge layer's extensibility rests on two mechanisms, both required for v1 (they're how the four confirmed backends themselves are implemented, not a v2 add-on):
@@ -149,6 +160,8 @@ See §7.1 for the roadmap of additional backends this architecture is designed t
 |---|---|---|
 | FR-6.1 | Git LFS: track, pull, push large files transparently | M |
 | FR-6.2 | Submodules: init, update, add, view status per submodule | M |
+| FR-6.3 | Git LFS file locking: lock/unlock binary assets to prevent concurrent-editing conflicts (capability-gated — lock support varies by server/version) | **D (v2)** |
+| FR-6.4 | Image diff: side-by-side visual comparison for image files, pairing naturally with LFS-tracked binaries | **D (v2)** |
 
 ### 3.8 Identity & Profiles
 | ID | Requirement | Priority |
@@ -196,6 +209,11 @@ See §7.1 for the roadmap of additional backends this architecture is designed t
 
 **Scope note**: none of FR-11.1–11.5 ships a second platform — v1 remains Linux-only end to end, and nothing here is scheduled work beyond v1 itself. What they buy is that a future port (see §7.3) is additive behind existing seams rather than a rewrite of code that was never designed to be portable. This reverses an earlier decision: KDE Frameworks 6 (KF6) was originally committed for deeper Plasma integration (§2.4, Assumptions Log #3, now revised) — superseded here in favor of portability. The implementation plan confirms this reversal is cheap: no phase ever wires in KConfig/KXmlGui/KIO (settings already route through SQLite, not KDE config files), so this is a documentation correction plus a few narrow interface additions, not a redesign.
 
+### 3.13 Extensibility & Automation
+| ID | Requirement | Priority |
+|---|---|---|
+| FR-12.1 | Custom user actions: user-defined shell commands runnable on the selected repo/commit/file, surfaced in context menus (`WRENCH_REPO_PATH`/`WRENCH_SELECTED_SHA`/`WRENCH_SELECTED_FILE` environment contract; user-authored, no sandboxing promised) | **D (v2)** |
+
 ---
 
 ## 4. Non-Functional Requirements
@@ -232,6 +250,7 @@ See §7.1 for the roadmap of additional backends this architecture is designed t
 
 - Interactive drag-and-drop rebase in the commit graph → v2
 - OAuth-based login for forge accounts (v1 is token/PAT-only across all providers and all accounts) → v2, if there's demand
+- The full v2 feature set — FR-1.13 (tag management), FR-1.14 (batch operations/workspaces), FR-1.15 (worktree management), FR-1.16 (shallow/partial clone), FR-2.5 (blame view), FR-2.6 (pickaxe search), FR-3.4 (cherry-pick/revert), FR-3.5 (patch workflows), FR-5.10 (review threads/inline comments), FR-5.11 (CI run details), FR-5.12 (forge notifications), FR-6.3 (LFS locking), FR-6.4 (image diff), FR-12.1 (custom actions) → v2; plus FR-8.5 (scheduled/automatic backups — S-priority in v1 per §3.9, committed to v2 as its refinement phase) → v2; all planned in `dev/planning/v2-implementation-plan.md`
 
 ---
 
@@ -268,6 +287,8 @@ Distinct from §6 above: these aren't scheduled for v2 either — they have no c
 | 15 | Cross-platform architecture scope | ✅ Confirmed | Full treatment now (§3.12 + §7.3): mandatory v1 interfaces (`CredentialBackend`, path resolution, isolated SSH-agent access, no KDE-Frameworks APIs), actual Windows/macOS ports deferred indefinitely (V5/V6, distant future, unscheduled) | Requested explicitly — "architecture should be there" even though the platforms themselves are far out; cheap to do now, expensive to retrofit once KDE-Frameworks APIs or hardcoded XDG paths are load-bearing throughout the codebase |
 | 16 | Which platform is technically closer | Informational, not a commitment | macOS is architecturally closer (POSIX subprocess/path behavior, near-identical SSH-agent model to Linux); Windows has no equivalent to macOS's mandatory $99/year Apple Developer Program notarization cost | Recorded for whenever this is actually revisited — deliberately not used to prioritize one platform's abstraction over the other in §3.12's interfaces |
 | 17 | Credential backend split (v1, within Linux) | ✅ Confirmed (revised) | Two concrete `CredentialBackend` implementations, not one — `FlatpakSecretServiceBackend`/`AppImageSecretServiceBackend` — sharing identical D-Bus logic, differing only in unavailable-provider remediation text | Corrects a gap in the first version of FR-11.1: `sys.platform` alone can't distinguish Flatpak from AppImage from a bare `pip install` (all report the same value), so the original single-backend factory couldn't actually give context-appropriate error guidance. Detection now uses `FLATPAK_ID`/`.flatpak-info` and the `APPIMAGE` env var instead |
+| 18 | v2 feature set | ✅ Confirmed | FR-1.13–1.16, FR-2.5–2.6, FR-3.4–3.5, FR-5.10–5.12, FR-6.3–6.4, FR-12.1 assigned D (v2), enumerated in §6, planned in `dev/planning/v2-implementation-plan.md` | Post-v1-scope review surfaced gaps users would perceive as incompleteness rather than novelty (cherry-pick/revert, tag management, blame view lead the set because their v1 engine machinery already exists); everything else is deepening or power-user surface |
+| 19 | FR-8.5 (scheduled backups) v2 home | ✅ Confirmed | S-priority in v1 per §3.9, committed to v2 (VP-14 — Scheduled Backups) | It was the last marked deferral bucket with no planned home; the §3.9 backup engine and FR-10.2's timer machinery make it cheap to schedule honestly, and 'scheduled backups' deferred forever would read as a gap rather than as scope discipline |
 
 ### 7.1 Backend Extension Roadmap
 

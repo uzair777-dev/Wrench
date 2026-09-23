@@ -1,5 +1,5 @@
--- schema version 1
-PRAGMA user_version = 1;
+-- schema version 2
+PRAGMA user_version = 2;
 
 CREATE TABLE repos (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -30,6 +30,8 @@ CREATE TABLE forge_accounts (           -- FR-5.6
     instance_url    TEXT NOT NULL,          -- e.g. https://github.com, or self-hosted URL
     label           TEXT NOT NULL,          -- user-facing name, e.g. "Work Forgejo"
     username        TEXT,
+    tls_ca_bundle_path TEXT,                   -- custom PEM bundle path
+    tls_insecure       INTEGER NOT NULL DEFAULT 0, -- 1 = skip verification
     -- NOTE: no token/secret column here — credentials live only in Secret Service,
     -- referenced by a secret_service_key, never stored in SQLite (NFR: no plaintext secrets).
     secret_service_key TEXT NOT NULL UNIQUE,

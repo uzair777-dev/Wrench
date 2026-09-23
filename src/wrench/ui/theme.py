@@ -21,14 +21,19 @@ logger = logging.getLogger(__name__)
 # --- Theme Detection ---
 
 
-def is_dark_theme(widget: QWidget | None = None) -> bool:
+def is_dark_theme(widget_or_palette: QWidget | QPalette | None = None) -> bool:
     """Detects whether the active application/window theme is dark.
 
     Uses palette luminance calculation — the only reliable method when the
     app uses custom palettes (colorScheme() returns the *desktop* scheme,
     not the app's custom palette, which produces wrong results on KDE/GNOME).
     """
-    pal = widget.palette() if widget is not None else QApplication.palette()
+    if isinstance(widget_or_palette, QPalette):
+        pal = widget_or_palette
+    elif widget_or_palette is not None:
+        pal = widget_or_palette.palette()
+    else:
+        pal = QApplication.palette()
     win_color = pal.color(QPalette.Window)
     base_color = pal.color(QPalette.Base)
     avg_lightness = (win_color.lightnessF() + base_color.lightnessF()) / 2.0

@@ -45,11 +45,17 @@ from wrench.core.exceptions import (
 )
 from wrench.storage import repo_registry, settings
 from wrench.storage.db import get_connection
+from wrench.ui.dialogs.accounts_dialog import AccountsDialog
+from wrench.ui.dialogs.link_dialog import LinkRepoDialog
 from wrench.ui.dialogs.remotes_dialog import RemotesDialog
 from wrench.ui.recovery.busy_dialog import BusyOperationDialog
 from wrench.ui.snapshots_panel import SnapshotsPanel
 from wrench.ui.tabs.changes_tab import ChangesTab
 from wrench.ui.tabs.history_tab import HistoryTab
+from wrench.ui.tabs.issue_detail_tab import IssueDetailTab
+from wrench.ui.tabs.issue_list_tab import IssueListTab
+from wrench.ui.tabs.pr_detail_tab import PRDetailTab
+from wrench.ui.tabs.pr_list_tab import PRListTab
 from wrench.ui.tabs.tab_bar import TabContainer
 from wrench.ui.theme import apply_theme
 from wrench.ui.workers import run_in_background
@@ -105,6 +111,8 @@ class MainWindow(QMainWindow):
         self.changes_tab.clone_repo_dialog_requested.connect(self._on_clone_repo)
         self.changes_tab.resolve_conflicts_requested.connect(self._on_resolve_conflicts)
         self.changes_tab.state_changed.connect(self._on_changes_tab_state_changed)
+        self.changes_tab.forge_accounts_requested.connect(self._on_manage_forge_accounts)
+        self.changes_tab.link_repo_requested.connect(self._on_link_forge)
         self.tab_container.add_tab(
             widget=self.changes_tab,
             label=self.tr("Changes"),
@@ -289,6 +297,14 @@ class MainWindow(QMainWindow):
         self.act_remotes = repo_menu.addAction(self.tr("&Remotes…"))
         self.act_remotes.triggered.connect(self._on_manage_remotes)
 
+        repo_menu.addSeparator()
+
+        self.act_forge_accounts = repo_menu.addAction(self.tr("Forge &Accounts…"))
+        self.act_forge_accounts.triggered.connect(self._on_manage_forge_accounts)
+
+        self.act_link_forge = repo_menu.addAction(self.tr("&Link to Forge…"))
+        self.act_link_forge.triggered.connect(lambda: self._on_link_forge())
+
         # ---------------- Help Menu ----------------
         help_menu = menu_bar.addMenu(self.tr("&Help"))
 
@@ -397,6 +413,65 @@ class MainWindow(QMainWindow):
                                 is_pinned=is_pinned,
                             )
 
+                        elif t_type == "pr_list":
+                            tab_repo = item.get("repo_path") or saved_repo_path or ""
+                            pr_tab = PRListTab(tab_repo, self)
+                            pr_tab.pr_selected.connect(self._open_pr_detail_tab)
+                            pr_tab.link_requested.connect(self._on_link_forge)
+                            self.tab_container.add_tab(
+                                widget=pr_tab,
+                                label=label or self.tr("Pull Requests"),
+                                tab_type="pr_list",
+                                repo_path=tab_repo,
+                                closable=closable,
+                                is_pinned=is_pinned,
+                            )
+                        elif t_type in ("issues_list", "issue_list"):
+                            tab_repo = item.get("repo_path") or saved_repo_path or ""
+                            issue_tab = IssueListTab(tab_repo, self)
+                            issue_tab.issue_selected.connect(self._open_issue_detail_tab)
+                            issue_tab.link_requested.connect(self._on_link_forge)
+                            self.tab_container.add_tab(
+                                widget=issue_tab,
+                                label=label or self.tr("Issues"),
+                                tab_type="issues_list",
+                                repo_path=tab_repo,
+                                closable=closable,
+                                is_pinned=is_pinned,
+                            )
+                        elif t_type == "pr_detail" and item.get("entity_id"):
+                            tab_repo = item.get("repo_path") or saved_repo_path or ""
+                            entity_id = item.get("entity_id", "")
+                            parts = entity_id.split(":", 1)
+                            if len(parts) == 2:
+                                detail_tab = PRDetailTab(tab_repo, parts[0], parts[1], self)
+                                detail_tab.branch_checkout_requested.connect(
+                                    self._on_checkout_branch
+                                )
+                                self.tab_container.add_tab(
+                                    widget=detail_tab,
+                                    label=label or f"PR #{parts[1]}",
+                                    tab_type="pr_detail",
+                                    repo_path=tab_repo,
+                                    entity_id=entity_id,
+                                    closable=closable,
+                                    is_pinned=is_pinned,
+                                )
+                        elif t_type == "issue_detail" and item.get("entity_id"):
+                            tab_repo = item.get("repo_path") or saved_repo_path or ""
+                            entity_id = item.get("entity_id", "")
+                            parts = entity_id.split(":", 1)
+                            if len(parts) == 2:
+                                detail_tab = IssueDetailTab(tab_repo, parts[0], parts[1], self)
+                                self.tab_container.add_tab(
+                                    widget=detail_tab,
+                                    label=label or f"Issue #{parts[1]}",
+                                    tab_type="issue_detail",
+                                    repo_path=tab_repo,
+                                    entity_id=entity_id,
+                                    closable=closable,
+                                    is_pinned=is_pinned,
+                                )
                         else:
                             placeholder = QWidget(self)
                             layout = QVBoxLayout(placeholder)
@@ -604,6 +679,14 @@ class MainWindow(QMainWindow):
                 engine.probe_remotes_async(self._current_repo, db_conn=self._conn)
             except Exception as probe_err:
                 logger.debug("Remotes reachability probe skipped: %s", probe_err)
+
+            # Notify open tabs of repo change
+            for i in range(self.tab_container.count()):
+                w = self.tab_container.widget(i)
+                if hasattr(w, "set_active_repository"):
+                    w.set_active_repository(path)
+                if hasattr(w, "reload_links_and_data") and getattr(w, "repo_path", None) == path:
+                    w.reload_links_and_data()
 
             self._schedule_auto_save()
         except Exception as e:
@@ -1166,12 +1249,43 @@ class MainWindow(QMainWindow):
                     tab_type="snapshots",
                     closable=True,
                 )
+        elif tab_type == "pr_list":
+            repo_path = str(self._current_repo.path) if self._current_repo else ""
+            idx = self.tab_container.find_tab("pr_list", repo_path)
+            if idx is None:
+                pr_tab = PRListTab(repo_path, self)
+                pr_tab.pr_selected.connect(self._open_pr_detail_tab)
+                pr_tab.link_requested.connect(self._on_link_forge)
+                self.tab_container.add_tab(
+                    widget=pr_tab,
+                    label=self.tr("Pull Requests"),
+                    tab_type="pr_list",
+                    repo_path=repo_path,
+                    closable=True,
+                )
+            else:
+                self.tab_container.set_current_index(idx)
+        elif tab_type in ("issues_list", "issue_list"):
+            repo_path = str(self._current_repo.path) if self._current_repo else ""
+            idx = self.tab_container.find_tab("issues_list", repo_path)
+            if idx is None:
+                issue_tab = IssueListTab(repo_path, self)
+                issue_tab.issue_selected.connect(self._open_issue_detail_tab)
+                issue_tab.link_requested.connect(self._on_link_forge)
+                self.tab_container.add_tab(
+                    widget=issue_tab,
+                    label=self.tr("Issues"),
+                    tab_type="issues_list",
+                    repo_path=repo_path,
+                    closable=True,
+                )
+            else:
+                self.tab_container.set_current_index(idx)
         else:
-            # Placeholder for PR / Issues in Phase 4
             placeholder = QWidget(self)
             layout = QVBoxLayout(placeholder)
             layout.setAlignment(Qt.AlignCenter)
-            label_text = f"{tab_type.replace('_', ' ').title()} coming in Phase 4"
+            label_text = f"{tab_type.replace('_', ' ').title()}"
             label = QLabel(self.tr(label_text), placeholder)
             layout.addWidget(label)
             self.tab_container.add_tab(
@@ -1180,6 +1294,76 @@ class MainWindow(QMainWindow):
                 tab_type=tab_type,
                 closable=True,
             )
+
+    def _on_manage_forge_accounts(self) -> None:
+        dlg = AccountsDialog(self)
+        dlg.exec()
+        self._refresh_forge_tabs()
+
+    def _on_link_forge(self, repo_path: str = "") -> None:
+        target_path = repo_path or (str(self._current_repo.path) if self._current_repo else "")
+        if not target_path:
+            QMessageBox.information(
+                self,
+                self.tr("No Active Repository"),
+                self.tr("Please open a repository first to link it to a forge account."),
+            )
+            return
+        dlg = LinkRepoDialog(target_path, self)
+        dlg.links_changed.connect(self._refresh_forge_tabs)
+        dlg.exec()
+
+    def _refresh_forge_tabs(self) -> None:
+        for i in range(self.tab_container.count()):
+            w = self.tab_container.widget(i)
+            if hasattr(w, "reload_links_and_data"):
+                w.reload_links_and_data()
+
+    def _open_pr_detail_tab(self, repo_path: str, remote_name: str, pr_id: str) -> None:
+        entity_id = f"{remote_name}:{pr_id}"
+        idx = self.tab_container.find_tab("pr_detail", repo_path, entity_id)
+        if idx is not None:
+            self.tab_container.set_current_index(idx)
+            return
+
+        detail_tab = PRDetailTab(repo_path, remote_name, pr_id, self)
+        detail_tab.branch_checkout_requested.connect(self._on_checkout_branch)
+        if self._current_repo:
+            detail_tab.set_active_repository(str(self._current_repo.path))
+
+        self.tab_container.add_tab(
+            widget=detail_tab,
+            label=f"PR #{pr_id}",
+            tab_type="pr_detail",
+            repo_path=repo_path,
+            entity_id=entity_id,
+            closable=True,
+        )
+
+    def _open_issue_detail_tab(self, repo_path: str, remote_name: str, issue_id: str) -> None:
+        entity_id = f"{remote_name}:{issue_id}"
+        idx = self.tab_container.find_tab("issue_detail", repo_path, entity_id)
+        if idx is not None:
+            self.tab_container.set_current_index(idx)
+            return
+
+        detail_tab = IssueDetailTab(repo_path, remote_name, issue_id, self)
+        if self._current_repo:
+            detail_tab.set_active_repository(str(self._current_repo.path))
+
+        self.tab_container.add_tab(
+            widget=detail_tab,
+            label=f"Issue #{issue_id}",
+            tab_type="issue_detail",
+            repo_path=repo_path,
+            entity_id=entity_id,
+            closable=True,
+        )
+
+    def _on_checkout_branch(self, branch_name: str) -> None:
+        self.status_label.setText(self.tr(f"Switched to branch: {branch_name}"))
+        self.changes_tab.refresh()
+        self.history_tab.refresh()
 
     def _on_resolve_conflicts(self) -> None:
         self.changes_tab._resolve_conflicts()

@@ -48,6 +48,16 @@ def run_migrations(conn: sqlite3.Connection) -> None:
         if current_version == 0:
             schema_sql = resources.files("wrench.storage").joinpath("schema.sql").read_text()
             conn.executescript(schema_sql)
-            conn.execute("PRAGMA user_version = 1")
+            conn.execute("PRAGMA user_version = 2")
             conn.commit()
-            logger.info("Applied initial schema (version 1)")
+            logger.info("Applied initial schema (version 2)")
+            return
+
+        if current_version == 1:
+            conn.execute("ALTER TABLE forge_accounts ADD COLUMN tls_ca_bundle_path TEXT")
+            conn.execute(
+                "ALTER TABLE forge_accounts ADD COLUMN tls_insecure INTEGER NOT NULL DEFAULT 0"
+            )
+            conn.execute("PRAGMA user_version = 2")
+            conn.commit()
+            logger.info("Applied schema migration to version 2 (TLS account policy)")

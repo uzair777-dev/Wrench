@@ -71,7 +71,10 @@ def _resolve_account(conn: sqlite3.Connection, host: str, path_str: str | None):
         if "/" in norm_path:
             parts = norm_path.split("/")
             owner_slug, repo_slug = parts[0], parts[1]
-            link = forge_accounts.find_link_by_path(conn, owner_slug, repo_slug)
+            candidate_ids = [acc.id for acc in candidates]
+            link = forge_accounts.find_link_by_path(
+                conn, owner_slug, repo_slug, candidate_account_ids=candidate_ids
+            )
             if link:
                 matching = [acc for acc in candidates if acc.id == link.forge_account_id]
                 if len(matching) == 1:

@@ -185,13 +185,26 @@ class RemoteInfo:
     last_fetch_at: str | None = None
     is_reachable: bool | None = None
 
+    @property
+    def fetch_url(self) -> str:
+        return self.url
+
 
 class RepoHandle:
     """Wraps a pygit2.Repository for reads and Path for subprocess."""
 
-    def __init__(self, pygit2_repo: pygit2.Repository, path: Path):
-        self.pygit2_repo = pygit2_repo
-        self.path = path
+    def __init__(
+        self,
+        pygit2_repo: pygit2.Repository | str | Path,
+        path: Path | str | None = None,
+    ):
+        if isinstance(pygit2_repo, (str, Path)):
+            p = Path(pygit2_repo)
+            self.pygit2_repo = pygit2.Repository(str(p))
+            self.path = p
+        else:
+            self.pygit2_repo = pygit2_repo
+            self.path = Path(path) if path is not None else Path(pygit2_repo.path).parent
 
 
 # Import read_ops, write_ops, identity, reflog after all dataclasses are defined

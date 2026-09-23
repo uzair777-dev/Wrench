@@ -43,7 +43,7 @@ from PySide6.QtWidgets import (
 
 from wrench.core import engine
 from wrench.core.engine import RepoHandle, RepoStatus
-from wrench.storage import repo_registry
+from wrench.storage import forge_accounts, repo_registry
 from wrench.ui.diff_view.diff_widget import DiffView
 from wrench.ui.merge_tool.merge_dialog import MergeDialog
 from wrench.ui.theme import (
@@ -189,6 +189,8 @@ class ChangesTab(QWidget):
     open_repo_dialog_requested = Signal()
     clone_repo_dialog_requested = Signal()
     resolve_conflicts_requested = Signal()
+    forge_accounts_requested = Signal()
+    link_repo_requested = Signal(str)
 
     def __init__(self, conn: sqlite3.Connection, parent: QWidget | None = None):
         super().__init__(parent)
@@ -222,11 +224,27 @@ class ChangesTab(QWidget):
         left_layout.setContentsMargins(8, 8, 8, 8)
         left_layout.setSpacing(6)
 
-        # Top: Repo dropdown
+        # Top: Repo dropdown & Forge button
+        repo_bar = QHBoxLayout()
+        repo_bar.setSpacing(4)
+
         self.repo_combo = QComboBox(self)
         self._update_repo_combo_theme()
         self.repo_combo.currentIndexChanged.connect(self._on_repo_combo_changed)
-        left_layout.addWidget(self.repo_combo)
+        repo_bar.addWidget(self.repo_combo, 1)
+
+        self.forge_btn = QToolButton(self)
+        self.forge_btn.setText("🌐")
+        self.forge_btn.setToolTip(self.tr("Forge accounts and linked remotes"))
+        self.forge_btn.setStyleSheet(
+            "QToolButton { font-size: 13px; padding: 2px 5px; "
+            "border: 1px solid rgba(128,128,128,0.2); border-radius: 3px; } "
+            "QToolButton:hover { background-color: rgba(128,128,128,0.2); }"
+        )
+        self.forge_btn.clicked.connect(self._show_forge_menu)
+        repo_bar.addWidget(self.forge_btn)
+
+        left_layout.addLayout(repo_bar)
 
         # Branch switcher widget
         self.branch_switcher = BranchSwitcherWidget(self)
@@ -475,6 +493,37 @@ class ChangesTab(QWidget):
         path = self.repo_combo.currentData()
         if path:
             self._open_repo_by_path(path)
+
+    def _show_forge_menu(self) -> None:
+        menu = QMenu(self)
+        if self._repo:
+            repo_path = str(self._repo.path)
+            try:
+                row = self._conn.execute(
+                    "SELECT id FROM repos WHERE path = ?", (repo_path,)
+                ).fetchone()
+                if row:
+                    links = forge_accounts.list_links_for_repo(self._conn, row[0])
+                    if links:
+                        for link in links:
+                            acc = forge_accounts.get_account_full(self._conn, link.forge_account_id)
+                            label = acc.label if acc else "Account"
+                            slug = f"{link.owner_slug}/{link.repo_slug}"
+                            action = menu.addAction(f"🔗 {link.remote_name}: {label} ({slug})")
+                            action.setEnabled(False)
+                        menu.addSeparator()
+            except Exception as e:
+                logger.debug("Failed querying forge links for menu: %s", e)
+
+        act_link = menu.addAction(self.tr("Link Repository to Forge…"))
+        act_link.triggered.connect(
+            lambda: self.link_repo_requested.emit(str(self._repo.path) if self._repo else "")
+        )
+
+        act_accounts = menu.addAction(self.tr("Manage Forge Accounts…"))
+        act_accounts.triggered.connect(self.forge_accounts_requested.emit)
+
+        menu.exec(self.forge_btn.mapToGlobal(QPoint(0, self.forge_btn.height())))
 
     def _on_branch_switched(self, branch_name: str) -> None:
         self.refresh()

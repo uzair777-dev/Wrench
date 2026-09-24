@@ -136,6 +136,21 @@ class PushRejectedError(GitCommandError):
             super().__init__(["push"], returncode, stderr_or_args)
 
 
+class WorkflowScopeRequiredError(GitCommandError):
+    """git push rejected because GitHub requires 'workflow' OAuth scope to edit workflows."""
+
+    def __init__(
+        self,
+        stderr_or_args: str | list[str] = "",
+        returncode: int = 1,
+        stderr: str | None = None,
+    ):
+        if isinstance(stderr_or_args, list):
+            super().__init__(stderr_or_args, returncode, stderr or "")
+        else:
+            super().__init__(["push"], returncode, stderr_or_args)
+
+
 class MergeRequiredError(GitCommandError):
     """git pull --ff-only failed because branches diverged."""
 

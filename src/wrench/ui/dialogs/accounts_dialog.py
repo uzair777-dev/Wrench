@@ -63,6 +63,7 @@ PROVIDER_TOOLTIPS = {
             "Settings → Developer settings → Fine-grained tokens</a><br><br>"
             "<b>Required permissions:</b><br>"
             "• <code>repo</code> — full access (public + private)<br>"
+            "• <code>workflow</code> — update GitHub Actions workflows<br>"
             "• <code>public_repo</code> — public repos only"
         ),
         "username": (
@@ -206,10 +207,19 @@ def _validate_credentials_probe(
 class AddAccountDialog(QDialog):
     """Modal dialog to add and validate a new forge account with assisted and manual modes."""
 
-    def __init__(self, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        parent: QWidget | None = None,
+        initial_page: int = 0,
+        reauth_account_id: int | None = None,
+    ) -> None:
         super().__init__(parent)
-        self.setWindowTitle("Add Forge Account")
+        self.setWindowTitle(
+            "Re-authenticate GitHub Account" if reauth_account_id else "Add Forge Account"
+        )
         self.setMinimumWidth(500)
+        self._initial_page = initial_page
+        self._reauth_account_id = reauth_account_id
 
         self._cancel_event = threading.Event()
         self._countdown_seconds = 0
@@ -234,7 +244,7 @@ class AddAccountDialog(QDialog):
         self._stack.addWidget(self._manual_page)
 
         layout.addWidget(self._stack)
-        self._stack.setCurrentIndex(0)
+        self._stack.setCurrentIndex(self._initial_page)
 
     # --- Page 0: Method Chooser ---
 
@@ -320,10 +330,12 @@ class AddAccountDialog(QDialog):
             "github.com (Personal / Organization)", self._assisted_form_widget
         )
         self.personal_radio.setChecked(True)
+        self.cloud_radio = self.personal_radio
         self.enterprise_radio = QRadioButton("GitHub Enterprise Server", self._assisted_form_widget)
         self.instance_button_group.addButton(self.personal_radio)
         self.instance_button_group.addButton(self.enterprise_radio)
         self.personal_radio.toggled.connect(self._on_instance_type_changed)
+        self.enterprise_radio.toggled.connect(self._on_instance_type_changed)
         type_layout.addWidget(self.personal_radio)
         type_layout.addWidget(self.enterprise_radio)
 
@@ -359,7 +371,8 @@ class AddAccountDialog(QDialog):
         scope_layout.addWidget(self.full_scope_radio)
 
         full_desc = QLabel(
-            "Access public and private repositories, PRs, issues, and CI status.",
+            "Access public and private repositories, PRs, issues, CI status, "
+            "and GitHub Actions workflows.",
             self._assisted_form_widget,
         )
         full_desc.setStyleSheet("color: palette(mid); font-size: 11px; margin-left: 20px;")
@@ -625,7 +638,7 @@ class AddAccountDialog(QDialog):
         else:
             instance_url = "https://github.com"
 
-        scope = "repo" if self.full_scope_radio.isChecked() else "public_repo"
+        scope = "repo workflow" if self.full_scope_radio.isChecked() else "public_repo"
         self._cancel_event.clear()
         self.assisted_status_label.setText("")
         self._assisted_form_widget.setVisible(False)
@@ -699,14 +712,40 @@ class AddAccountDialog(QDialog):
 
         conn = db.get_connection()
         try:
-            forge_accounts.add_account(
-                conn,
-                provider="github",
-                instance_url=instance_url,
-                label=label,
-                username=username,
-                token=token,
-            )
+            target_acc = None
+            if self._reauth_account_id is not None:
+                target_acc = forge_accounts.get_account_full(conn, self._reauth_account_id)
+
+            if target_acc is None:
+                accounts = forge_accounts.list_accounts(conn, provider="github")
+                clean_url = instance_url.rstrip("/").lower()
+                for acc in accounts:
+                    if acc.instance_url.rstrip("/").lower() == clean_url:
+                        if (
+                            not username
+                            or not acc.username
+                            or acc.username.lower() == username.lower()
+                        ):
+                            target_acc = acc
+                            break
+
+            if target_acc:
+                sec_key = forge_accounts.get_account_secret_key(conn, target_acc.id)
+                if sec_key:
+                    credentials.get_backend().store_secret(
+                        sec_key, token, label=f"Wrench: {target_acc.label}"
+                    )
+                if username and not target_acc.username:
+                    forge_accounts.update_username(conn, target_acc.id, username)
+            else:
+                forge_accounts.add_account(
+                    conn,
+                    provider="github",
+                    instance_url=instance_url,
+                    label=label,
+                    username=username,
+                    token=token,
+                )
         except Exception as exc:
             self._on_device_flow_error(exc)
             return
@@ -1007,6 +1046,14 @@ class EditAccountDialog(QDialog):
         token_layout.addWidget(self.toggle_token_btn)
         form.addRow("Update Token:", token_layout)
 
+        if self.record.provider == "github":
+            reauth_layout = QHBoxLayout()
+            self.reauth_btn = QPushButton("🚀 Re-authorize with GitHub (Browser)…", self)
+            self.reauth_btn.clicked.connect(self._reauth_github)
+            reauth_layout.addWidget(self.reauth_btn)
+            reauth_layout.addStretch()
+            form.addRow("Re-authorize:", reauth_layout)
+
         # TLS / Advanced Group
         tls_group = QGroupBox("TLS & Enterprise Security", self)
         tls_layout = QFormLayout(tls_group)
@@ -1143,6 +1190,16 @@ class EditAccountDialog(QDialog):
         self.status_label.setStyleSheet("color: #d20f39; font-size: 11px;")
         self.status_label.setText(f"Validation failed: {exc}")
 
+    def _reauth_github(self) -> None:
+        dlg = AddAccountDialog(self, initial_page=1, reauth_account_id=self.record.id)
+        if "github.com" not in self.record.instance_url.lower():
+            dlg.enterprise_radio.setChecked(True)
+            dlg.assisted_url_edit.setText(self.record.instance_url)
+        else:
+            dlg.personal_radio.setChecked(True)
+        if dlg.exec() == QDialog.Accepted:
+            self.accept()
+
 
 class AccountsDialog(QDialog):
     """Management dialog listing all configured forge accounts."""
@@ -1185,6 +1242,10 @@ class AccountsDialog(QDialog):
         self.edit_btn = QPushButton("Edit…", self)
         self.edit_btn.clicked.connect(self._edit_account)
         btn_bar.addWidget(self.edit_btn)
+
+        self.reauth_btn = QPushButton("Re-authorize…", self)
+        self.reauth_btn.clicked.connect(self._reauth_account)
+        btn_bar.addWidget(self.reauth_btn)
 
         self.delete_btn = QPushButton("Delete", self)
         self.delete_btn.setStyleSheet("color: #d20f39;")
@@ -1243,6 +1304,22 @@ class AccountsDialog(QDialog):
         dlg = EditAccountDialog(acc, self)
         if dlg.exec() == QDialog.Accepted:
             self.reload_accounts()
+
+    def _reauth_account(self) -> None:
+        acc = self._get_selected_account()
+        if not acc:
+            return
+        if acc.provider == "github":
+            dlg = AddAccountDialog(self, initial_page=1, reauth_account_id=acc.id)
+            if "github.com" not in acc.instance_url.lower():
+                dlg.enterprise_radio.setChecked(True)
+                dlg.assisted_url_edit.setText(acc.instance_url)
+            else:
+                dlg.personal_radio.setChecked(True)
+            if dlg.exec() == QDialog.Accepted:
+                self.reload_accounts()
+        else:
+            self._edit_account()
 
     def _delete_account(self) -> None:
         acc = self._get_selected_account()

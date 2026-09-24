@@ -83,11 +83,14 @@ def _global_excepthook(exc_type, exc_value, exc_tb) -> None:
         try:
             from wrench.core import snapshots
 
+            conn = getattr(_active_window, "_conn", None) or getattr(
+                _active_window, "db_conn", None
+            )
             snapshots.take_snapshot(
                 _active_window._current_repo,
-                reason="emergency_crash",
+                "emergency_crash",
                 label="Emergency Snapshot before Crash Recovery",
-                conn=getattr(_active_window, "db_conn", None),
+                conn=conn,
             )
         except Exception as snap_err:
             logger.debug("Could not take emergency crash snapshot: %s", snap_err)

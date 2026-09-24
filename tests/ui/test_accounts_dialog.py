@@ -392,3 +392,162 @@ class TestAssistedFlowUI:
             assert "denied" in dlg.waiting_status_label.text().lower()
             assert dlg.assisted_try_again_btn.isVisible()
             assert dlg.assisted_manual_fallback_btn.isVisible()
+
+    def test_assisted_flow_requests_workflow_scope(self, db_conn):
+        db_path = db_file_path(db_conn)
+        mock_backend = MagicMock()
+        mock_codes = DeviceFlowCodes(
+            device_code="dc_test",
+            user_code="TEST-1234",
+            verification_uri="https://github.com/login/device",
+            interval=1,
+            expires_in=60,
+        )
+
+        with (
+            patch("wrench.storage.db.get_connection", side_effect=lambda: sqlite3.connect(db_path)),
+            patch("wrench.credentials.get_backend", return_value=mock_backend),
+            patch(
+                "wrench.ui.dialogs.accounts_dialog.request_device_code",
+                return_value=mock_codes,
+            ) as mock_req,
+            patch(
+                "wrench.ui.dialogs.accounts_dialog.poll_for_token",
+                return_value="gho_oauth_token",
+            ),
+            patch(
+                "wrench.ui.dialogs.accounts_dialog._validate_credentials_probe",
+                return_value={"ok": True, "inferred_user": "octocat"},
+            ),
+            patch(
+                "wrench.ui.dialogs.accounts_dialog.run_in_background",
+                side_effect=_sync_run_in_background,
+            ),
+        ):
+            dlg = AddAccountDialog()
+            dlg.assisted_btn.click()
+            dlg.assisted_connect_btn.click()
+
+            mock_req.assert_called_once()
+            _, kwargs = mock_req.call_args
+            assert kwargs["scope"] == "repo workflow"
+
+    def test_assisted_flow_reauth_updates_existing_account(self, db_conn):
+        db_path = db_file_path(db_conn)
+        mock_backend = MagicMock()
+
+        with patch("wrench.credentials.get_backend", return_value=mock_backend):
+            acc_id = forge_accounts.add_account(
+                db_conn,
+                provider="github",
+                instance_url="https://github.com",
+                label="GitHub (octocat)",
+                username="octocat",
+                token="old_token",
+            )
+
+        mock_codes = DeviceFlowCodes(
+            device_code="dc_test",
+            user_code="TEST-1234",
+            verification_uri="https://github.com/login/device",
+            interval=1,
+            expires_in=60,
+        )
+
+        with (
+            patch("wrench.storage.db.get_connection", side_effect=lambda: sqlite3.connect(db_path)),
+            patch("wrench.credentials.get_backend", return_value=mock_backend),
+            patch(
+                "wrench.ui.dialogs.accounts_dialog.request_device_code",
+                return_value=mock_codes,
+            ),
+            patch(
+                "wrench.ui.dialogs.accounts_dialog.poll_for_token",
+                return_value="new_token_with_workflow",
+            ),
+            patch(
+                "wrench.ui.dialogs.accounts_dialog._validate_credentials_probe",
+                return_value={"ok": True, "inferred_user": "octocat"},
+            ),
+            patch(
+                "wrench.ui.dialogs.accounts_dialog.run_in_background",
+                side_effect=_sync_run_in_background,
+            ),
+        ):
+            dlg = AddAccountDialog(initial_page=1)
+            dlg.assisted_connect_btn.click()
+
+            # Verify no duplicate account was inserted
+            records = forge_accounts.list_accounts(db_conn)
+            assert len(records) == 1
+            assert records[0].id == acc_id
+            # Verify secret store was updated with new token
+            mock_backend.store_secret.assert_called_with(
+                f"wrench:forge:{acc_id}",
+                "new_token_with_workflow",
+                label=f"Wrench: {records[0].label}",
+            )
+
+    def test_reauth_button_presence(self, db_conn):
+        db_path = db_file_path(db_conn)
+        mock_backend = MagicMock()
+
+        with patch("wrench.credentials.get_backend", return_value=mock_backend):
+            forge_accounts.add_account(
+                db_conn,
+                provider="github",
+                instance_url="https://github.com",
+                label="GitHub (octocat)",
+                username="octocat",
+                token="old_token",
+            )
+        records = forge_accounts.list_accounts(db_conn)
+
+        with (
+            patch("wrench.storage.db.get_connection", side_effect=lambda: sqlite3.connect(db_path)),
+            patch("wrench.credentials.get_backend", return_value=mock_backend),
+        ):
+            dlg = AccountsDialog()
+            assert hasattr(dlg, "reauth_btn")
+
+            edit_dlg = EditAccountDialog(records[0])
+            assert hasattr(edit_dlg, "reauth_btn")
+
+    def test_reauth_account_flow_no_attribute_error(self, db_conn):
+        """Verify _reauth_account and _reauth_github instantiate
+        AddAccountDialog without AttributeError.
+        """
+        db_path = db_file_path(db_conn)
+        mock_backend = MagicMock()
+
+        with patch("wrench.credentials.get_backend", return_value=mock_backend):
+            acc_id = forge_accounts.add_account(
+                db_conn,
+                provider="github",
+                instance_url="https://github.com",
+                label="GitHub (octocat)",
+                username="octocat",
+                token="old_token",
+            )
+        records = forge_accounts.list_accounts(db_conn)
+
+        # Test AddAccountDialog directly for cloud_radio alias
+        add_dlg = AddAccountDialog(initial_page=1, reauth_account_id=acc_id)
+        assert hasattr(add_dlg, "cloud_radio")
+        assert hasattr(add_dlg, "personal_radio")
+        assert add_dlg.cloud_radio is add_dlg.personal_radio
+        assert add_dlg.windowTitle() == "Re-authenticate GitHub Account"
+
+        with (
+            patch("wrench.storage.db.get_connection", side_effect=lambda: sqlite3.connect(db_path)),
+            patch("wrench.credentials.get_backend", return_value=mock_backend),
+            patch.object(AddAccountDialog, "exec", return_value=1),
+        ):
+            # Test AccountsDialog._reauth_account
+            acc_dlg = AccountsDialog()
+            acc_dlg.table.selectRow(0)
+            acc_dlg._reauth_account()
+
+            # Test EditAccountDialog._reauth_github
+            edit_dlg = EditAccountDialog(records[0])
+            edit_dlg._reauth_github()

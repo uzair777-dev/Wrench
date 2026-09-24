@@ -15,6 +15,7 @@ from wrench.core.exceptions import (
     GitCommandError,
     MergeRequiredError,
     PushRejectedError,
+    WorkflowScopeRequiredError,
 )
 from wrench.core.write_ops import (
     _classify_git_error,
@@ -59,6 +60,17 @@ class TestFailureClassification:
         )
         err = _classify_git_error(["push", "origin", "main"], 1, stderr)
         assert isinstance(err, PushRejectedError)
+
+    def test_push_rejected_workflow_scope(self):
+        stderr = (
+            "To https://github.com/uzair777-dev/Wrench.git\n"
+            " ! [remote rejected] master -> master (refusing to allow an OAuth App to create or "
+            "update workflow `.github/workflows/ci.yml` without `workflow` scope)\n"
+            "error: failed to push some refs"
+        )
+        err = _classify_git_error(["push", "origin", "master"], 1, stderr)
+        assert isinstance(err, WorkflowScopeRequiredError)
+        assert not isinstance(err, PushRejectedError)
 
     def test_pull_merge_required(self):
         stderr = "fatal: Not possible to fast-forward, aborting."

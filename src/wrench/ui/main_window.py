@@ -42,6 +42,7 @@ from wrench.core.exceptions import (
     MergeRequiredError,
     PushRejectedError,
     RemoteNotFoundError,
+    WorkflowScopeRequiredError,
 )
 from wrench.storage import repo_registry, settings
 from wrench.storage.db import get_connection
@@ -1037,6 +1038,28 @@ class MainWindow(QMainWindow):
                     "Please check your account token or SSH keys."
                 ),
             )
+            return
+
+        if isinstance(exc, WorkflowScopeRequiredError):
+            box = QMessageBox(self)
+            box.setIcon(QMessageBox.Icon.Critical)
+            box.setWindowTitle(self.tr("Workflow Scope Required"))
+            box.setText(
+                self.tr(
+                    f"Push to '{remote_name}' was rejected because GitHub requires the "
+                    "'workflow' OAuth scope to create or modify GitHub Actions workflow files "
+                    "(such as .github/workflows/ci.yml).\n\n"
+                    "Please re-authenticate your GitHub account with 'Full Access' "
+                    "or configure a Personal Access Token with the 'workflow' scope enabled."
+                )
+            )
+            reauth_btn = box.addButton(
+                self.tr("Manage Accounts…"), QMessageBox.ButtonRole.ActionRole
+            )
+            box.addButton(QMessageBox.StandardButton.Close)
+            box.exec()
+            if box.clickedButton() == reauth_btn:
+                self._on_manage_forge_accounts()
             return
 
         if isinstance(exc, PushRejectedError):

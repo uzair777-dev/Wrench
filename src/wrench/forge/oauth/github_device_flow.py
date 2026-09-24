@@ -51,14 +51,14 @@ def _build_token_url(instance_url: str) -> str:
 
 def request_device_code(
     client_id: str,
-    scope: str = "repo",
+    scope: str = "repo workflow",
     instance_url: str = "https://github.com",
 ) -> DeviceFlowCodes:
     """Step 1: Request device and user codes from GitHub.
 
     Args:
         client_id: The OAuth App's client ID.
-        scope: OAuth scope string (e.g. "repo" or "public_repo").
+        scope: OAuth scope string (e.g. "repo workflow" or "public_repo").
         instance_url: Base URL. "https://github.com" for personal,
                       or "https://ghes.company.com" for Enterprise.
 

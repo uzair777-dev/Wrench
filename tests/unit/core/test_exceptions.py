@@ -10,6 +10,7 @@ from wrench.core.exceptions import (
     PushRejectedError,
     RemoteExistsError,
     RemoteNotFoundError,
+    WorkflowScopeRequiredError,
     WrenchGitError,
 )
 
@@ -20,6 +21,7 @@ class TestPhase3Exceptions:
         assert issubclass(AuthRequiredError, WrenchGitError)
         assert issubclass(AuthFailedError, WrenchGitError)
         assert issubclass(PushRejectedError, GitCommandError)
+        assert issubclass(WorkflowScopeRequiredError, GitCommandError)
         assert issubclass(MergeRequiredError, GitCommandError)
         assert issubclass(RemoteExistsError, WrenchGitError)
         assert issubclass(RemoteNotFoundError, WrenchGitError)

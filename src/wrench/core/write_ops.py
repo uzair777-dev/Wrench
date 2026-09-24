@@ -34,6 +34,7 @@ from .exceptions import (
     GitCommandError,
     MergeRequiredError,
     PushRejectedError,
+    WorkflowScopeRequiredError,
 )
 from .git_credential_helper import _host_of
 
@@ -126,6 +127,17 @@ def _classify_git_error(
     """Classify non-zero git CLI exit into specific domain exceptions."""
     is_push = len(args) > 0 and args[0] == "push"
     is_pull = len(args) > 0 and args[0] == "pull"
+
+    if is_push and (
+        "without `workflow` scope" in stderr
+        or "without 'workflow' scope" in stderr
+        or (
+            "workflow" in stderr.lower()
+            and "scope" in stderr.lower()
+            and "refusing" in stderr.lower()
+        )
+    ):
+        return WorkflowScopeRequiredError(args, returncode, stderr)
 
     if is_push and "rejected" in stderr:
         return PushRejectedError(args, returncode, stderr)

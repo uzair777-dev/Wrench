@@ -40,13 +40,16 @@ graph TD
         TC[TabContainer / TabButton]
         CT[ChangesTab]
         HT[HistoryTab - Commit Graph]
+        PRL[PRListTab & IssueListTab]
+        PRD[PRDetailTab & IssueDetailTab]
         BW[BranchSwitcherWidget]
         DV[DiffView]
         CG[CommitGraphWidget]
         MT[MergeDialog]
-        RD[RemotesDialog - Phase 3]
-        BD[BusyOperationDialog - Phase 3]
-        FP[ForgePanel - Phase 4]
+        RD[RemotesDialog]
+        AD[AccountsDialog & EditAccountDialog]
+        LD[LinkRepoDialog]
+        BD[BusyOperationDialog]
         WKR[Worker Thread Pool & Dispatcher]
         THM[Theme Engine - theme.py]
     end
@@ -62,6 +65,7 @@ graph TD
         RFL[reflog.py]
         IDN[identity.py]
         SSH[ssh_agent.py - platform guard]
+        RCV[recovery / crash_handler.py]
     end
 
     subgraph Watcher ["Filesystem Watcher (src/wrench/watcher)"]
@@ -77,21 +81,34 @@ graph TD
         FACC[forge_accounts.py]
     end
 
-    subgraph Credentials ["Credentials & Forges"]
+    subgraph Forge ["Multi-Forge Subsystem (src/wrench/forge)"]
+        FREG[forge.registry - Pluggable Discovery]
+        FAD[forge.capability - ForgeAdapter Base]
+        FGH[GitHubAdapter]
+        FGL[GitLabAdapter]
+        FFJ[ForgejoAdapter]
+        FBB[BitbucketAdapter]
+        FDF[github_device_flow.py - RFC 8628]
+    end
+
+    subgraph Credentials ["Credentials Layer (src/wrench/credentials)"]
         CRED[credentials.get_backend()]
         SS[SecretServiceBackend D-Bus]
         GCH[git-credential-wrench]
-        FORGE[forge.capability / adapters]
     end
 
     MW --> TC
     TC --> CT
     TC --> HT
+    TC --> PRL
+    TC --> PRD
     HT --> CG
     CT --> BW
     CT --> DV
     MW --> ENG
     MW --> RD
+    MW --> AD
+    MW --> LD
     MW --> BD
     MW --> THM
     THM -.->|Recursive Palette & Event Broadcast| TC
@@ -100,6 +117,16 @@ graph TD
     THM -.->|Recursive Palette & Event Broadcast| DV
     THM -.->|Recursive Palette & Event Broadcast| BW
     THM -.->|Recursive Palette & Event Broadcast| CG
+    PRL --> FREG
+    PRD --> FREG
+    AD --> FDF
+    AD --> FREG
+    LD --> FACC
+    FREG --> FAD
+    FAD --> FGH
+    FAD --> FGL
+    FAD --> FFJ
+    FAD --> FBB
     CT --> ENG
     HT --> ENG
     BW --> ENG
@@ -115,6 +142,7 @@ graph TD
     ENG --> LCK
     ENG --> RFL
     ENG --> IDN
+    ENG --> RCV
     INOT -->|Qt Signal| MW
     SNP --> DB
     REG --> DB
@@ -122,6 +150,8 @@ graph TD
     FACC --> DB
     GCH --> FACC
     GCH --> CRED
+    FAD --> CRED
+    FDF --> CRED
     CRED --> SS
     WKR -.->|Main-Thread Queued Signal| MW
 ```
@@ -133,25 +163,51 @@ graph TD
 ### 3.1 UI Layer (`src/wrench/ui/`)
 - **`MainWindow` (`ui/main_window.py`)**: Root `QMainWindow` and lifecycle coordinator.
   - Native `QMenuBar` with **File**, **Edit**, **View**, **Repository**, and **Help** menus.
-  - **Repository Menu (Phase 3)**: Exposes `Fetch` (`Ctrl+Shift+F`), `Pull` (`Ctrl+Shift+L`), `Push` (`Ctrl+Shift+U`), and `Remotes…` actions wired through `run_in_background` with `BusyOperationDialog` tracking.
-  - **Error Routing Engine (Phase 3)**: Routes remote operation failures to actionable dialogs:
+  - **Repository Menu**: Exposes `Fetch` (`Ctrl+Shift+F`), `Pull` (`Ctrl+Shift+L`), `Push` (`Ctrl+Shift+U`), and `Remotes…` actions wired through `run_in_background` with `BusyOperationDialog` tracking.
+  - **Error Routing Engine**: Routes remote and git operation failures to actionable dialogs:
     - `AuthRequiredError`: Guides users when credentials are missing for a remote host.
     - `AuthFailedError`: Informs users when stored credentials were rejected by the remote.
+    - `WorkflowScopeRequiredError`: Explains when pushes to `.github/workflows/` require the `workflow` OAuth scope, prompting re-authorization without confusing retry loops.
     - `PushRejectedError`: Offers actionable choices between "Fetch & Retry", "Force Push (with lease)", and "Cancel".
     - `MergeRequiredError`: Offers actionable choices between "Merge" and "Rebase" using Phase 2 tools.
     - `RemoteNotFoundError`: Prompts and opens the Remotes configuration dialog.
-  - **Asynchronous Clone (Phase 3)**: Routes repository cloning through `run_in_background` with cancellable `BusyOperationDialog` and atomic filesystem placement.
+  - **Asynchronous Clone**: Routes repository cloning through `run_in_background` with cancellable `BusyOperationDialog` and atomic filesystem placement.
   - Hosts the central `TabContainer`.
   - **GUI Session Persistence Engine**: Runs a continuous 1000ms debounced auto-save timer (`_auto_save_timer`) coalescing window geometry, splitter ratios, tab list/order/pinning, active repo, and per-repo selections/drafts into `app_settings` key `ui.session_state`.
   - Synchronous flush on `closeEvent(event)` ensures state is never lost on shutdown or unexpected termination.
   - Startup restoration guard `_is_restoring` prevents initialization noise from wiping saved drafts and checkbox selections.
   - Enforces quit guards when unsaved commit message drafts exist or background workers are busy.
   - Owns the active `RepoHandle` and `RepoWatcher`.
-- **`RemotesDialog` (`ui/dialogs/remotes_dialog.py`)**: Repository remotes management interface (Phase 3).
+- **`PRListTab` & `IssueListTab` (`ui/tabs/pr_list_tab.py`, `ui/tabs/issue_list_tab.py`)**:
+  - Forge pull request and issue browser workspaces keyed by `(tab_type, repo_path)`.
+  - Interactive search bar and state filters (`Open`, `Merged`, `Closed`, `All`) with 300ms debouncing.
+  - SWR (Stale-While-Revalidate) cache with a 60-second TTL for instantaneous view loads.
+  - Remote selector dropdown binding active repository remotes to configured forge accounts.
+  - Generation-counted request invalidation preventing stale asynchronous responses from overwriting newer user selections.
+  - "New Pull Request" creation dialog (`CreatePRDialog`) with branch selectors, title, and description editors.
+  - Double-click item selection spawning dynamic entity detail tabs.
+- **`PRDetailTab` & `IssueDetailTab` (`ui/tabs/pr_detail_tab.py`, `ui/tabs/issue_detail_tab.py`)**:
+  - Full-detail entity workspaces keyed by `(tab_type, repo_path, entity_id)`.
+  - Direct non-paginated entity retrieval via `adapter.get_pull_request()` and `adapter.get_issue()`.
+  - Inline CI/CD build status card (`CIIconWidget`) with external build log link button.
+  - In-app review submission dialog (`SubmitReviewDialog`) supporting Approve, Request Changes, and Comment actions tailored to provider capability constraints.
+  - Local branch checkout and tracking branch setup.
+  - Stale repository warning banner informing users when the active main window repository has diverged from the open tab's repository.
+- **`AccountsDialog`, `AddAccountDialog`, & `EditAccountDialog` (`ui/dialogs/accounts_dialog.py`)**:
+  - Complete forge accounts management interface.
+  - **Assisted Setup (Device Flow RFC 8628)**: Browser authorization for GitHub and GitHub Enterprise Server requesting `repo workflow` permissions, featuring live countdown timers, polling interval backoff, and clipboard copy helpers.
+  - **In-Place Re-authorization**: 1-click re-authorization for existing GitHub accounts updating credentials in Secret Service while preserving all `repo_forge_links`.
+  - **Manual Token Setup**: Guided PAT setup for GitHub, GitLab, Forgejo/Gitea, and Bitbucket with provider-specific permission documentation.
+  - **Enterprise Security**: Custom CA bundle (PEM) file picker and explicit skip TLS verification option with security warning.
+- **`LinkRepoDialog` (`ui/dialogs/link_dialog.py`)**:
+  - Repository-to-forge account association dialog.
+  - Auto-matches remotes to configured accounts by host URL.
+  - Configures repository-level `git config credential.useHttpPath true` to ensure git CLI routes credentials path-specifically.
+- **`RemotesDialog` (`ui/dialogs/remotes_dialog.py`)**: Repository remotes management interface.
   - Displays all configured remotes with columns: `Name`, `URL`, `Last Fetch`, and `Reachability`.
   - Color-coded reachability indicators: `● Reachable` (green), `● Unreachable` (red), `● Unknown` (gray).
   - Modal operations for `Add Remote` (with name regex & URL validation), `Edit Remote`, `Remove Remote` (with destructive confirmation), and `Refresh Status` (reachability probe).
-- **`BusyOperationDialog` (`ui/recovery/busy_dialog.py`)**: Progress & cancellation modal dialog (Phase 3).
+- **`BusyOperationDialog` (`ui/recovery/busy_dialog.py`)**: Progress & cancellation modal dialog.
   - Real-time percentage progress bar or animated indeterminate spinner.
   - Interactive "Cancel" button setting a `threading.Event` to abort in-flight git operations.
 - **`TabContainer`, `TabStripWidget`, & `TabButton` (`ui/tabs/tab_bar.py`)**: Custom hybrid tab system.
@@ -220,17 +276,22 @@ graph TD
   - **Luminance-Based Detection (`is_dark_theme`)**: Calculates average luminance of `QPalette.Window` and `QPalette.Base` to avoid desktop environment color scheme mismatches on KDE Plasma and GNOME.
   - **Recursive Descendant Palette Propagation (`apply_theme`)**: Sets the palette on `QApplication` and traverses all `topLevelWidgets()` and their child widgets recursively. This overcomes Qt container stylesheet isolation contexts (`QStyleSheetStyle` on `QSplitter`, `QGroupBox`, etc.) where child widgets otherwise retain stale palettes.
   - **Design Tokens**: Centralized maps for `DIFF_STYLES`, `BADGE_STYLES`, `CONFLICT_BANNER_STYLES`, `SECONDARY_TEXT`, `ACCENT_COLORS`, and `COMMIT_STAT_COLORS`.
-- **`workers.py`**: Background thread runner using `QThread` and a thread-safe `_Dispatcher` `QObject` via `Qt.ConnectionType.QueuedConnection` to ensure callbacks execute strictly on the main GUI thread. Adapted in Phase 3 to support multi-parameter `progress_cb(pct, stage)` and cooperative cancellation via `threading.Event`.
+- **`workers.py`**: Concurrency execution engine using Python daemon `WorkerThread` workers and a thread-safe `_Dispatcher(QObject)` singleton on the Qt main thread. Delivers non-blocking background operations, progress streaming (`progress_cb(pct, stage)`), cooperative cancellation (`threading.Event`), and error recovery without deadlocks between Python GIL and Qt's `signalSlotLock`.
 
 
 ### 3.2 Core Git Engine (`src/wrench/core/`)
 - **`engine.py`**: Public façade exposing unified, typed functions. Converts internal errors into typed `WrenchGitError` derivatives.
-  - Remote operations (Phase 3): `push(repo, remote, branch, force=False)` (enforces `--force-with-lease`), `pull(repo, remote, branch)` (enforces `--ff-only`), `fetch(repo, remote)` (with `--prune` and timestamp storage), and `clone_repo(url, dest)` (atomic staging via tempdir with automated rollback).
-  - Remotes façade (Phase 3): `list_remotes(repo)`, `add_remote(repo, name, url)`, `remove_remote(repo, name)`, `set_remote_url(repo, name, url)`, and `_probe_reachability(repo_path, remote_name)`.
+  - Remote operations: `push(repo, remote, branch, force=False)` (enforces `--force-with-lease`), `pull(repo, remote, branch)` (enforces `--ff-only`), `fetch(repo, remote)` (with `--prune` and timestamp storage), and `clone_repo(url, dest)` (atomic staging via tempdir with automated rollback).
+  - Remotes façade: `list_remotes(repo)`, `add_remote(repo, name, url)`, `remove_remote(repo, name)`, `set_remote_url(repo, name, url)`, and `_probe_reachability(repo_path, remote_name)`.
 - **`read_ops.py`**: `pygit2`-backed status, diffs, log traversal, branch enumeration, and line-by-line blame.
 - **`write_ops.py`**: Subprocess helpers managing Git CLI execution:
   - `run_git`: Standard synchronous runner with timeout and sanitized environment (`GIT_TERMINAL_PROMPT=0`).
-  - `run_git_streaming`: Deadlock-free streaming execution using concurrent dual-pipe reader threads for `stdout` and `stderr`. Parses carriage-return `\r` and `\n` progress lines, routes live percentage and stage callbacks, and terminates gracefully on `cancel_event` (`SIGTERM` ➔ 3s grace ➔ `SIGKILL`). Deterministically classifies non-zero exits into typed exceptions (`PushRejectedError`, `MergeRequiredError`, `AuthFailedError`, `AuthRequiredError`, `CLITimeoutError`).
+  - `run_git_streaming`: Deadlock-free streaming execution using concurrent dual-pipe reader threads for `stdout` and `stderr`. Parses carriage-return `\r` and `\n` progress lines, routes live percentage and stage callbacks, and terminates gracefully on `cancel_event` (`SIGTERM` ➔ 3s grace ➔ `SIGKILL`). Deterministically classifies non-zero exits into typed exceptions:
+    - `WorkflowScopeRequiredError`: Detects when pushes affecting `.github/workflows/` are rejected due to missing OAuth `workflow` scope.
+    - `PushRejectedError`: Non-fast-forward push rejections.
+    - `MergeRequiredError`: Fast-forward pull failures when branches diverge.
+    - `AuthFailedError` & `AuthRequiredError`: Credential negotiation failures.
+    - `CLITimeoutError`: Subprocess execution timeout.
 - **`git_credential_helper.py`**: Standalone executable (`git-credential-wrench`) implementing Git's standard credential helper protocol. Reads credentials from SQLite `wrench.db` in read-only WAL mode, resolving repo-specific bindings from `repo_forge_links` before falling back to unique host matches in `forge_accounts`. Strictly fails closed when multiple accounts share a host without explicit repository association.
 - **`ssh_agent.py`**: Encapsulates platform `SSH_AUTH_SOCK` discovery and environment configuration behind the Platform-Abstraction Guard (FR-11.1–11.3).
 - **`exceptions.py`**: Typed domain exceptions for Git errors, network operations, merge conflicts, and authentication failures.
@@ -239,25 +300,54 @@ graph TD
 - **`reflog.py`**: Reflog inspection and branch restoration.
 - **`identity.py`**: Validates user name and email configurations, providing repo-local configuration setters.
 - **`paths.py`**: Standardized XDG data, config, and state directory resolution via `platformdirs`.
+- **`crash_handler.py` & `core/recovery/`**: Local-first crash resilience framework:
+  - `crash_handler.py`: Global unhandled exception hook capturing stack traces and auto-saving in-flight session drafts.
+  - `process_guard.py`: Inspects `/proc` to verify whether process holding lock files is alive or defunct.
+  - `sweeper.py`: Sweeps stale temporary staging files and orphan locks.
+  - `transaction.py`: Transactional rollback guard for complex multi-step git operations.
 
-### 3.3 File Watcher (`src/wrench/watcher/`)
+### 3.3 Multi-Forge Subsystem (`src/wrench/forge/`)
+- **`models.py`**: Normalized cross-provider data models:
+  - `PullRequest`: Standardized entity with `state` normalized to `{"open", "merged", "closed"}`.
+  - `Issue`: Standardized entity with `state` normalized to `{"open", "closed"}`.
+  - `CIStatus`: Build status with state normalized to `{"success", "failure", "pending", "unknown"}`.
+  - `ForgeAccount`: Runtime representation of configured accounts including TLS configuration and Secret Service references.
+- **`capability.py`**:
+  - `ForgeCapability`: Bitwise flags for granular feature gating (`PULL_REQUESTS`, `ISSUES`, `CI_STATUS`, `ISSUE_LINKING`, `REVIEWS`).
+  - `ForgeAdapter(ABC)`: Abstract base class encapsulating `httpx.Client` with connection pooling, custom TLS CA bundle loading, self-signed skip-verification policies, automatic Secret Service token resolution, standard pagination (`_paged_get` with 500-item safeguard), and status-code-to-exception translation.
+- **`registry.py`**: Pluggable adapter discovery using Python entry points (`[project.entry-points."wrench.forge_adapters"]`). Provides collision detection and the `get_adapter_for_account(account)` factory.
+- **`adapters/`**: Provider-specific implementations:
+  - `GitHubAdapter` (`github.py`): REST v3 API (`api.github.com` & GHES), Bearer authentication, `/issues` PR filtering, commit statuses + check-runs CI, and full review submissions (`APPROVE`, `REQUEST_CHANGES`, `COMMENT`).
+  - `GitLabAdapter` (`gitlab.py`): REST v4 API (`gitlab.com` & self-hosted), Private-Token authentication, URL-encoded path slugs (`owner%2Frepo`), merge request state mapping, pipeline CI status, and self-approval trap translation.
+  - `ForgejoAdapter` (`forgejo.py`): REST v1 API, token auth, commit status CI, and past-tense `APPROVED` review action mapping.
+  - `BitbucketAdapter` (`bitbucket.py`): REST 2.0 API, HTTP Basic Auth (email + app password), `next` URL pagination, commit statuses, and multi-endpoint review actions.
+- **`oauth/github_device_flow.py`**: Native OAuth Device Authorization Flow (RFC 8628):
+  - Requests `repo workflow` scope enabling PR/issue management and workflow file updates.
+  - Background polling with `slow_down` rate-limit backoff (+5s interval adjustments) and cooperative cancellation.
+- **`exceptions.py`**: Typed 6-tier exception hierarchy:
+  - `ForgeError`, `ForgeAuthenticationError`, `ForgeInsufficientScopeError` (with `scope_hint`), `ForgeRateLimitedError` (with `retry_after_seconds`), `ForgeUnreachableError`, and `ForgeNotFoundError`.
+
+### 3.4 File Watcher (`src/wrench/watcher/`)
 - **`inotify_watcher.py`**: Utilizes `watchdog.observers.Observer` to monitor repository directories.
   - Excludes internal `.git/` directory operations.
   - Subscribes to `on_modified` and `on_moved` / `IN_MOVED_TO` events (crucial for capturing atomic file saves from editors that write to temp files and rename).
   - Employs a 300ms single-shot `QTimer` debounce filter to collapse bursts of events into a single notification.
 - **`polling_fallback.py`**: Fallback polling loop when inotify handle limits (`ENOSPC`) are reached.
 
-### 3.4 Local Data Storage (`src/wrench/storage/`)
+### 3.5 Local Data Storage (`src/wrench/storage/`)
 - **`db.py`**: Manages SQLite connection (`wrench.db`) located in `$XDG_DATA_HOME/wrench/`.
   - Configured with `check_same_thread=False`.
   - Serialized through a single process-wide `threading.Lock()` to prevent SQLite concurrency deadlocks.
   - Automated corrupt database quarantine and recovery.
 - **`repo_registry.py`**: Repository CRUD operations, tracking last opened times, missing states, and relocated paths.
 - **`settings.py`**: App-level and per-repository key-value configuration storage.
-- **`forge_accounts.py`**: Forge account metadata storage and repository-to-account bindings (`repo_forge_links`).
+- **`forge_accounts.py`**: Forge account metadata storage and repository-to-account bindings (`repo_forge_links`):
+  - Supports `tls_ca_bundle_path` and `tls_insecure` columns.
+  - Atomic two-step insert-then-update with automatic rollback on Secret Service storage failure.
+  - Fast-path path-based link resolution for `git-credential-wrench`.
 - **`schema.sql`**: Normalized relational schema with foreign key cascading deletes.
 
-### 3.5 Credentials & Platform Layer (`src/wrench/credentials/`)
+### 3.6 Credentials & Platform Layer (`src/wrench/credentials/`)
 - **`backend.py`**: Abstract base class `CredentialBackend` defining `get_secret(key)`, `store_secret(key, secret)`, and `delete_secret(key)`.
 - **`secret_service.py`**: `SecretServiceBackend` implementing the Freedesktop Secret Service D-Bus specification via `secretstorage`.
   - Automatically handles collection unlocking via `collection.unlock()`.
@@ -559,6 +649,149 @@ $$x_{\text{scrollbar}} = \text{viewport}().x() + \text{header}.\text{sectionView
 $$w_{\text{scrollbar}} = \min(\text{header}.\text{sectionSize}(0), \text{viewport}().width() - (x_{\text{scrollbar}} - \text{viewport}().x()))$$
 3. **Synchronous Viewport Updates**: Overriding `scrollContentsBy(dx, dy)` guarantees that the overlay scrollbar updates synchronously with the table's native scrolling pipeline, eliminating visual latency or detachment during continuous scrolling.
 
+### 4.9 Multi-Forge API Execution & SWR Caching Workflow
+```
+[User Selects PRs/Issues Tab OR Triggers Refresh]
+                    │
+                    ▼
+[PRListTab / IssueListTab.reload_links_and_data()]
+                    │
+                    ├── 1. Query SQLite: repos & repo_forge_links
+                    │      └── Resolves linked forge_account_id, owner_slug, repo_slug
+                    │
+                    ├── 2. Query SQLite: forge_accounts
+                    │      └── Resolves instance_url, provider, credentials key, TLS config
+                    │
+                    ▼
+[forge.registry.get_adapter_for_account(acc)]
+                    │
+                    ├── Instantiates provider adapter (GitHub, GitLab, Forgejo, Bitbucket)
+                    ├── Configures httpx.Client (TLS verify bundle / insecure override)
+                    └── Lazily retrieves token from D-Bus Secret Service
+                    │
+                    ▼
+[Check SWR (Stale-While-Revalidate) In-Memory Cache]
+                    │
+         ┌──────────┴────────────────────────────────┐
+         ▼                                           ▼
+[Cache Hit (< 60s & not bypass)]             [Cache Miss / Stale (>= 60s)]
+         │                                           │
+         ├── Render immediately from cache           ├── 1. If stale cache exists, render immediately
+         └── Done (0 network latency)                │
+                                                     ├── 2. Increment _load_generation counter (race guard)
+                                                     ├── 3. ui.workers.run_in_background(adapter.list_...)
+                                                     │
+                                                     ▼
+                                      [Background Thread Execution]
+                                                     │
+                                                     ├── Executes REST/GraphQL via httpx
+                                                     │
+                                      ┌──────────────┴──────────────┐
+                                      ▼                             ▼
+                              [Success (HTTP 200)]          [Error (4xx / 5xx / Net)]
+                                      │                             │
+                                      ├── Verify gen_id == _gen     ├── Verify gen_id == _gen
+                                      ├── Store in _cache[(path,)]  ├── Map typed exception:
+                                      ├── Update TableModel         │     ForgeAuthenticationError,
+                                      └── Toggle Empty State View   │     ForgeInsufficientScopeError,
+                                                                    │     ForgeRateLimitedError,
+                                                                    │     ForgeUnreachableError
+                                                                    └── ForgeErrorBanner.show_error(exc)
+```
+
+#### 4.9.1 Out-of-Order Request Race Protection
+When switching between repositories, remotes, or filters in rapid succession, background worker threads may complete out of order (e.g., an older slow request resolves after a newer fast request).
+To prevent UI desynchronization, `PRListTab` and `IssueListTab` maintain an integer monotonic `_load_generation` counter:
+1. Every new fetch request increments `_load_generation` and captures the current generation ID `gen_id`.
+2. When the background worker emits `on_finished` or `on_failed` back to the main GUI thread, the handler compares `gen_id == self._load_generation`.
+3. If the IDs do not match, the response is discarded immediately as stale.
+
+### 4.10 GitHub Device Authorization Flow (OAuth RFC 8628) & Re-authorization Workflow
+```
+[User clicks "Sign in with GitHub" in AccountsDialog OR "Re-authenticate" on ErrorBanner]
+                                      │
+                                      ▼
+[GitHubDeviceFlowClient.request_device_code(client_id, scope="repo workflow")]
+                                      │
+                                      ├── POST https://github.com/login/device/code
+                                      │   Request scopes: "repo", "workflow"
+                                      │
+                                      ▼
+                      [Response: RFC 8628 Device Payload]
+                      - device_code: Secret token for polling
+                      - user_code: Human verification code (e.g. ABCD-1234)
+                      - verification_uri: https://github.com/login/device
+                      - interval: 5 seconds
+                                      │
+                                      ▼
+                   [AccountsDialog Displays Modal Device Code UI]
+                                      │
+                                      ├── Copies user_code to system clipboard
+                                      ├── Displays user_code in large monospace font
+                                      ├── Automatically launches default browser to verification_uri
+                                      │
+                                      ▼
+               [ui.workers.run_in_background: Polling Loop]
+                                      │
+                                      ├── Every (interval) seconds:
+                                      │   POST https://github.com/login/oauth/access_token
+                                      │
+                   ┌──────────────────┼─────────────────────────┐
+                   ▼                  ▼                         ▼
+         [authorization_pending]   [slow_down]           [Success: access_token]
+                   │                  │                         │
+                   ├── Wait interval  └── interval += 5         ├── GET https://api.github.com/user
+                   └── Poll again         Poll again            │   (Resolves authenticated username)
+                                                                │
+                                                                ▼
+                                              [In-Place Re-auth vs. New Account]
+                                                                │
+                                       ┌────────────────────────┴────────────────────────┐
+                                       ▼                                                 ▼
+                          [Re-authorizing Existing Account]                     [New Forge Account]
+                                       │                                                 │
+                                       ├── Preserve account ID & link bindings           ├── Insert into forge_accounts
+                                       ├── Update D-Bus Secret Service token in-place    ├── Store token in D-Bus Secret Service
+                                       └── Refresh AccountsDialog list                   └── Refresh AccountsDialog list
+```
+
+### 4.11 Workflow Scope Error Classification & Push Protection Workflow
+```
+[User triggers Push in ChangesTab / MainWindow]
+                      │
+                      ▼
+[core.write_ops.run_git_streaming: git push <remote> <branch>]
+                      │
+                      ├── Drains stderr stream concurrently
+                      │
+                      ▼
+        [Non-Zero Exit & stderr Stream Inspection]
+                      │
+   ┌──────────────────┴─────────────────────────────────────────┐
+   ▼                                                            ▼
+["refusing to allow an OAuth App to create or update workflow"] [Generic Non-Zero Exit]
+   │                                                            │
+   ▼                                                            ▼
+[Raise WorkflowScopeRequiredError]                             [Classify PushRejectedError /
+   │                                                            MergeRequiredError / AuthFailedError]
+   ▼                                                            │
+[MainWindow.on_failed(exc)]                                    ▼
+   │                                                            [Generic Push Conflict Dialog:
+   ├── Inspects isinstance(exc, WorkflowScopeRequiredError)      Prompt: "Fetch & Retry" / "Force Push"]
+   │
+   ▼
+[Dedicated GitHub Workflow Scope Recovery Dialog]
+   - Informs user: Commits modify .github/workflows/ without OAuth "workflow" scope
+   - Prevents destructive Force Push loops or redundant Fetch & Retry attempts
+   - Action Button: "Open Accounts & Re-authenticate"
+        └── Launches AccountsDialog with pre-configured "repo workflow" OAuth scopes
+```
+
+#### 4.11.1 Prevention of Infinite Fetch-Retry Loops
+GitHub returns HTTP 403 with `refusing to allow an OAuth App to create or update workflow... without \`workflow\` scope` whenever a commit modifies files in `.github/workflows/` and the pushing credential helper or OAuth token lacks the `workflow` scope.
+If treated as a generic `PushRejectedError`, GUI clients mistakenly suggest "Fetch and Retry" or "Force Push". Neither action succeeds because the rejection is authorization-based rather than reference non-fast-forward.
+By raising `WorkflowScopeRequiredError` before generic rejection classification, Wrench intercepts the failure at the core engine level and directs the user straight to in-place OAuth token re-authorization with the required `"repo workflow"` scopes.
+
 ---
 
 ## 5. Relational Database Schema
@@ -594,6 +827,8 @@ $$w_{\text{scrollbar}} = \min(\text{header}.\text{sectionSize}(0), \text{viewpor
                                  │ label                              │
                                  │ username                           │
                                  │ secret_service_key                 │
+                                 │ tls_ca_bundle_path                 │
+                                 │ tls_insecure                       │
                                  └────────────────────────────────────┘
 ```
 
@@ -618,7 +853,8 @@ wrench/
 │       ├── phase-1.md
 │       ├── phase-1.5.md
 │       ├── phase-2.md
-│       └── phase-3.md
+│       ├── phase-3.md
+│       └── phase-4.md
 ├── packaging/
 │   └── flatpak/                  # Flatpak packaging manifests
 ├── src/wrench/
@@ -634,37 +870,69 @@ wrench/
 │   │   ├── snapshots.py          # Rolling safety snapshots
 │   │   ├── reflog.py             # Reflog operations
 │   │   ├── identity.py           # Git author configuration
-│   │   └── paths.py              # XDG / platformdirs path resolution
+│   │   ├── paths.py              # XDG / platformdirs path resolution
+│   │   └── recovery/             # Automatic corruption & lock recovery subsystem
+│   │       ├── actions.py        # Remediation actions (unlock, fsck, quarantine)
+│   │       ├── classifier.py     # Health diagnostics & error classification
+│   │       ├── process_guard.py  # Lock file ownership & PID inspection
+│   │       ├── sweeper.py        # Background garbage collection & cleanup
+│   │       └── transaction.py    # Atomic rollback & snapshot journals
 │   ├── credentials/              # Secret Service & credential backends
 │   │   ├── backend.py            # CredentialBackend abstract interface
 │   │   └── secret_service.py     # D-Bus Secret Service platform backend
 │   ├── forge/                    # Forge provider capability system
+│   │   ├── capability.py         # ForgeCapability flags & ForgeAdapter ABC
+│   │   ├── exceptions.py         # Typed forge error hierarchy
+│   │   ├── models.py             # Dataclasses: PullRequest, Issue, CIStatus
+│   │   ├── registry.py           # Dynamic entry point & provider adapter registry
+│   │   ├── adapters/             # Forge provider implementations
+│   │   │   ├── github.py         # GitHub REST/GraphQL adapter
+│   │   │   ├── gitlab.py         # GitLab REST adapter
+│   │   │   ├── forgejo.py        # Forgejo / Gitea REST adapter
+│   │   │   └── bitbucket.py      # Bitbucket Cloud REST adapter
+│   │   └── oauth/                # OAuth flows
+│   │       └── github_device_flow.py # RFC 8628 Device Authorization Flow client
 │   ├── storage/                  # SQLite storage & repository registry
 │   │   ├── db.py                 # SQLite connection management & locks
 │   │   ├── repo_registry.py      # Repository tracking CRUD
 │   │   ├── settings.py           # App & repo key-value settings
-│   │   ├── forge_accounts.py     # Forge accounts & repository links
+│   │   ├── forge_accounts.py     # Forge accounts, repo links & TLS settings
 │   │   └── schema.sql            # Normalized relational schema
 │   ├── ui/                       # PySide6 desktop UI
 │   │   ├── main_window.py        # Main application window & repository menu
 │   │   ├── theme.py              # Catppuccin Velvet Pastel palettes & theme management
 │   │   ├── workers.py            # Thread-safe background worker marshaller
-│   │   ├── tabs/                 # Hybrid tab navigation system
-│   │   │   ├── tab_bar.py        # TabContainer & TabButton widgets
-│   │   │   ├── changes_tab.py    # Primary Changes workspace
-│   │   │   └── history_tab.py    # History / Commit graph workspace
 │   │   ├── commit_graph/         # Topological DAG layout & custom table view
 │   │   │   ├── layout.py         # S-curve calculation & slot recycling
 │   │   │   └── graph_widget.py   # CommitGraphWidget & custom delegate
-│   │   ├── dialogs/              # Interactive dialogs & recovery panels
-│   │   │   ├── merge_dialog.py   # 3-Way visual merge conflict resolution tool
+│   │   ├── dialogs/              # Interactive dialogs & account managers
+│   │   │   ├── accounts_dialog.py# Forge accounts manager & OAuth Device Flow
+│   │   │   ├── link_dialog.py    # Remote-to-forge account association dialog
 │   │   │   └── remotes_dialog.py # Repository remotes manager & reachability
+│   │   ├── diff_view/            # Syntax-highlighted diff viewer & staging
+│   │   ├── forge_panel/          # Forge UI integration components
+│   │   │   ├── badges.py         # Catppuccin Velvet Pastel pill painter
+│   │   │   ├── create_pr_dialog.py # New Pull Request modal dialog
+│   │   │   ├── error_banner.py   # Inline forge error notifications
+│   │   │   ├── info_popover.py   # Hover inspection popovers
+│   │   │   └── review_dialog.py  # PR review & approval dialog
+│   │   ├── merge_tool/           # 3-Way visual merge conflict resolution tool
+│   │   │   └── merge_dialog.py   # Conflict side-by-side editor & resolution
 │   │   ├── recovery/             # Recovery & progress modals
 │   │   │   ├── busy_dialog.py    # Modal progress tracker & cancel button
 │   │   │   └── recovery_dialog.py# Busy operation tracking & repo diagnostics
-│   │   ├── widgets/              # Reusable UI widgets
-│   │   │   └── branch_switcher.py# Interactive branch selector & popup
-│   │   └── diff_view/            # Syntax-highlighted diff viewer & staging
+│   │   ├── snapshots_panel/      # Rolling snapshots browser & restore panel
+│   │   │   └── snapshots_panel.py# Snapshot timeline & restore triggers
+│   │   ├── tabs/                 # Hybrid tab navigation system
+│   │   │   ├── tab_bar.py        # TabContainer & TabButton widgets
+│   │   │   ├── changes_tab.py    # Primary Changes workspace
+│   │   │   ├── history_tab.py    # History / Commit graph workspace
+│   │   │   ├── pr_list_tab.py    # Pull Requests virtualized list & filters
+│   │   │   ├── pr_detail_tab.py  # Pull Request discussion & diff inspector
+│   │   │   ├── issue_list_tab.py # Issues virtualized list & filters
+│   │   │   └── issue_detail_tab.py # Issue discussion & state toggles
+│   │   └── widgets/              # Reusable UI widgets
+│   │       └── branch_switcher.py# Interactive branch selector & popup
 │   └── watcher/                  # Inotify filesystem watching & debouncing
 └── tests/                        # Comprehensive test suite (unit, integration, UI)
 ```

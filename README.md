@@ -6,6 +6,7 @@
 ![GitHub Repo stars](https://img.shields.io/github/stars/uzair777-dev/Wrench)
 [![Python: 3.12+](https://img.shields.io/badge/Python-3.12+-green.svg)](https://www.python.org/)
 [![GUI: PySide6](https://img.shields.io/badge/GUI-PySide6%20%2F%20Qt%206-informational.svg)](https://www.qt.io/)
+[![Tests: 411 passed](https://img.shields.io/badge/Tests-411%20passed-brightgreen.svg)](tests/)
 ![GitHub Actions Workflow Status](https://img.shields.io/github/actions/workflow/status/uzair777-dev/Wrench/ci.yml)
 
 ---

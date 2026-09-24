@@ -151,6 +151,69 @@ class WorkflowScopeRequiredError(GitCommandError):
             super().__init__(["push"], returncode, stderr_or_args)
 
 
+class SecretScanningRejectedError(PushRejectedError):
+    """Raised when GitHub Secret Scanning (GH007) blocks a push containing leaked credentials."""
+
+    def __init__(
+        self,
+        stderr_or_args: str | list[str] = "",
+        returncode: int = 1,
+        stderr: str | None = None,
+        *,
+        secret_type: str | None = None,
+        file_location: str | None = None,
+        unblock_url: str | None = None,
+    ) -> None:
+        super().__init__(stderr_or_args, returncode, stderr)
+        self.secret_type = secret_type
+        self.file_location = file_location
+        self.unblock_url = unblock_url
+
+
+class ProtectedBranchRejectedError(PushRejectedError):
+    """Raised when branch protection rules or rulesets (GH006) block a direct push."""
+
+    def __init__(
+        self,
+        stderr_or_args: str | list[str] = "",
+        returncode: int = 1,
+        stderr: str | None = None,
+        *,
+        branch_name: str | None = None,
+        reason: str | None = None,
+    ) -> None:
+        super().__init__(stderr_or_args, returncode, stderr)
+        self.branch_name = branch_name
+        self.reason = reason
+
+
+class FileTooLargeRejectedError(PushRejectedError):
+    """Raised when a file exceeds remote file size quota (e.g. GitHub 100MB limit - GH001)."""
+
+    def __init__(
+        self,
+        stderr_or_args: str | list[str] = "",
+        returncode: int = 1,
+        stderr: str | None = None,
+        *,
+        filename: str | None = None,
+        filesize_mb: float | None = None,
+        limit_mb: float = 100.0,
+    ) -> None:
+        super().__init__(stderr_or_args, returncode, stderr)
+        self.filename = filename
+        self.filesize_mb = filesize_mb
+        self.limit_mb = limit_mb
+
+
+class SignedCommitsRequiredError(PushRejectedError):
+    """Raised when remote branch requires signed commits (GH008)."""
+
+
+class RepoPermissionDeniedError(PushRejectedError):
+    """Raised when authenticated user lacks push permissions on the repository (HTTP 403)."""
+
+
 class MergeRequiredError(GitCommandError):
     """git pull --ff-only failed because branches diverged."""
 

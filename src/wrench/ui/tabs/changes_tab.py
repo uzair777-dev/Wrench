@@ -43,6 +43,7 @@ from PySide6.QtWidgets import (
 
 from wrench.core import engine
 from wrench.core.engine import RepoHandle, RepoStatus
+from wrench.core.exceptions import NothingToCommitError
 from wrench.storage import forge_accounts, repo_registry
 from wrench.ui.diff_view.diff_widget import DiffView
 from wrench.ui.merge_tool.merge_dialog import MergeDialog
@@ -1024,12 +1025,26 @@ class ChangesTab(QWidget):
             self.amend_cb.setChecked(False)
 
             self.refresh()
+        except NothingToCommitError:
+            logger.info("Commit requested with nothing to commit.")
+            QMessageBox.information(
+                self,
+                self.tr("Nothing to Commit"),
+                self.tr(
+                    "Your working tree is clean. There are no staged or modified files to commit."
+                ),
+            )
+            self.commit_msg_input.clear()
+            self.commit_desc_input.clear()
+            self.amend_cb.setChecked(False)
+            self.refresh()
         except Exception as e:
             logger.error("Commit failed: %s", e)
             report = diagnose_error(
                 e,
                 repo_path=self._repo.path,
                 stderr=getattr(e, "stderr", None) or str(e),
+                stdout=getattr(e, "stdout", None),
                 command=["git", "commit", "-m", full_msg],
             )
             recovery_dlg = RecoveryDialog(

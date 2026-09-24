@@ -7,6 +7,7 @@ from wrench.core.exceptions import (
     BranchAlreadyExistsError,
     BranchNotFullyMergedError,
     EmptyCommitMessageError,
+    NothingToCommitError,
 )
 
 
@@ -26,6 +27,10 @@ class TestCommit:
         sha = write_ops.commit(simple_repo.path, "Add modified text")
         assert len(sha) == 40
         assert str(simple_repo.pygit2_repo.head.target) == sha
+
+    def test_commit_nothing_to_commit_raises(self, simple_repo):
+        with pytest.raises(NothingToCommitError):
+            write_ops.commit(simple_repo.path, "Clean commit")
 
     def test_amend_commit(self, simple_repo):
         (simple_repo.path / "hello.txt").write_text("Amended text\n")

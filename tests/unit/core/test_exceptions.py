@@ -8,6 +8,7 @@ from wrench.core.exceptions import (
     FileTooLargeRejectedError,  # NEW
     GitCommandError,
     MergeRequiredError,
+    NothingToCommitError,
     ProtectedBranchRejectedError,  # NEW
     PushRejectedError,
     RemoteExistsError,
@@ -25,6 +26,7 @@ class TestPhase3Exceptions:
         assert issubclass(CloneAbortedError, WrenchGitError)
         assert issubclass(AuthRequiredError, WrenchGitError)
         assert issubclass(AuthFailedError, WrenchGitError)
+        assert issubclass(NothingToCommitError, WrenchGitError)
         assert issubclass(PushRejectedError, GitCommandError)
         assert issubclass(WorkflowScopeRequiredError, GitCommandError)
         assert issubclass(MergeRequiredError, GitCommandError)
@@ -56,6 +58,11 @@ class TestPhase3Exceptions:
 
         timeout_err = CLITimeoutError(["fetch", "origin"], -1, "Command timed out after 600s")
         assert timeout_err.returncode == -1
+
+    def test_git_command_error_stdout_fallback(self):
+        err = GitCommandError(["commit", "-m", "foo"], 1, "", stdout="nothing to commit")
+        assert err.stdout == "nothing to commit"
+        assert "Output:\nnothing to commit" in str(err)
 
 
 class TestPushProtectionExceptions:

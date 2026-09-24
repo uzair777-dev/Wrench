@@ -56,12 +56,29 @@ def diagnose_error(
     *,
     repo_path: Path | str | None = None,
     stderr: str | None = None,
+    stdout: str | None = None,
     command: list[str] | str | None = None,
 ) -> DiagnosticReport:
     """Classify an error and return structured diagnostic details with recovery actions."""
     err_str = str(error)
-    combined_err = f"{err_str}\n{stderr or ''}"
+    combined_err = f"{err_str}\n{stderr or ''}\n{stdout or getattr(error, 'stdout', '') or ''}"
     cmd_str = " ".join(command) if isinstance(command, list) else (command or "")
+
+    # 0. Nothing to Commit / Clean Working Tree
+    if (
+        "NothingToCommitError" in type(error).__name__
+        or "nothing to commit" in combined_err.lower()
+        or "no changes added to commit" in combined_err.lower()
+    ):
+        return DiagnosticReport(
+            category=ErrorCategory.GENERIC_ERROR,
+            title="Nothing to Commit",
+            description=(
+                "Your working tree and staging area are clean; there are no changes to commit."
+            ),
+            technical_details=combined_err.strip(),
+            actions=[],
+        )
 
     # 1. Active Repo Contention / Repo Busy
     if (

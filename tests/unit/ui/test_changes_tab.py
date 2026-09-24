@@ -114,3 +114,27 @@ class TestChangesTabSelectAll:
         for i in range(3):
             wi = tab.files_list.itemWidget(tab.files_list.item(i))
             assert wi.is_checked() is True
+
+
+class TestChangesTabCommit:
+    def test_commit_when_nothing_to_commit_shows_info_and_refreshes(
+        self, simple_repo, db_conn, monkeypatch
+    ):
+        repo_registry.add_repo(db_conn, str(simple_repo.path))
+        tab = ChangesTab(db_conn)
+        tab.show()
+        tab._open_repo_by_path(str(simple_repo.path))
+
+        tab.commit_msg_input.setText("Test message")
+        # Force enable commit_btn to simulate stale UI state
+        tab.commit_btn.setEnabled(True)
+
+        info_called = []
+        monkeypatch.setattr(
+            "PySide6.QtWidgets.QMessageBox.information",
+            lambda *args, **kwargs: info_called.append(True),
+        )
+
+        tab._on_commit_clicked()
+        assert len(info_called) == 1
+        assert tab.commit_msg_input.text() == ""

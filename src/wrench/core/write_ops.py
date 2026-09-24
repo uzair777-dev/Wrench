@@ -34,6 +34,7 @@ from .exceptions import (
     FileTooLargeRejectedError,
     GitCommandError,
     MergeRequiredError,
+    NothingToCommitError,
     ProtectedBranchRejectedError,
     PushRejectedError,
     RepoPermissionDeniedError,
@@ -96,7 +97,12 @@ def run_git(
             result.stdout.strip(),
         )
         if check:
-            raise GitCommandError(args, result.returncode, result.stderr.strip())
+            raise GitCommandError(
+                args,
+                result.returncode,
+                result.stderr.strip(),
+                stdout=result.stdout.strip(),
+            )
     else:
         logger.debug("[git] Succeeded (exit 0): git %s", " ".join(args))
 
@@ -435,7 +441,18 @@ def commit(repo_path: Path, message: str, *, amend: bool = False) -> str:
     if amend:
         args.append("--amend")
 
-    run_git(repo_path, args)
+    try:
+        run_git(repo_path, args)
+    except GitCommandError as e:
+        combined = f"{e.stdout}\n{e.stderr}".lower()
+        if "nothing to commit" in combined or "no changes added to commit" in combined:
+            raise NothingToCommitError(
+                "Nothing to commit, working tree clean",
+                stderr=e.stderr,
+                stdout=e.stdout,
+            ) from e
+        raise
+
     rev_result = run_git(repo_path, ["rev-parse", "HEAD"])
     return rev_result.stdout.strip()
 

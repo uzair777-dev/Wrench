@@ -52,15 +52,34 @@ class StaleLockDetectedError(WrenchGitError):
 class GitCommandError(WrenchGitError):
     """A git subprocess command exited with a nonzero code."""
 
-    def __init__(self, args: list[str], returncode: int, stderr: str):
+    def __init__(self, args: list[str], returncode: int, stderr: str, *, stdout: str = ""):
         self.args_list = args
         self.returncode = returncode
+        self.stdout = stdout
         cmd_str = " ".join(args)
-        error_detail = f"\n\nError output:\n{stderr.strip()}" if stderr and stderr.strip() else ""
+        error_detail = ""
+        if stderr and stderr.strip():
+            error_detail = f"\n\nError output:\n{stderr.strip()}"
+        elif stdout and stdout.strip():
+            error_detail = f"\n\nOutput:\n{stdout.strip()}"
         super().__init__(
             f"git command failed (exit {returncode}): {cmd_str}{error_detail}",
             stderr=stderr,
         )
+
+
+class NothingToCommitError(WrenchGitError):
+    """Raised when a commit is attempted but working tree and index are clean."""
+
+    def __init__(
+        self,
+        message: str = "Nothing to commit, working tree clean",
+        *,
+        stderr: str | None = None,
+        stdout: str | None = None,
+    ):
+        super().__init__(message, stderr=stderr)
+        self.stdout = stdout
 
 
 class DirtyTreeError(WrenchGitError):

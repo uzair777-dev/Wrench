@@ -63,7 +63,7 @@
 | **Phase 2** | Visual Commit Graph & 3-Way Merge Tool | **Completed** | [`phase-2.md`](dev/planning/phase-2.md) |
 | **Phase 3** | Remote Operations, Push/Pull & Credential Helper | **Completed** | [`phase-3.md`](dev/planning/phase-3.md) |
 | **Phase 4** | Multi-Forge Integration (GitHub, GitLab, Forgejo, Bitbucket) | **Completed** | [`phase-4.md`](dev/planning/phase-4.md) |
-| **Phase 4.5** | Multi-Repository Directory Discovery | *In Progress* | [`implementation-plan.md`](dev/planning/implementation-plan.md) |
+| **Phase 4.5** | Multi-Repository Directory Discovery | *Next in line* | [`implementation-plan.md`](dev/planning/implementation-plan.md) |
 | **Phase 5** | Git LFS & Submodules | *Planned* | [`implementation-plan.md`](dev/planning/implementation-plan.md) |
 | **Phase 6** | Packaging Hardening & Flathub Submission | *Planned* | [`implementation-plan.md`](dev/planning/implementation-plan.md) |
 | **Phase 7** | v1 Polish & Final Release | *Planned* | [`implementation-plan.md`](dev/planning/implementation-plan.md) |

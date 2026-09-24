@@ -21,6 +21,7 @@ from PySide6.QtCore import QByteArray, QEvent, Qt, QTimer
 from PySide6.QtGui import QActionGroup, QGuiApplication, QKeySequence
 from PySide6.QtWidgets import (
     QApplication,
+    QDialog,
     QFileDialog,
     QInputDialog,
     QLabel,
@@ -38,16 +39,26 @@ from wrench.core.exceptions import (
     AuthRequiredError,
     CLITimeoutError,
     CloneAbortedError,
+    FileTooLargeRejectedError,
     GitCommandError,
     MergeRequiredError,
+    ProtectedBranchRejectedError,
     PushRejectedError,
     RemoteNotFoundError,
+    RepoPermissionDeniedError,
+    SecretScanningRejectedError,
+    SignedCommitsRequiredError,
     WorkflowScopeRequiredError,
 )
 from wrench.storage import repo_registry, settings
 from wrench.storage.db import get_connection
 from wrench.ui.dialogs.accounts_dialog import AccountsDialog
 from wrench.ui.dialogs.link_dialog import LinkRepoDialog
+from wrench.ui.dialogs.push_recovery_dialogs import (
+    FileTooLargeDialog,
+    ProtectedBranchDialog,
+    SecretScanningDialog,
+)
 from wrench.ui.dialogs.remotes_dialog import RemotesDialog
 from wrench.ui.recovery.busy_dialog import BusyOperationDialog
 from wrench.ui.snapshots_panel import SnapshotsPanel
@@ -1060,6 +1071,62 @@ class MainWindow(QMainWindow):
             box.exec()
             if box.clickedButton() == reauth_btn:
                 self._on_manage_forge_accounts()
+            return
+
+        if isinstance(exc, SecretScanningRejectedError):
+            dlg = SecretScanningDialog(exc, parent=self)
+            dlg.exec()
+            return
+
+        if isinstance(exc, ProtectedBranchRejectedError):
+            default_branch = f"patch-{branch}" if branch else "patch-1"
+            dlg = ProtectedBranchDialog(exc, default_new_branch=default_branch, parent=self)
+            if dlg.exec() == QDialog.DialogCode.Accepted:
+                new_branch = dlg.get_new_branch_name()
+                if new_branch and self._current_repo:
+                    try:
+                        engine.create_branch(self._current_repo, new_branch)
+                        engine.switch_branch(self._current_repo, new_branch)
+                        self._refresh_after_git_op()
+                        self._on_push_remote(force=False)
+                    except Exception as e:
+                        QMessageBox.critical(
+                            self,
+                            self.tr("Branch Creation Failed"),
+                            str(e),
+                        )
+            return
+
+        if isinstance(exc, FileTooLargeRejectedError):
+            dlg = FileTooLargeDialog(exc, parent=self)
+            dlg.exec()
+            return
+
+        if isinstance(exc, SignedCommitsRequiredError):
+            QMessageBox.warning(
+                self,
+                self.tr("Signed Commits Required"),
+                self.tr(
+                    f"Push to '{remote_name}' was rejected because this branch "
+                    "requires signed commits (GH008).\n\n"
+                    "To resolve this:\n"
+                    "1. Configure GPG or SSH commit signing in your git config\n"
+                    "2. Sign your commits with 'git commit -S'\n"
+                    "3. Push again"
+                ),
+            )
+            return
+
+        if isinstance(exc, RepoPermissionDeniedError):
+            QMessageBox.critical(
+                self,
+                self.tr("Permission Denied"),
+                self.tr(
+                    f"You do not have write access to push to '{remote_name}'.\n\n"
+                    "Check that your account has the necessary permissions "
+                    "for this repository."
+                ),
+            )
             return
 
         if isinstance(exc, PushRejectedError):

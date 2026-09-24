@@ -13,9 +13,14 @@ from wrench.core.exceptions import (
     AuthFailedError,
     AuthRequiredError,
     CloneAbortedError,
+    FileTooLargeRejectedError,
     MergeRequiredError,
+    ProtectedBranchRejectedError,
     PushRejectedError,
     RemoteNotFoundError,
+    RepoPermissionDeniedError,
+    SecretScanningRejectedError,
+    SignedCommitsRequiredError,
 )
 from wrench.ui.main_window import MainWindow
 
@@ -316,6 +321,58 @@ class TestMainWindowRemotes:
 
         with patch.object(QMessageBox, "exec", return_value=0):
             win._route_remote_error(exc, "origin", branch="main", op="pull")
+
+        win.close()
+
+    def test_error_routing_secret_scanning(self, test_db):
+        win = MainWindow(conn=test_db)
+        exc = SecretScanningRejectedError("Secret detected")
+
+        with patch("wrench.ui.main_window.SecretScanningDialog.exec") as mock_exec:
+            win._route_remote_error(exc, "origin", branch="main", op="push")
+            assert mock_exec.called
+
+        win.close()
+
+    def test_error_routing_protected_branch(self, test_db):
+        win = MainWindow(conn=test_db)
+        exc = ProtectedBranchRejectedError("Protected branch", branch_name="master")
+
+        with patch("wrench.ui.main_window.ProtectedBranchDialog.exec", return_value=0) as mock_exec:
+            win._route_remote_error(exc, "origin", branch="master", op="push")
+            assert mock_exec.called
+
+        win.close()
+
+    def test_error_routing_file_too_large(self, test_db):
+        win = MainWindow(conn=test_db)
+        exc = FileTooLargeRejectedError("File too large", filename="big.bin")
+
+        with patch("wrench.ui.main_window.FileTooLargeDialog.exec") as mock_exec:
+            win._route_remote_error(exc, "origin", branch="main", op="push")
+            assert mock_exec.called
+
+        win.close()
+
+    def test_error_routing_signed_commits(self, test_db):
+        win = MainWindow(conn=test_db)
+        exc = SignedCommitsRequiredError("Signing required")
+
+        with patch.object(QMessageBox, "warning") as mock_warn:
+            win._route_remote_error(exc, "origin", branch="main", op="push")
+            assert mock_warn.called
+            assert "GH008" in mock_warn.call_args[0][2]
+
+        win.close()
+
+    def test_error_routing_repo_permission_denied(self, test_db):
+        win = MainWindow(conn=test_db)
+        exc = RepoPermissionDeniedError("403 Forbidden")
+
+        with patch.object(QMessageBox, "critical") as mock_crit:
+            win._route_remote_error(exc, "origin", branch="main", op="push")
+            assert mock_crit.called
+            assert "write access" in mock_crit.call_args[0][2]
 
         win.close()
 

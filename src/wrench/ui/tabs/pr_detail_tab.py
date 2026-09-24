@@ -205,15 +205,19 @@ class PRDetailTab(QWidget):
         owner = self._owner
         repo = self._repo_slug
 
-        # Fetch list to find this specific PR
+        # Fetch PR directly using get_pull_request
         run_in_background(
-            fn=lambda: adapter.list_pull_requests(owner, repo, state="all"),
+            fn=lambda: adapter.get_pull_request(owner, repo, self.pr_id),
             on_finished=self._on_pr_loaded,
             on_failed=self._on_error,
         )
 
-    def _on_pr_loaded(self, prs: list[PullRequest]) -> None:
-        target_pr = next((p for p in prs if p.id == self.pr_id), None)
+    def _on_pr_loaded(self, result: PullRequest | list[PullRequest]) -> None:
+        if isinstance(result, list):
+            target_pr = next((p for p in result if p.id == self.pr_id), None)
+        else:
+            target_pr = result
+
         if not target_pr:
             self.title_label.setText(f"Pull Request #{self.pr_id} not found on remote")
             return
@@ -221,9 +225,10 @@ class PRDetailTab(QWidget):
         self._pr = target_pr
         self.title_label.setText(f"#{target_pr.id}: {target_pr.title}")
         self.state_badge.set_state(target_pr.state)
+        created = target_pr.created_at[:10] if target_pr.created_at else "Unknown date"
         self.meta_label.setText(
             f"Opened by {target_pr.author} · {target_pr.source_branch} → "
-            f"{target_pr.target_branch} · {target_pr.created_at[:10]}"
+            f"{target_pr.target_branch} · {created}"
         )
         self.desc_viewer.setPlainText(target_pr.description or "No description provided.")
 

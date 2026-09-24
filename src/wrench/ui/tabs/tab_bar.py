@@ -590,6 +590,11 @@ class TabContainer(QWidget):
             return self._tabs[index]
         return None
 
+    def update_tab_repo_path(self, index: int, repo_path: str) -> None:
+        """Updates the repo_path metadata for a tab at the given index."""
+        if 0 <= index < len(self._tabs):
+            self._tabs[index].repo_path = repo_path
+
     def find_tab(
         self,
         tab_type: str,

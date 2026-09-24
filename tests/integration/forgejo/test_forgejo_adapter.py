@@ -225,3 +225,53 @@ def test_submit_review_action_approved_trap(forgejo_adapter):
         forgejo_adapter.submit_review("o", "r", 5, action="approve", body="Good to go")
         _, kwargs = mock_req.call_args
         assert kwargs["json"] == {"event": "APPROVED", "body": "Good to go"}
+
+
+def test_get_pull_request(forgejo_adapter):
+    mock_resp = httpx.Response(
+        200,
+        json={
+            "number": 42,
+            "title": "Forgejo PR 42",
+            "body": "PR description",
+            "state": "closed",
+            "merged_at": "2026-09-24T10:00:00Z",
+            "head": {"ref": "feature"},
+            "base": {"ref": "main"},
+            "html_url": "https://forgejo.example.com/o/r/pulls/42",
+            "user": {"login": "alice"},
+            "created_at": "2026-09-24T10:00:00Z",
+        },
+        request=httpx.Request("GET", "https://forgejo.example.com/api/v1/repos/o/r/pulls/42"),
+    )
+    with patch.object(forgejo_adapter._client, "request", return_value=mock_resp):
+        pr = forgejo_adapter.get_pull_request("o", "r", "42")
+        assert pr.id == "42"
+        assert pr.title == "Forgejo PR 42"
+        assert pr.state == "merged"
+        assert pr.source_branch == "feature"
+        assert pr.target_branch == "main"
+        assert pr.author == "alice"
+
+
+def test_get_issue(forgejo_adapter):
+    mock_resp = httpx.Response(
+        200,
+        json={
+            "number": 114,
+            "title": "Forgejo Issue 114",
+            "body": "Issue description",
+            "state": "open",
+            "html_url": "https://forgejo.example.com/o/r/issues/114",
+            "user": {"login": "bob"},
+            "created_at": "2026-09-24T10:30:00Z",
+        },
+        request=httpx.Request("GET", "https://forgejo.example.com/api/v1/repos/o/r/issues/114"),
+    )
+    with patch.object(forgejo_adapter._client, "request", return_value=mock_resp):
+        issue = forgejo_adapter.get_issue("o", "r", "114")
+        assert issue.id == "114"
+        assert issue.title == "Forgejo Issue 114"
+        assert issue.state == "open"
+        assert issue.author == "bob"
+        assert issue.description == "Issue description"

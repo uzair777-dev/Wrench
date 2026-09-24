@@ -6,9 +6,11 @@ from unittest.mock import MagicMock, patch
 
 import pygit2
 import pytest
-from PySide6.QtWidgets import QApplication, QMessageBox
+from PySide6.QtWidgets import QApplication, QMessageBox, QPushButton
 
 from wrench.core.engine import RepoHandle
+from wrench.forge.exceptions import ForgeAuthenticationError
+from wrench.forge.oauth.github_device_flow import DeviceFlowCodes
 from wrench.storage import forge_accounts, repo_registry
 from wrench.storage.db import run_migrations
 from wrench.ui.dialogs.accounts_dialog import (
@@ -17,6 +19,7 @@ from wrench.ui.dialogs.accounts_dialog import (
     EditAccountDialog,
 )
 from wrench.ui.dialogs.link_dialog import LinkRepoDialog
+from wrench.ui.forge_panel.info_popover import InfoButton
 
 
 @pytest.fixture(autouse=True)
@@ -237,3 +240,155 @@ class TestLinkRepoDialog:
             # Verify git config credential.useHttpPath was set to true
             handle = RepoHandle(pygit2_repo, str(repo_path))
             assert handle.pygit2_repo.config["credential.useHttpPath"] == "true"
+
+
+class TestAssistedFlowUI:
+    """UI tests for AddAccountDialog assisted flow, chooser, and tooltips."""
+
+    def test_add_dialog_shows_method_chooser_first(self):
+        dlg = AddAccountDialog()
+        assert dlg._stack.currentIndex() == 0
+        buttons = dlg._chooser_page.findChildren(QPushButton)
+        btn_texts = [b.text() for b in buttons]
+        assert any("Assisted" in t for t in btn_texts)
+        assert any("Manual" in t for t in btn_texts)
+
+    def test_assisted_button_goes_to_device_flow_page(self):
+        dlg = AddAccountDialog()
+        dlg.assisted_btn.click()
+        assert dlg._stack.currentIndex() == 1
+
+    def test_manual_button_goes_to_manual_form_page(self):
+        dlg = AddAccountDialog()
+        dlg.manual_btn.click()
+        assert dlg._stack.currentIndex() == 2
+
+    def test_back_button_returns_to_chooser(self):
+        dlg = AddAccountDialog()
+        # From assisted page
+        dlg.assisted_btn.click()
+        assert dlg._stack.currentIndex() == 1
+        dlg.assisted_back_btn.click()
+        assert dlg._stack.currentIndex() == 0
+
+        # From manual page
+        dlg.manual_btn.click()
+        assert dlg._stack.currentIndex() == 2
+        dlg.manual_back_btn.click()
+        assert dlg._stack.currentIndex() == 0
+
+    def test_enterprise_radio_reveals_instance_url(self):
+        dlg = AddAccountDialog()
+        dlg.show()
+        dlg.assisted_btn.click()
+        dlg.enterprise_radio.setChecked(True)
+        assert not dlg.assisted_url_edit.isHidden()
+        assert dlg.assisted_url_container.isVisible()
+
+    def test_personal_radio_hides_instance_url(self):
+        dlg = AddAccountDialog()
+        dlg.show()
+        dlg.assisted_btn.click()
+        dlg.enterprise_radio.setChecked(True)
+        assert not dlg.assisted_url_edit.isHidden()
+        dlg.personal_radio.setChecked(True)
+        assert dlg.assisted_url_edit.isHidden()
+        assert not dlg.assisted_url_container.isVisible()
+
+    def test_scope_chooser_defaults_to_full(self):
+        dlg = AddAccountDialog()
+        dlg.assisted_btn.click()
+        assert dlg.full_scope_radio.isChecked()
+        assert not dlg.public_scope_radio.isChecked()
+
+    def test_manual_form_has_info_buttons(self):
+        dlg = AddAccountDialog()
+        dlg.manual_btn.click()
+        info_buttons = dlg._manual_page.findChildren(InfoButton)
+        assert len(info_buttons) >= 5
+
+    def test_info_button_toggles_popover(self):
+        dlg = AddAccountDialog()
+        dlg.show()
+        dlg.manual_btn.click()
+        info_buttons = dlg._manual_page.findChildren(InfoButton)
+        assert len(info_buttons) > 0
+        btn = info_buttons[0]
+
+        # First click opens popover
+        btn.click()
+        assert btn._popover is not None
+        assert btn._popover.isVisible()
+
+        # Second click closes popover
+        btn.click()
+        assert not btn._popover.isVisible()
+
+    def test_tooltip_updates_on_provider_change(self):
+        dlg = AddAccountDialog()
+        dlg.manual_btn.click()
+        idx = dlg.provider_combo.findData("gitlab")
+        assert idx >= 0
+        dlg.provider_combo.setCurrentIndex(idx)
+        assert "gitlab" in dlg.token_info_btn._tooltip_html.lower()
+
+    def test_assisted_flow_connect_and_success(self, db_conn):
+        db_path = db_file_path(db_conn)
+        mock_backend = MagicMock()
+        mock_codes = DeviceFlowCodes(
+            device_code="dc_test",
+            user_code="TEST-1234",
+            verification_uri="https://github.com/login/device",
+            interval=1,
+            expires_in=60,
+        )
+
+        with (
+            patch("wrench.storage.db.get_connection", side_effect=lambda: sqlite3.connect(db_path)),
+            patch("wrench.credentials.get_backend", return_value=mock_backend),
+            patch(
+                "wrench.ui.dialogs.accounts_dialog.request_device_code",
+                return_value=mock_codes,
+            ),
+            patch(
+                "wrench.ui.dialogs.accounts_dialog.poll_for_token",
+                return_value="gho_oauth_token",
+            ),
+            patch(
+                "wrench.ui.dialogs.accounts_dialog._validate_credentials_probe",
+                return_value={"ok": True, "inferred_user": "octocat"},
+            ),
+            patch(
+                "wrench.ui.dialogs.accounts_dialog.run_in_background",
+                side_effect=_sync_run_in_background,
+            ),
+        ):
+            dlg = AddAccountDialog()
+            dlg.assisted_btn.click()
+            dlg.assisted_connect_btn.click()
+
+            records = forge_accounts.list_accounts(db_conn)
+            assert len(records) == 1
+            assert records[0].provider == "github"
+            assert records[0].username == "octocat"
+            assert "GitHub" in records[0].label
+
+    def test_assisted_flow_error_denied(self):
+        with (
+            patch(
+                "wrench.ui.dialogs.accounts_dialog.request_device_code",
+                side_effect=ForgeAuthenticationError("access_denied"),
+            ),
+            patch(
+                "wrench.ui.dialogs.accounts_dialog.run_in_background",
+                side_effect=_sync_run_in_background,
+            ),
+        ):
+            dlg = AddAccountDialog()
+            dlg.show()
+            dlg.assisted_btn.click()
+            dlg.assisted_connect_btn.click()
+
+            assert "denied" in dlg.waiting_status_label.text().lower()
+            assert dlg.assisted_try_again_btn.isVisible()
+            assert dlg.assisted_manual_fallback_btn.isVisible()

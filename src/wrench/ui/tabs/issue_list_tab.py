@@ -335,10 +335,33 @@ class IssueListTab(QWidget):
         self.refresh_btn.setEnabled(True)
         self.error_banner.show_error(exc)
 
+    def set_active_repository(self, active_path: str) -> None:
+        """Update active repository path, reset state, and reload forge links and issues."""
+        if self.repo_path == active_path:
+            return
+        self.repo_path = active_path
+        self._load_generation += 1
+        self._cache.clear()
+        if self._active_adapter:
+            try:
+                self._active_adapter.close()
+            except Exception:
+                pass
+            self._active_adapter = None
+        self._active_link = None
+        self.search_input.clear()
+        self.reload_links_and_data()
+
     def _show_unlinked_state(
         self, message: str = "Link this repository to a forge account."
     ) -> None:
         self.table_view.setVisible(False)
+        self.table_model.set_issues([])
+        self.remote_combo.blockSignals(True)
+        self.remote_combo.clear()
+        self.remote_combo.blockSignals(False)
+        self.refresh_btn.setEnabled(False)
+        self.error_banner.hide_banner()
         self.empty_title.setText("Repository Not Linked")
         self.empty_sub.setText(message)
         self.link_btn.setVisible(True)

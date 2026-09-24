@@ -683,9 +683,12 @@ class MainWindow(QMainWindow):
             # Notify open tabs of repo change
             for i in range(self.tab_container.count()):
                 w = self.tab_container.widget(i)
+                meta = self.tab_container.tab_metadata(i)
+                if meta and meta.tab_type in ("pr_list", "issues_list", "issue_list"):
+                    self.tab_container.update_tab_repo_path(i, path)
                 if hasattr(w, "set_active_repository"):
                     w.set_active_repository(path)
-                if hasattr(w, "reload_links_and_data") and getattr(w, "repo_path", None) == path:
+                elif hasattr(w, "reload_links_and_data") and getattr(w, "repo_path", None) == path:
                     w.reload_links_and_data()
 
             self._schedule_auto_save()

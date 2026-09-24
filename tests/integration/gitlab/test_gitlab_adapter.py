@@ -249,3 +249,52 @@ def test_submit_review_actions_and_self_approval_trap(gitlab_adapter):
         gitlab_adapter.submit_review("g", "p", 1, action="comment", body="Looking good")
         _, kwargs = mock_req.call_args
         assert kwargs["json"] == {"body": "Looking good"}
+
+
+def test_get_pull_request(gitlab_adapter):
+    mock_resp = httpx.Response(
+        200,
+        json={
+            "iid": 42,
+            "title": "MR 42",
+            "description": "MR description",
+            "state": "merged",
+            "source_branch": "feature",
+            "target_branch": "main",
+            "web_url": "https://gitlab.com/g/p/-/merge_requests/42",
+            "author": {"username": "alice"},
+            "created_at": "2026-09-24T10:00:00Z",
+        },
+        request=httpx.Request("GET", "https://gitlab.com/api/v4/projects/g%2Fp/merge_requests/42"),
+    )
+    with patch.object(gitlab_adapter._client, "request", return_value=mock_resp):
+        mr = gitlab_adapter.get_pull_request("g", "p", "42")
+        assert mr.id == "42"
+        assert mr.title == "MR 42"
+        assert mr.state == "merged"
+        assert mr.source_branch == "feature"
+        assert mr.target_branch == "main"
+        assert mr.author == "alice"
+
+
+def test_get_issue(gitlab_adapter):
+    mock_resp = httpx.Response(
+        200,
+        json={
+            "iid": 114,
+            "title": "Issue 114",
+            "description": "Issue description",
+            "state": "opened",
+            "web_url": "https://gitlab.com/g/p/-/issues/114",
+            "author": {"username": "bob"},
+            "created_at": "2026-09-24T10:30:00Z",
+        },
+        request=httpx.Request("GET", "https://gitlab.com/api/v4/projects/g%2Fp/issues/114"),
+    )
+    with patch.object(gitlab_adapter._client, "request", return_value=mock_resp):
+        issue = gitlab_adapter.get_issue("g", "p", "114")
+        assert issue.id == "114"
+        assert issue.title == "Issue 114"
+        assert issue.state == "open"
+        assert issue.author == "bob"
+        assert issue.description == "Issue description"

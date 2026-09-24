@@ -256,3 +256,53 @@ def test_submit_review_actions_and_issue_trap(github_adapter):
         assert len(issues) == 1
         assert issues[0].id == "100"
         assert issues[0].title == "Real issue"
+
+
+def test_get_pull_request(github_adapter):
+    mock_resp = httpx.Response(
+        200,
+        json={
+            "number": 42,
+            "title": "PR 42",
+            "body": "PR 42 body",
+            "state": "closed",
+            "merged_at": "2026-09-24T10:00:00Z",
+            "html_url": "https://github.com/org/repo/pull/42",
+            "user": {"login": "alice"},
+            "head": {"ref": "feature"},
+            "base": {"ref": "main"},
+            "created_at": "2026-09-24T09:00:00Z",
+        },
+        request=httpx.Request("GET", "https://api.github.com/repos/org/repo/pulls/42"),
+    )
+    with patch.object(github_adapter._client, "request", return_value=mock_resp):
+        pr = github_adapter.get_pull_request("org", "repo", "42")
+        assert pr.id == "42"
+        assert pr.title == "PR 42"
+        assert pr.state == "merged"
+        assert pr.source_branch == "feature"
+        assert pr.target_branch == "main"
+        assert pr.author == "alice"
+
+
+def test_get_issue(github_adapter):
+    mock_resp = httpx.Response(
+        200,
+        json={
+            "number": 114,
+            "title": "Issue 114",
+            "body": "Issue description",
+            "state": "open",
+            "html_url": "https://github.com/org/repo/issues/114",
+            "user": {"login": "bob"},
+            "created_at": "2026-09-24T09:30:00Z",
+        },
+        request=httpx.Request("GET", "https://api.github.com/repos/org/repo/issues/114"),
+    )
+    with patch.object(github_adapter._client, "request", return_value=mock_resp):
+        issue = github_adapter.get_issue("org", "repo", "114")
+        assert issue.id == "114"
+        assert issue.title == "Issue 114"
+        assert issue.state == "open"
+        assert issue.author == "bob"
+        assert issue.description == "Issue description"

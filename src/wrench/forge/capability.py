@@ -272,3 +272,11 @@ class ForgeAdapter(ABC):
 
     def list_issues(self, owner: str, repo: str, state: str = "open") -> list[Issue]:
         raise NotImplementedError(f"{self.provider_id} does not support issues")
+
+    def get_pull_request(self, owner: str, repo: str, pr_id: str) -> PullRequest:
+        """Fetch details for a single pull request by ID or number."""
+        raise NotImplementedError(f"{self.provider_id} does not support get_pull_request")
+
+    def get_issue(self, owner: str, repo: str, issue_id: str) -> Issue:
+        """Fetch details for a single issue by ID or number."""
+        raise NotImplementedError(f"{self.provider_id} does not support issues")

@@ -196,3 +196,48 @@ class BitbucketAdapter(ForgeAdapter):
                 )
             )
         return issues
+
+    def get_pull_request(self, owner: str, repo: str, pr_id: str) -> PullRequest:
+        resp = self._request("GET", f"/repositories/{owner}/{repo}/pullrequests/{pr_id}")
+        item = resp.json()
+        raw_state = item.get("state", "OPEN")
+        if raw_state == "OPEN":
+            norm_state = "open"
+        elif raw_state == "MERGED":
+            norm_state = "merged"
+        else:
+            norm_state = "closed"
+
+        return PullRequest(
+            id=str(item["id"]),
+            title=item.get("title", ""),
+            description=item.get("description") or "",
+            source_branch=item.get("source", {}).get("branch", {}).get("name", ""),
+            target_branch=item.get("destination", {}).get("branch", {}).get("name", ""),
+            state=norm_state,
+            url=item.get("links", {}).get("html", {}).get("href", ""),
+            author=item.get("author", {}).get("display_name", "")
+            or item.get("author", {}).get("nickname", ""),
+            created_at=item.get("created_on", ""),
+        )
+
+    def get_issue(self, owner: str, repo: str, issue_id: str) -> Issue:
+        resp = self._request("GET", f"/repositories/{owner}/{repo}/issues/{issue_id}")
+        item = resp.json()
+        raw_state = item.get("state", "new")
+        norm_state = "open" if raw_state in ("new", "open") else "closed"
+
+        return Issue(
+            id=str(item["id"]),
+            title=item.get("title", ""),
+            description=(
+                item.get("content", {}).get("raw", "")
+                if isinstance(item.get("content"), dict)
+                else ""
+            ),
+            state=norm_state,
+            url=item.get("links", {}).get("html", {}).get("href", ""),
+            author=item.get("reporter", {}).get("display_name", "")
+            or item.get("reporter", {}).get("nickname", ""),
+            created_at=item.get("created_on", ""),
+        )

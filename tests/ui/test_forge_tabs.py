@@ -309,7 +309,7 @@ class TestPRDetailTab:
             assert detail.state_badge.text() == "Open"
             assert "origin · Github" in detail.remote_badge.text()
             assert "4/4 checks passed" in detail.ci_desc_label.text()
-            assert "Implements feature A" in detail.desc_viewer.toPlainText()
+            assert "Detailed markdown description" in detail.desc_viewer.toPlainText()
 
             # Stale repo check
             detail.set_active_repository("/tmp/another_repo")

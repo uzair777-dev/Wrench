@@ -164,3 +164,40 @@ class ForgejoAdapter(ForgeAdapter):
                 )
             )
         return issues
+
+    def get_pull_request(self, owner: str, repo: str, pr_id: str) -> PullRequest:
+        resp = self._request("GET", f"/repos/{owner}/{repo}/pulls/{pr_id}")
+        item = resp.json()
+        is_merged = item.get("merged_at") is not None
+        raw_state = item.get("state", "open")
+        if is_merged:
+            norm_state = "merged"
+        elif raw_state == "closed":
+            norm_state = "closed"
+        else:
+            norm_state = "open"
+
+        return PullRequest(
+            id=str(item["number"]),
+            title=item.get("title", ""),
+            description=item.get("body") or "",
+            source_branch=item.get("head", {}).get("ref", ""),
+            target_branch=item.get("base", {}).get("ref", ""),
+            state=norm_state,
+            url=item.get("html_url", ""),
+            author=item.get("user", {}).get("login", ""),
+            created_at=item.get("created_at", ""),
+        )
+
+    def get_issue(self, owner: str, repo: str, issue_id: str) -> Issue:
+        resp = self._request("GET", f"/repos/{owner}/{repo}/issues/{issue_id}")
+        item = resp.json()
+        return Issue(
+            id=str(item["number"]),
+            title=item.get("title", ""),
+            description=item.get("body") or "",
+            state=item.get("state", "open"),
+            url=item.get("html_url", ""),
+            author=item.get("user", {}).get("login", ""),
+            created_at=item.get("created_at", ""),
+        )

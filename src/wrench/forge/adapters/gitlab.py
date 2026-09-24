@@ -197,3 +197,44 @@ class GitLabAdapter(ForgeAdapter):
                 )
             )
         return issues
+
+    def get_pull_request(self, owner: str, repo: str, pr_id: str) -> PullRequest:
+        slug = self._project_slug(owner, repo)
+        resp = self._request("GET", f"/projects/{slug}/merge_requests/{pr_id}")
+        item = resp.json()
+        raw_state = item.get("state", "opened")
+        if raw_state == "opened":
+            norm_state = "open"
+        elif raw_state == "merged":
+            norm_state = "merged"
+        else:
+            norm_state = "closed"
+
+        return PullRequest(
+            id=str(item["iid"]),
+            title=item.get("title", ""),
+            description=item.get("description") or "",
+            source_branch=item.get("source_branch", ""),
+            target_branch=item.get("target_branch", ""),
+            state=norm_state,
+            url=item.get("web_url", ""),
+            author=item.get("author", {}).get("username", ""),
+            created_at=item.get("created_at", ""),
+        )
+
+    def get_issue(self, owner: str, repo: str, issue_id: str) -> Issue:
+        slug = self._project_slug(owner, repo)
+        resp = self._request("GET", f"/projects/{slug}/issues/{issue_id}")
+        item = resp.json()
+        raw_state = item.get("state", "opened")
+        norm_state = "open" if raw_state == "opened" else "closed"
+
+        return Issue(
+            id=str(item["iid"]),
+            title=item.get("title", ""),
+            description=item.get("description") or "",
+            state=norm_state,
+            url=item.get("web_url", ""),
+            author=item.get("author", {}).get("username", ""),
+            created_at=item.get("created_at", ""),
+        )

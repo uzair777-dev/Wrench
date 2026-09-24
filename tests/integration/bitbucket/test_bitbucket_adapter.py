@@ -245,3 +245,54 @@ def test_get_ci_status_mapping_and_review(bitbucket_adapter):
     with patch.object(bitbucket_adapter._client, "request", return_value=resp_approve) as mock_req:
         bitbucket_adapter.submit_review("w", "r", 99, action="approve")
         mock_req.assert_called_once()
+
+
+def test_get_pull_request(bitbucket_adapter):
+    mock_resp = httpx.Response(
+        200,
+        json={
+            "id": 42,
+            "title": "BB PR 42",
+            "description": "PR description",
+            "state": "MERGED",
+            "source": {"branch": {"name": "feature"}},
+            "destination": {"branch": {"name": "main"}},
+            "links": {"html": {"href": "https://bitbucket.org/w/r/pull-requests/42"}},
+            "author": {"display_name": "Alice"},
+            "created_on": "2026-09-24T10:00:00Z",
+        },
+        request=httpx.Request(
+            "GET", "https://api.bitbucket.org/2.0/repositories/w/r/pullrequests/42"
+        ),
+    )
+    with patch.object(bitbucket_adapter._client, "request", return_value=mock_resp):
+        pr = bitbucket_adapter.get_pull_request("w", "r", "42")
+        assert pr.id == "42"
+        assert pr.title == "BB PR 42"
+        assert pr.state == "merged"
+        assert pr.source_branch == "feature"
+        assert pr.target_branch == "main"
+        assert pr.author == "Alice"
+
+
+def test_get_issue(bitbucket_adapter):
+    mock_resp = httpx.Response(
+        200,
+        json={
+            "id": 114,
+            "title": "BB Issue 114",
+            "content": {"raw": "Issue description"},
+            "state": "new",
+            "links": {"html": {"href": "https://bitbucket.org/w/r/issues/114"}},
+            "reporter": {"display_name": "Bob"},
+            "created_on": "2026-09-24T10:30:00Z",
+        },
+        request=httpx.Request("GET", "https://api.bitbucket.org/2.0/repositories/w/r/issues/114"),
+    )
+    with patch.object(bitbucket_adapter._client, "request", return_value=mock_resp):
+        issue = bitbucket_adapter.get_issue("w", "r", "114")
+        assert issue.id == "114"
+        assert issue.title == "BB Issue 114"
+        assert issue.state == "open"
+        assert issue.author == "Bob"
+        assert issue.description == "Issue description"

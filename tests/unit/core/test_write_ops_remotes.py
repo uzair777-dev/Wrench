@@ -12,9 +12,14 @@ from wrench.core.exceptions import (
     AuthRequiredError,
     CLITimeoutError,
     CloneAbortedError,
+    FileTooLargeRejectedError,
     GitCommandError,
     MergeRequiredError,
+    ProtectedBranchRejectedError,
     PushRejectedError,
+    RepoPermissionDeniedError,
+    SecretScanningRejectedError,
+    SignedCommitsRequiredError,
     WorkflowScopeRequiredError,
 )
 from wrench.core.write_ops import (
@@ -119,6 +124,90 @@ class TestFailureClassification:
         err = _classify_git_error(["fetch", "origin"], 128, stderr)
         assert isinstance(err, GitCommandError)
         assert not isinstance(err, (AuthFailedError, AuthRequiredError, PushRejectedError))
+
+    def test_secret_scanning_gh007(self):
+        stderr = (
+            "remote: error: GH007: Your push would publish a private email address.\n"
+            "remote: - Secret type: OpenAI API Key\n"
+            "remote: - File: config/keys.py:15\n"
+            "remote: - To push anyway, visit: "
+            "https://github.com/foo/bar/security/secret-scanning/unblock-secret/abc123\n"
+            "To https://github.com/foo/bar.git\n"
+            " ! [remote rejected] master -> master (push declined due to secret scanning)\n"
+        )
+        err = _classify_git_error(["push", "origin", "master"], 1, stderr)
+        assert isinstance(err, SecretScanningRejectedError)
+        assert isinstance(err, PushRejectedError)  # must be a subclass
+        assert err.secret_type == "OpenAI API Key"
+        assert err.file_location == "config/keys.py:15"
+        assert "unblock-secret/abc123" in err.unblock_url
+
+    def test_secret_scanning_gh007_minimal(self):
+        """GH007 keyword alone should trigger, even without metadata."""
+        stderr = "remote: error: GH007: Your push would reveal a secret.\n"
+        err = _classify_git_error(["push", "origin", "main"], 1, stderr)
+        assert isinstance(err, SecretScanningRejectedError)
+        assert err.secret_type is None  # no metadata extracted
+
+    def test_protected_branch_gh006(self):
+        stderr = (
+            "remote: error: GH006: Protected branch update failed "
+            "for refs/heads/master.\n"
+            "remote: Changes must be made through a pull request.\n"
+            "To https://github.com/foo/bar.git\n"
+            " ! [remote rejected] master -> master "
+            "(protected branch hook declined)\n"
+        )
+        err = _classify_git_error(["push", "origin", "master"], 1, stderr)
+        assert isinstance(err, ProtectedBranchRejectedError)
+        assert isinstance(err, PushRejectedError)
+        assert err.branch_name == "master"
+        assert "pull request" in err.reason.lower()
+
+    def test_file_too_large_gh001(self):
+        stderr = (
+            "remote: error: GH001: Large files detected. "
+            "You may want to try Git Large File Storage.\n"
+            "remote: error: File models/weights.bin is 142.50 MB; "
+            "this exceeds GitHub's file size limit of 100.00 MB\n"
+        )
+        err = _classify_git_error(["push", "origin", "main"], 1, stderr)
+        assert isinstance(err, FileTooLargeRejectedError)
+        assert isinstance(err, PushRejectedError)
+        assert err.filename == "models/weights.bin"
+        assert err.filesize_mb == 142.50
+        assert err.limit_mb == 100.00
+
+    def test_signed_commits_gh008(self):
+        stderr = (
+            "remote: error: GH008: Your push was rejected because "
+            "this branch requires signed commits.\n"
+        )
+        err = _classify_git_error(["push", "origin", "main"], 1, stderr)
+        assert isinstance(err, SignedCommitsRequiredError)
+        assert isinstance(err, PushRejectedError)
+
+    def test_permission_denied_403(self):
+        stderr = (
+            "remote: Permission to foo/bar.git denied to user.\n"
+            "fatal: unable to access 'https://github.com/foo/bar.git/': "
+            "The requested URL returned error: 403\n"
+        )
+        err = _classify_git_error(["push", "origin", "main"], 1, stderr)
+        assert isinstance(err, RepoPermissionDeniedError)
+        assert isinstance(err, PushRejectedError)
+
+    def test_generic_push_rejected_still_works(self):
+        """Existing non-fast-forward rejections must still raise generic PushRejectedError."""
+        stderr = (
+            "To github.com:repo\n"
+            " ! [rejected] main -> main (fetch first)\n"
+            "error: failed to push"
+        )
+        err = _classify_git_error(["push", "origin", "main"], 1, stderr)
+        assert isinstance(err, PushRejectedError)
+        # Should NOT be one of the specialized subclasses
+        assert type(err) is PushRejectedError
 
 
 class TestRunGitStreaming:

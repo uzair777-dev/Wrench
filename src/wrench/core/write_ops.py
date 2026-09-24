@@ -31,9 +31,14 @@ from .exceptions import (
     CloneAbortedError,
     DirtyTreeError,
     EmptyCommitMessageError,
+    FileTooLargeRejectedError,
     GitCommandError,
     MergeRequiredError,
+    ProtectedBranchRejectedError,
     PushRejectedError,
+    RepoPermissionDeniedError,
+    SecretScanningRejectedError,
+    SignedCommitsRequiredError,
     WorkflowScopeRequiredError,
 )
 from .git_credential_helper import _host_of
@@ -128,6 +133,9 @@ def _classify_git_error(
     is_push = len(args) > 0 and args[0] == "push"
     is_pull = len(args) > 0 and args[0] == "pull"
 
+    # --- Push-specific classification (order matters: specific before generic) ---
+
+    # 1. GitHub Actions Workflow scope required
     if is_push and (
         "without `workflow` scope" in stderr
         or "without 'workflow' scope" in stderr
@@ -139,12 +147,94 @@ def _classify_git_error(
     ):
         return WorkflowScopeRequiredError(args, returncode, stderr)
 
+    # 2. Secret Scanning Push Protection (GH007)
+    if is_push and ("GH007" in stderr or "reveal a private secret" in stderr.lower()):
+        sec_type_match = re.search(r"Secret type:\s*([^\r\n]+)", stderr)
+        file_loc_match = re.search(r"File:\s*([^\r\n]+)", stderr)
+        unblock_match = re.search(
+            r"(https://github\.com/[^\s]+/secret-scanning/unblock-secret/[^\s\)]+)",
+            stderr,
+        )
+        return SecretScanningRejectedError(
+            args,
+            returncode,
+            stderr,
+            secret_type=sec_type_match.group(1).strip() if sec_type_match else None,
+            file_location=file_loc_match.group(1).strip() if file_loc_match else None,
+            unblock_url=unblock_match.group(1).strip() if unblock_match else None,
+        )
+
+    # 3. Protected Branch / Rulesets (GH006)
+    if is_push and (
+        "GH006" in stderr
+        or "protected branch" in stderr.lower()
+        or "changes must be made through a pull request" in stderr.lower()
+    ):
+        branch_match = re.search(r"! \[remote rejected\]\s+([^\s]+)\s*->\s*([^\s\(\)]+)", stderr)
+        reason_match = re.search(
+            r"(?:remote:\s*)([^\r\n]*(?:pull request|review)[^\r\n]*)",
+            stderr,
+            re.IGNORECASE,
+        ) or re.search(
+            r"(?:remote:\s*)([^\r\n]*(?:protected branch)[^\r\n]*)",
+            stderr,
+            re.IGNORECASE,
+        )
+        target_branch = branch_match.group(2) if branch_match else None
+        reason_text = (
+            reason_match.group(1).strip() if reason_match else "Protected branch update failed"
+        )
+        return ProtectedBranchRejectedError(
+            args,
+            returncode,
+            stderr,
+            branch_name=target_branch,
+            reason=reason_text,
+        )
+
+    # 4. Large Files Quota (GH001)
+    if is_push and ("GH001" in stderr or "large files detected" in stderr.lower()):
+        file_match = re.search(
+            r"File\s+([^\s]+)\s+is\s+(\d+(?:\.\d+)?)\s*MB;"
+            r"\s*this exceeds GitHub's file size limit of\s+(\d+(?:\.\d+)?)\s*MB",
+            stderr,
+        )
+        fname = file_match.group(1) if file_match else None
+        fsize = float(file_match.group(2)) if file_match else None
+        flimit = float(file_match.group(3)) if file_match else 100.0
+        return FileTooLargeRejectedError(
+            args,
+            returncode,
+            stderr,
+            filename=fname,
+            filesize_mb=fsize,
+            limit_mb=flimit,
+        )
+
+    # 5. Signed Commits Required (GH008)
+    if is_push and (
+        "GH008" in stderr
+        or "requires signed commits" in stderr.lower()
+        or "no valid signature" in stderr.lower()
+    ):
+        return SignedCommitsRequiredError(args, returncode, stderr)
+
+    # 6. Repository Permission Denied (push-specific 403)
+    if is_push and (
+        ("permission to" in stderr.lower() and "denied to" in stderr.lower())
+        or "write access to repository not granted" in stderr.lower()
+    ):
+        return RepoPermissionDeniedError(args, returncode, stderr)
+
+    # 7. Generic push rejected (non-fast-forward, etc.) — MUST BE LAST push check
     if is_push and "rejected" in stderr:
         return PushRejectedError(args, returncode, stderr)
 
+    # --- Pull-specific classification ---
     if is_pull and "Not possible to fast-forward" in stderr:
         return MergeRequiredError(args, returncode, stderr)
 
+    # --- General auth/network classification (applies to all git commands) ---
     parsed_host = _host_of(remote_url) if remote_url else None
     if not parsed_host and stderr:
         m = re.search(r"https?://([^/:\s']+)", stderr)

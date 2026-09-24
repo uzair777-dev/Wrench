@@ -430,7 +430,8 @@ class TestAssistedFlowUI:
 
             mock_req.assert_called_once()
             _, kwargs = mock_req.call_args
-            assert kwargs["scope"] == "repo workflow"
+            assert "workflow" in kwargs["scope"]
+            assert "repo" in kwargs["scope"]
 
     def test_assisted_flow_reauth_updates_existing_account(self, db_conn):
         db_path = db_file_path(db_conn)
@@ -551,3 +552,60 @@ class TestAssistedFlowUI:
             # Test EditAccountDialog._reauth_github
             edit_dlg = EditAccountDialog(records[0])
             edit_dlg._reauth_github()
+
+
+class TestAdvancedScopes:
+    """Test the advanced OAuth scope configuration UI."""
+
+    def test_advanced_scopes_exist_on_assisted_page(self, db_conn):
+        """Verify the advanced scope widgets are present."""
+        dlg = AddAccountDialog(initial_page=1)
+        assert hasattr(dlg, "advanced_scopes_btn"), "Missing advanced_scopes_btn toggle"
+        assert hasattr(dlg, "scope_workflow_cb"), "Missing workflow checkbox"
+        assert hasattr(dlg, "scope_user_email_cb"), "Missing user:email checkbox"
+        assert hasattr(dlg, "scope_read_org_cb"), "Missing read:org checkbox"
+
+    def test_full_scope_preset_checks_all(self, db_conn):
+        """Full Access preset should check all optional scopes."""
+        dlg = AddAccountDialog(initial_page=1)
+        assert dlg.full_scope_radio.isChecked()
+        assert dlg.scope_workflow_cb.isChecked()
+        assert dlg.scope_user_email_cb.isChecked()
+        assert dlg.scope_read_org_cb.isChecked()
+
+    def test_public_scope_preset_unchecks_workflow_and_org(self, db_conn):
+        """Public Only preset should uncheck workflow and read:org."""
+        dlg = AddAccountDialog(initial_page=1)
+        dlg.public_scope_radio.setChecked(True)
+        assert not dlg.scope_workflow_cb.isChecked()
+        assert not dlg.scope_read_org_cb.isChecked()
+        # user:email should still be checked
+        assert dlg.scope_user_email_cb.isChecked()
+
+    def test_get_selected_scopes_public(self, db_conn):
+        """Public scope string should contain public_repo and user:email."""
+        dlg = AddAccountDialog(initial_page=1)
+        dlg.public_scope_radio.setChecked(True)
+        scopes = dlg._get_selected_scopes()
+        assert "public_repo" in scopes
+        assert "user:email" in scopes
+        assert "workflow" not in scopes
+        assert "read:org" not in scopes
+
+    def test_get_selected_scopes_full(self, db_conn):
+        """Full scope string should contain repo, workflow, user:email, read:org."""
+        dlg = AddAccountDialog(initial_page=1)
+        scopes = dlg._get_selected_scopes()
+        assert "repo" in scopes
+        assert "workflow" in scopes
+        assert "user:email" in scopes
+        assert "read:org" in scopes
+
+    def test_custom_scope_override(self, db_conn):
+        """User can manually toggle workflow on even with Public preset."""
+        dlg = AddAccountDialog(initial_page=1)
+        dlg.public_scope_radio.setChecked(True)
+        dlg.scope_workflow_cb.setChecked(True)
+        scopes = dlg._get_selected_scopes()
+        assert "workflow" in scopes
+        assert "public_repo" in scopes

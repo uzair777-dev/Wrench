@@ -407,6 +407,48 @@ class AddAccountDialog(QDialog):
         public_warn.setStyleSheet("color: #df8e1d; font-size: 11px; margin-left: 20px;")
         scope_layout.addWidget(public_warn)
 
+        # Advanced scopes toggle button
+        self.advanced_scopes_btn = QToolButton(scope_group)
+        self.advanced_scopes_btn.setText("▶ Advanced Scopes")
+        self.advanced_scopes_btn.setStyleSheet(
+            "border: none; color: palette(mid); font-size: 11px; padding: 4px 0px;"
+        )
+        self.advanced_scopes_btn.setCheckable(True)
+        scope_layout.addWidget(self.advanced_scopes_btn)
+
+        # Advanced scopes container (hidden by default)
+        self.advanced_scopes_widget = QWidget(scope_group)
+        adv_layout = QVBoxLayout(self.advanced_scopes_widget)
+        adv_layout.setContentsMargins(20, 0, 0, 0)
+
+        self.scope_workflow_cb = QCheckBox(
+            "GitHub Actions Workflows (workflow)", self.advanced_scopes_widget
+        )
+        adv_layout.addWidget(self.scope_workflow_cb)
+
+        self.scope_user_email_cb = QCheckBox(
+            "Verified Email Addresses (user:email)", self.advanced_scopes_widget
+        )
+        adv_layout.addWidget(self.scope_user_email_cb)
+
+        self.scope_read_org_cb = QCheckBox(
+            "Organization & SAML Access (read:org)", self.advanced_scopes_widget
+        )
+        adv_layout.addWidget(self.scope_read_org_cb)
+
+        self.advanced_scopes_widget.setVisible(False)
+        scope_layout.addWidget(self.advanced_scopes_widget)
+
+        # Wire toggle button
+        self.advanced_scopes_btn.toggled.connect(self._toggle_advanced_scopes)
+
+        # Wire preset radios to sync checkboxes
+        self.full_scope_radio.toggled.connect(self._sync_scope_checkboxes)
+        self.public_scope_radio.toggled.connect(self._sync_scope_checkboxes)
+
+        # Set initial state
+        self._sync_scope_checkboxes()
+
         form_layout.addWidget(scope_group)
 
         self.assisted_status_label = QLabel(self._assisted_form_widget)
@@ -623,6 +665,29 @@ class AddAccountDialog(QDialog):
 
     # --- Assisted Setup Logic ---
 
+    def _toggle_advanced_scopes(self, checked: bool) -> None:
+        self.advanced_scopes_widget.setVisible(checked)
+        self.advanced_scopes_btn.setText("▼ Advanced Scopes" if checked else "▶ Advanced Scopes")
+
+    def _sync_scope_checkboxes(self) -> None:
+        """Sync optional scope checkboxes when preset radio changes."""
+        is_full = self.full_scope_radio.isChecked()
+        self.scope_workflow_cb.setChecked(is_full)
+        self.scope_user_email_cb.setChecked(True)  # Always on by default
+        self.scope_read_org_cb.setChecked(is_full)
+
+    def _get_selected_scopes(self) -> str:
+        """Build OAuth scope string from preset + optional checkboxes."""
+        base = "repo" if self.full_scope_radio.isChecked() else "public_repo"
+        parts = [base]
+        if self.scope_workflow_cb.isChecked():
+            parts.append("workflow")
+        if self.scope_user_email_cb.isChecked():
+            parts.append("user:email")
+        if self.scope_read_org_cb.isChecked():
+            parts.append("read:org")
+        return " ".join(parts)
+
     def _on_instance_type_changed(self) -> None:
         is_enterprise = self.enterprise_radio.isChecked()
         self.assisted_url_container.setVisible(is_enterprise)
@@ -638,7 +703,7 @@ class AddAccountDialog(QDialog):
         else:
             instance_url = "https://github.com"
 
-        scope = "repo workflow" if self.full_scope_radio.isChecked() else "public_repo"
+        scope = self._get_selected_scopes()
         self._cancel_event.clear()
         self.assisted_status_label.setText("")
         self._assisted_form_widget.setVisible(False)

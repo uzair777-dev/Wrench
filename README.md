@@ -3,9 +3,10 @@
 **Wrench** is a fast, native Linux desktop Git client built with Python and Qt (PySide6). It pairs the blazing-fast read performance of `pygit2`/libgit2 with the rock-solid fidelity of the system `git` CLI, wrapped in an elegant, tabbed user interface.
 
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](LICENSE)
+![GitHub Repo stars](https://img.shields.io/github/stars/uzair777-dev/Wrench)
 [![Python: 3.12+](https://img.shields.io/badge/Python-3.12+-green.svg)](https://www.python.org/)
 [![GUI: PySide6](https://img.shields.io/badge/GUI-PySide6%20%2F%20Qt%206-informational.svg)](https://www.qt.io/)
-[![Tests: 376 passed](https://img.shields.io/badge/Tests-376%20passed-brightgreen.svg)](tests/)
+![GitHub Actions Workflow Status](https://img.shields.io/github/actions/workflow/status/uzair777-dev/Wrench/ci.yml)
 
 ---
 
@@ -31,13 +32,14 @@
   - Background asynchronous `Fetch` (`Ctrl+Shift+F`), `Pull` (`Ctrl+Shift+L` with `--ff-only`), and `Push` (`Ctrl+Shift+U` with `--force-with-lease`).
   - Modal `BusyOperationDialog` with real-time percentage progress and cooperative cancellation (`threading.Event`).
   - Remotes manager dialog with reachability probing, add, edit, and deletion workflows.
-  - Smart push error routing: distinguishes between non-fast-forward diverged branches and missing OAuth permissions (`WorkflowScopeRequiredError`).
+  - **Granular Push Error Protection & Recovery**: Distinguishes non-fast-forward diverged branches, missing Actions scopes (`WorkflowScopeRequiredError`), Secret Scanning blocks (`GH007` with direct unblock URLs), Protected Branch rulesets (`GH006` with guided new-branch creation and checkout), Large File quota rejections (`GH001`), Signed Commit requirements (`GH008`), and 403 Permission Denied.
 - **Native Git Credential Helper**:
   - Standalone executable `git-credential-wrench` implementing the Git credential helper protocol.
   - Seamless FreeDesktop Secret Service D-Bus integration (`secretstorage` / `keyring` abstraction) without storing plaintext passwords or tokens on disk.
   - Strict host disambiguation preventing credential leakage across multiple accounts on the same forge.
 - **Multi-Forge Integration (GitHub, GitLab, Forgejo/Gitea, Bitbucket Cloud)**:
-  - **Assisted GitHub OAuth Setup (RFC 8628)**: Device Authorization Flow with in-browser authorization requesting `repo workflow` permissions, countdown timers, and in-place re-authorization.
+  - **Assisted GitHub OAuth Setup (RFC 8628)**: Device Authorization Flow with in-browser authorization, customizable advanced scopes (`repo`, `workflow`, `user:email`, `read:org`), countdown timers, and in-place re-authorization.
+  - **Auto-Aligned Local Identity**: Automatically synchronizes repository-local `user.name` and verified `user.email` from the linked forge account.
   - **Pull Requests Tab & Issues Tab**: Searchable and filterable table views with Stale-While-Revalidate (SWR 60s) caching, live active repository switching, and new PR creation.
   - **PR & Issue Detail Views**: Single-entity retrieval, inline CI/CD status cards, in-app review submissions (`Approve`, `Request Changes`, `Comment`), local branch checkout, and external browser navigation.
   - **Enterprise & Self-Hosted Support**: Custom CA bundle (PEM) file picker and explicit skip-TLS verification options.

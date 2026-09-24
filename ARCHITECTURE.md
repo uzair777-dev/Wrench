@@ -156,6 +156,11 @@ Wrench is engineered around four non-negotiable architectural tenets:
     - `AuthRequiredError`: Guides users when credentials are missing for a remote host.
     - `AuthFailedError`: Informs users when stored credentials were rejected by the remote.
     - `WorkflowScopeRequiredError`: Explains when pushes to `.github/workflows/` require the `workflow` OAuth scope, prompting re-authorization without confusing retry loops.
+    - `SecretScanningRejectedError` (`GH007`): Spawns `SecretScanningDialog` displaying detected secrets, affected files, and direct unblock link.
+    - `ProtectedBranchRejectedError` (`GH006`): Spawns `ProtectedBranchDialog` providing guided branch creation, automatic checkout, and re-push.
+    - `FileTooLargeRejectedError` (`GH001`): Spawns `FileTooLargeDialog` showing quota limits and Git LFS / index-cache removal guidance.
+    - `SignedCommitsRequiredError` (`GH008`): Guides users through GPG/SSH commit signing (`git commit -S`).
+    - `RepoPermissionDeniedError` (`403`): Alerts user to repository write permission barriers.
     - `PushRejectedError`: Offers actionable choices between "Fetch & Retry", "Force Push (with lease)", and "Cancel".
     - `MergeRequiredError`: Offers actionable choices between "Merge" and "Rebase" using Phase 2 tools.
     - `RemoteNotFoundError`: Prompts and opens the Remotes configuration dialog.
@@ -183,13 +188,19 @@ Wrench is engineered around four non-negotiable architectural tenets:
   - Stale repository warning banner informing users when the active main window repository has diverged from the open tab's repository.
 - **`AccountsDialog`, `AddAccountDialog`, & `EditAccountDialog` (`ui/dialogs/accounts_dialog.py`)**:
   - Complete forge accounts management interface.
-  - **Assisted Setup (Device Flow RFC 8628)**: Browser authorization for GitHub and GitHub Enterprise Server requesting `repo workflow` permissions, featuring live countdown timers, polling interval backoff, and clipboard copy helpers.
+  - **Assisted Setup (Device Flow RFC 8628)**: Browser authorization for GitHub and GitHub Enterprise Server requesting `repo workflow user:email read:org` permissions, featuring live countdown timers, polling interval backoff, and clipboard copy helpers.
+  - **Scope Picker UI**: Preset radio buttons ("Full Access" vs. "Public Repositories Only") and collapsible "Advanced Scopes" toggle (`QToolButton` + `advanced_scopes_widget`) exposing checkboxes for `workflow`, `user:email`, and `read:org`.
   - **In-Place Re-authorization**: 1-click re-authorization for existing GitHub accounts updating credentials in Secret Service while preserving all `repo_forge_links`.
   - **Manual Token Setup**: Guided PAT setup for GitHub, GitLab, Forgejo/Gitea, and Bitbucket with provider-specific permission documentation.
   - **Enterprise Security**: Custom CA bundle (PEM) file picker and explicit skip TLS verification option with security warning.
+- **Push Recovery Dialogs (`ui/dialogs/push_recovery_dialogs.py`)**:
+  - **`SecretScanningDialog`**: Actionable recovery dialog for GitHub Secret Scanning (`GH007`) displaying detected secret type, file location, and direct 1-click external unblock URL button.
+  - **`ProtectedBranchDialog`**: Guided recovery dialog for GitHub Protected Branch (`GH006`) push rejections, offering automated new branch creation (`patch-1` / `patch-{branch}`), branch checkout, and re-push.
+  - **`FileTooLargeDialog`**: Recovery dialog for GitHub File Size Quota (`GH001`) displaying offending filename, file size, quota limit, and remediation guidance for `git rm --cached` and Git LFS.
 - **`LinkRepoDialog` (`ui/dialogs/link_dialog.py`)**:
   - Repository-to-forge account association dialog.
   - Auto-matches remotes to configured accounts by host URL.
+  - Asynchronously aligns local git author identity (`user.name` and verified `user.email`) with the authenticated forge user via `adapter.get_primary_email()`.
   - Configures repository-level `git config credential.useHttpPath true` to ensure git CLI routes credentials path-specifically.
 - **`RemotesDialog` (`ui/dialogs/remotes_dialog.py`)**: Repository remotes management interface.
   - Displays all configured remotes with columns: `Name`, `URL`, `Last Fetch`, and `Reachability`.
@@ -276,6 +287,11 @@ Wrench is engineered around four non-negotiable architectural tenets:
   - `run_git`: Standard synchronous runner with timeout and sanitized environment (`GIT_TERMINAL_PROMPT=0`).
   - `run_git_streaming`: Deadlock-free streaming execution using concurrent dual-pipe reader threads for `stdout` and `stderr`. Parses carriage-return `\r` and `\n` progress lines, routes live percentage and stage callbacks, and terminates gracefully on `cancel_event` (`SIGTERM` ➔ 3s grace ➔ `SIGKILL`). Deterministically classifies non-zero exits into typed exceptions:
     - `WorkflowScopeRequiredError`: Detects when pushes affecting `.github/workflows/` are rejected due to missing OAuth `workflow` scope.
+    - `SecretScanningRejectedError` (`GH007`): Detects secrets caught by GitHub Secret Scanning, parsing secret type, file location, and unblock URLs.
+    - `ProtectedBranchRejectedError` (`GH006`): Detects branch protection rejections, parsing branch name and protection rules reason.
+    - `FileTooLargeRejectedError` (`GH001`): Detects 100MB file size quota rejections, parsing filename, file size MB, and quota limit MB.
+    - `SignedCommitsRequiredError` (`GH008`): Detects remote requirements for GPG/SSH commit signatures.
+    - `RepoPermissionDeniedError` (`403`): Detects remote write permission barriers.
     - `PushRejectedError`: Non-fast-forward push rejections.
     - `MergeRequiredError`: Fast-forward pull failures when branches diverge.
     - `AuthFailedError` & `AuthRequiredError`: Credential negotiation failures.
@@ -286,7 +302,7 @@ Wrench is engineered around four non-negotiable architectural tenets:
 - **`lock_recovery.py`**: Manages `.git/index.lock` detection with a 5-second grace window to differentiate active operations from stale crash locks.
 - **`snapshots.py`**: Captures working directory states into dangling Git commit objects (`git stash create`) and compresses untracked files into `.tar.gz` archives without altering working directory status.
 - **`reflog.py`**: Reflog inspection and branch restoration.
-- **`identity.py`**: Validates user name and email configurations, providing repo-local configuration setters.
+- **`identity.py`**: Validates user name and email configurations (`check_identity()`), provides repo-local configuration setters (`set_identity()`), and supports automatic background synchronization from authenticated forge accounts on link creation.
 - **`paths.py`**: Standardized XDG data, config, and state directory resolution via `platformdirs`.
 - **`crash_handler.py` & `core/recovery/`**: Local-first crash resilience framework:
   - `crash_handler.py`: Global unhandled exception hook capturing stack traces and auto-saving in-flight session drafts.
@@ -302,15 +318,15 @@ Wrench is engineered around four non-negotiable architectural tenets:
   - `ForgeAccount`: Runtime representation of configured accounts including TLS configuration and Secret Service references.
 - **`capability.py`**:
   - `ForgeCapability`: Bitwise flags for granular feature gating (`PULL_REQUESTS`, `ISSUES`, `CI_STATUS`, `ISSUE_LINKING`, `REVIEWS`).
-  - `ForgeAdapter(ABC)`: Abstract base class encapsulating `httpx.Client` with connection pooling, custom TLS CA bundle loading, self-signed skip-verification policies, automatic Secret Service token resolution, standard pagination (`_paged_get` with 500-item safeguard), and status-code-to-exception translation.
+  - `ForgeAdapter(ABC)`: Abstract base class encapsulating `httpx.Client` with connection pooling, custom TLS CA bundle loading, self-signed skip-verification policies, automatic Secret Service token resolution, standard pagination (`_paged_get` with 500-item safeguard), status-code-to-exception translation, and `get_primary_email()` contract.
 - **`registry.py`**: Pluggable adapter discovery using Python entry points (`[project.entry-points."wrench.forge_adapters"]`). Provides collision detection and the `get_adapter_for_account(account)` factory.
 - **`adapters/`**: Provider-specific implementations:
-  - `GitHubAdapter` (`github.py`): REST v3 API (`api.github.com` & GHES), Bearer authentication, `/issues` PR filtering, commit statuses + check-runs CI, and full review submissions (`APPROVE`, `REQUEST_CHANGES`, `COMMENT`).
+  - `GitHubAdapter` (`github.py`): REST v3 API (`api.github.com` & GHES), Bearer authentication, `/issues` PR filtering, commit statuses + check-runs CI, full review submissions (`APPROVE`, `REQUEST_CHANGES`, `COMMENT`), and `/user/emails` verified email resolution.
   - `GitLabAdapter` (`gitlab.py`): REST v4 API (`gitlab.com` & self-hosted), Private-Token authentication, URL-encoded path slugs (`owner%2Frepo`), merge request state mapping, pipeline CI status, and self-approval trap translation.
   - `ForgejoAdapter` (`forgejo.py`): REST v1 API, token auth, commit status CI, and past-tense `APPROVED` review action mapping.
   - `BitbucketAdapter` (`bitbucket.py`): REST 2.0 API, HTTP Basic Auth (email + app password), `next` URL pagination, commit statuses, and multi-endpoint review actions.
 - **`oauth/github_device_flow.py`**: Native OAuth Device Authorization Flow (RFC 8628):
-  - Requests `repo workflow` scope enabling PR/issue management and workflow file updates.
+  - Requests `repo workflow user:email read:org` scopes, with customizable preset and advanced scope configurations.
   - Background polling with `slow_down` rate-limit backoff (+5s interval adjustments) and cooperative cancellation.
 - **`exceptions.py`**: Typed 6-tier exception hierarchy:
   - `ForgeError`, `ForgeAuthenticationError`, `ForgeInsufficientScopeError` (with `scope_hint`), `ForgeRateLimitedError` (with `retry_after_seconds`), `ForgeUnreachableError`, and `ForgeNotFoundError`.

@@ -58,11 +58,29 @@ Phase 4 delivered the comprehensive Forge Integration Layer for Wrench, providin
    - Implemented `set_active_repository()` across `PRListTab`, `IssueListTab`, `PRDetailTab`, and `IssueDetailTab`.
    - Wired `TabContainer.update_tab_repo_path()` and `MainWindow._on_repo_changed()` to guarantee tab contents update cleanly when switching active repositories.
 
-10. **Assisted GitHub OAuth Setup & Workflow Scope Support (RFC 8628)**:
+10. **Assisted GitHub OAuth Setup & Extended Scope Support (RFC 8628)**:
     - Native Device Authorization Flow (`src/wrench/forge/oauth/github_device_flow.py`) with countdown timer, polling interval backoff (`slow_down`), browser launching, and code copy buttons.
-    - Expanded default scope from `"repo"` to `"repo workflow"` ensuring tokens can create and update GitHub Actions workflow files (`.github/workflows/`) without remote rejection.
-    - Added `WorkflowScopeRequiredError` push error classification in `src/wrench/core/write_ops.py` and targeted error dialog in `src/wrench/ui/main_window.py` to eliminate confusing "Fetch & Retry / Force Push" loops.
+    - Expanded default scope from `"repo"` to `"repo workflow user:email read:org"`, ensuring tokens can manage workflows, verify author identity, and access org resources.
+    - Customizable scope picker in `AccountsDialog`: Full Access vs. Public Repositories Only presets, plus expandable Advanced Scopes (`workflow`, `user:email`, `read:org`).
     - In-place re-authorization: Added "Re-authorize…" actions in `AccountsDialog` and `EditAccountDialog` that update existing Secret Service credentials while preserving `repo_forge_links`.
+
+11. **Granular Push Error Classification & Dedicated Recovery Dialogs**:
+    - Built comprehensive server-side push rejection classification in `src/wrench/core/write_ops.py` converting opaque stderr messages into typed domain exceptions:
+      - `WorkflowScopeRequiredError`: Missing `workflow` OAuth scope when pushing `.github/workflows/`.
+      - `SecretScanningRejectedError` (`GH007`): Push blocked due to detected credentials/secrets.
+      - `ProtectedBranchRejectedError` (`GH006`): Direct push rejected by branch protection rules.
+      - `FileTooLargeRejectedError` (`GH001`): File exceeds 100MB repository quota.
+      - `SignedCommitsRequiredError` (`GH008`): Branch requires GPG/SSH signed commits.
+      - `RepoPermissionDeniedError` (`403`): Write access denied on remote repository.
+    - Specialized recovery dialogs in `src/wrench/ui/dialogs/push_recovery_dialogs.py`:
+      - `SecretScanningDialog`: Displays detected secret type and file location with direct 1-click external unblock URL button.
+      - `ProtectedBranchDialog`: Guided 1-click creation of a new branch (`patch-1` / `patch-{branch}`) with automated checkout and push.
+      - `FileTooLargeDialog`: Displays file size, limits, and recommendations for `git rm --cached` or Git LFS.
+      - Targeted messages for signed commits (GPG/SSH commit signing guidance) and permission denials.
+
+12. **Auto-Aligned Local Identity**:
+    - Added `adapter.get_primary_email()` across `ForgeAdapter` and `GitHubAdapter` (querying `/user/emails` for verified primary email).
+    - Integrated background author identity synchronization into `LinkRepoDialog`: linking a repository to a forge account automatically updates `.git/config` `user.name` and `user.email` to match the authenticated forge profile.
 
 ---
 
@@ -100,6 +118,7 @@ Phase 4 delivered the comprehensive Forge Integration Layer for Wrench, providin
     - `get_issue(owner: str, repo: str, issue_id: str) -> Issue`
     - `get_ci_status(owner: str, repo: str, ref: str) -> CIStatus`
     - `submit_review(owner: str, repo: str, number: int, *, action: str, body: str = "") -> None`
+    - `get_primary_email() -> str | None`: Fetches verified primary email of authenticated user (default returns `None`, overridden in provider adapters).
   - Property `supported_review_actions`: Default `frozenset({"approve", "request_changes", "comment"})`.
 
 ### 2.3 Provider Adapters (`src/wrench/forge/adapters/`)
@@ -110,6 +129,7 @@ Phase 4 delivered the comprehensive Forge Integration Layer for Wrench, providin
   - Filtered `/issues`: Discards items with a `pull_request` key to prevent duplicate PR entries.
   - CI Status: Queries `/repos/{owner}/{repo}/commits/{ref}/status` combined status, falling back to `/check-runs`.
   - Review Actions: Maps directly to `APPROVE`, `REQUEST_CHANGES`, `COMMENT`.
+  - Primary Email Resolution: Queries `/user/emails` endpoint (requiring `user:email` scope) for verified primary email, falling back to any verified email.
 - **`GitLabAdapter` (`gitlab.py`)**:
   - Base URL: `{instance_url}/api/v4`.
   - Auth: `PRIVATE-TOKEN: {token}`.
@@ -165,18 +185,30 @@ Phase 4 delivered the comprehensive Forge Integration Layer for Wrench, providin
   - Stale repository banner displayed when the parent MainWindow changes to another repository.
 - **`AccountsDialog` (`src/wrench/ui/dialogs/accounts_dialog.py`)**:
   - Manage configured accounts (Add, Edit, Re-authorize, Remove, Replace Token).
-  - **Assisted Setup (Device Flow RFC 8628)**: In-app browser authorization for GitHub and GitHub Enterprise Server requesting `repo workflow` permissions.
+  - **Assisted Setup (Device Flow RFC 8628)**: In-app browser authorization for GitHub and GitHub Enterprise Server requesting `repo workflow user:email read:org` permissions.
+  - **Scope Picker UI**: Preset radio buttons ("Full Access" vs. "Public Repositories Only") and collapsible "Advanced Scopes" toggle (`QToolButton` + `advanced_scopes_widget`) exposing checkboxes for `workflow`, `user:email`, and `read:org`.
   - **In-Place Re-authorization**: Re-authorizing an account seamlessly updates the token in the OS Secret Service without generating duplicate account rows or severing dependent repository links (`repo_forge_links`).
   - Validation before persistence: Tests `authenticate()` asynchronously before writing rows or credentials.
   - Advanced TLS configuration: Custom CA bundle (PEM) file picker and explicit skip TLS verification option with security warning.
   - Deletion confirmation warning showing cascading repository link removals.
+- **Push Recovery Dialogs (`src/wrench/ui/dialogs/push_recovery_dialogs.py`)**:
+  - `SecretScanningDialog`: Actionable recovery for GitHub Secret Scanning (`GH007`) showing detected secret type and file location, with an "Open Unblock URL in Browser" action.
+  - `ProtectedBranchDialog`: Guided recovery for Protected Branch (`GH006`) push rejections, providing a 1-click branch creation input (prefilled with `patch-1`), automated checkout, and re-push.
+  - `FileTooLargeDialog`: Quota violation dialog (`GH001`) displaying offending filename, file size, quota limit, and remediation guidance for `git rm --cached` and Git LFS.
 
-### 2.6 Push Error Classification & Workflow Scope Protection (`src/wrench/core/write_ops.py`)
+### 2.6 Server-Side Push Error Classification & Protection (`src/wrench/core/write_ops.py` & `src/wrench/core/exceptions.py`)
 
-- **Domain Exception `WorkflowScopeRequiredError`**:
-  - GitHub enforces that commits touching `.github/workflows/` require the `workflow` OAuth scope.
-  - `_classify_git_error()` intercepts remote rejection messages containing `without 'workflow' scope` or `refusing to allow an OAuth App to create or update workflow` prior to the generic `PushRejectedError`.
-  - `MainWindow._route_remote_error()` surfaces a dedicated warning guiding users to re-authorize or add the scope, avoiding futile "Fetch & Retry" or "Force Push" cycles.
+- **Domain Exception Taxonomy**:
+  - `WorkflowScopeRequiredError`: GitHub enforces that commits touching `.github/workflows/` require the `workflow` OAuth scope.
+  - `SecretScanningRejectedError` (`GH007`): Captures detected secret type, file location, and unblock URL from remote output.
+  - `ProtectedBranchRejectedError` (`GH006`): Captures branch name and protection rejection reason.
+  - `FileTooLargeRejectedError` (`GH001`): Captures filename, file size MB, and quota limit MB.
+  - `SignedCommitsRequiredError` (`GH008`): Remote rejects unsigned commits.
+  - `RepoPermissionDeniedError` (`403`): Remote permission denied for authenticated account.
+  - `PushRejectedError`: Base exception for non-fast-forward divergence.
+- **Deterministic Classification (`_classify_git_error`)**:
+  - Parsed directly from Git CLI stderr during `push` operations before falling back to generic `PushRejectedError`.
+  - `MainWindow._route_remote_error()` surfaces specialized recovery dialogs, completely eliminating confusing "Fetch & Retry / Force Push" loops on policy-rejected pushes.
 
 ### 2.7 Background Worker Concurrency Engine (`src/wrench/ui/workers.py`)
 
@@ -188,6 +220,13 @@ Phase 4 delivered the comprehensive Forge Integration Layer for Wrench, providin
   - Main-thread result dispatching via queued signals on a singleton `_Dispatcher(QObject)`.
   - Completely non-blocking background operations with safe progress, completion, and error propagation back to GUI widgets.
 
+### 2.8 Local Git Identity Alignment (`src/wrench/core/identity.py` & `src/wrench/ui/dialogs/link_dialog.py`)
+
+- **Automated Identity Synchronization**:
+  - When linking a repository to a forge account via `LinkRepoDialog`, a background task queries `adapter.get_primary_email()`.
+  - If a verified email is retrieved, it automatically sets repository-local git configuration via `identity.set_identity(repo, name, email)`.
+  - Ensures commit author headers match the authenticated forge account without manual `git config` terminal commands or identity mismatch warnings.
+
 ---
 
 ## 3. Test Coverage & Verification
@@ -198,12 +237,14 @@ Phase 4 delivered the comprehensive Forge Integration Layer for Wrench, providin
   - Model field structures and normalized state validations.
   - Exception hierarchy mapping and scope hint assertions.
   - Capability bitwise flags operations.
+  - `get_primary_email` base contract and GitHub adapter extraction.
 - **Adapter Integration Matrix Tests** (`tests/integration/`):
   - **`test_github_adapter.py`**:
     - `test_authenticate_success`, `test_authenticate_auth_error`, `test_authenticate_insufficient_scope`, `test_authenticate_unreachable`, `test_rate_limiting`.
     - `test_list_pull_requests_state_mapping`, `test_list_pull_requests_pagination`, `test_create_pull_request_payload`.
     - `test_get_ci_status_mapping`, `test_submit_review_actions_and_issue_trap`.
     - `test_get_pull_request`, `test_get_issue`.
+    - `test_get_primary_email_success`, `test_get_primary_email_fallback`, `test_get_primary_email_error`.
   - **`test_gitlab_adapter.py`**:
     - `test_authenticate_success`, `test_authenticate_auth_error`, `test_authenticate_insufficient_scope`, `test_authenticate_unreachable`, `test_rate_limiting`.
     - `test_list_pull_requests_state_mapping`, `test_list_pull_requests_pagination`, `test_create_pull_request_payload`.
@@ -224,9 +265,14 @@ Phase 4 delivered the comprehensive Forge Integration Layer for Wrench, providin
   - Secret service rollback on failed token storage.
   - Upsert repository links and candidate remote filtering.
   - Database schema migration v1 to v2.
-- **UI Tabs & Dialog Tests** (`tests/ui/`):
+- **Core Write Operations & Push Protections** (`tests/unit/core/test_write_ops_remotes.py`, `tests/unit/core/test_exceptions.py`, `tests/unit/core/test_identity.py`):
+  - Push error classification for `SecretScanningRejectedError`, `ProtectedBranchRejectedError`, `FileTooLargeRejectedError`, `SignedCommitsRequiredError`, `RepoPermissionDeniedError`, `WorkflowScopeRequiredError`.
+  - Git identity verification, setting, and invalid email validation.
+- **UI Tabs & Recovery Dialog Tests** (`tests/ui/` & `tests/unit/ui/`):
   - `test_forge_tabs.py`: PR list, Issue list, SWR caching, PR detail single-entity loading, CI status, issue detail rendering.
-  - `test_accounts_dialog.py`: Accounts manager rendering, add flow, device flow workflow scope assertion, token replacement, in-place re-auth, removal.
+  - `test_accounts_dialog.py`: Accounts manager rendering, add flow, device flow workflow scope assertion, scope picker controls, token replacement, in-place re-auth, removal.
+  - `test_push_recovery_dialogs.py`: `SecretScanningDialog`, `ProtectedBranchDialog`, and `FileTooLargeDialog` field rendering and action callbacks.
+  - `test_main_window_remotes.py`: Remote operations error routing for secret scanning, protected branches, file size limits, signed commits, and permission denials.
   - `test_forge_repo_switch.py`: Synchronized repository switching across PR and Issue tabs.
 - **Worker Concurrency Tests** (`tests/unit/core/test_workers.py`):
   - High-concurrency worker dispatches without deadlocks or crashes.
@@ -240,10 +286,10 @@ Phase 4 delivered the comprehensive Forge Integration Layer for Wrench, providin
   All checks passed!
   Checking black formatting...
   All done! ✨ 🍰 ✨
-  148 files would be left unchanged.
+  150 files would be left unchanged.
   ```
 - **Complete Test Suite (`./bin/wrench-test`)**:
   ```
-  ============================= 376 passed in 14.94s =============================
+  ============================= 411 passed in 46.23s =============================
   ```
 - **Zero Failures, Zero Deadlocks**: All unit, integration, and UI tests execute smoothly with zero memory errors or GUI thread blocks.

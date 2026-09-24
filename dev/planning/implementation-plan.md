@@ -2467,29 +2467,29 @@ Cross-references SRS §7.
 Flattened, in strict execution order, across every phase — the literal path through the project. Check off top to bottom, never out of order. Each line is short-form on purpose, so it tracks real progress rather than duplicating the detail above; follow the cross-referenced phase step for the full algorithm/rationale before implementing anything non-trivial.
 
 **Phase 0 — Project Setup** *(prerequisites: none)*
-- [ ] 0.1 `git init`; add `LICENSE` (AGPL-3.0), `README.md` stub, `dev/planning/` (this SRS + plan, tracked) + `dev/scratch/` (gitignored) + `dev/README.md`, and `.gitignore` per §5 Phase 0 step 1
-- [ ] 0.2 `pyproject.toml`: metadata, deps, dev-deps, entry-points section (§4.4)
-- [ ] 0.3 `ruff`/`black` config
-- [ ] 0.4 `.pre-commit-config.yaml`
-- [ ] 0.5 Full `src/wrench/` skeleton from §3 (including `credentials/backend.py`, `core/paths.py`, `core/ssh_agent.py` — the platform-abstraction seams, §4.7), stub modules with FR-referencing docstrings
-- [ ] 0.6 Minimal Flatpak manifest (empty window)
-- [ ] 0.7 Pinned pip sources via `flatpak-pip-generator`, added to manifest
-- [ ] 0.8 **CHECK**: `flatpak-builder` succeeds network-isolated; app launches an empty window
+- [x] 0.1 `git init`; add `LICENSE` (AGPL-3.0), `README.md` stub, `dev/planning/` (this SRS + plan, tracked) + `dev/scratch/` (gitignored) + `dev/README.md`, and `.gitignore` per §5 Phase 0 step 1
+- [x] 0.2 `pyproject.toml`: metadata, deps, dev-deps, entry-points section (§4.4)
+- [x] 0.3 `ruff`/`black` config
+- [x] 0.4 `.pre-commit-config.yaml`
+- [x] 0.5 Full `src/wrench/` skeleton from §3 (including `credentials/backend.py`, `core/paths.py`, `core/ssh_agent.py` — the platform-abstraction seams, §4.7), stub modules with FR-referencing docstrings
+- [x] 0.6 Minimal Flatpak manifest (empty window)
+- [x] 0.7 Pinned pip sources via `flatpak-pip-generator`, added to manifest
+- [x] 0.8 **CHECK**: `flatpak-builder` succeeds network-isolated; app launches an empty window
 
 **Phase 1 — Core Local Git Engine + MVP UI** *(prerequisites: 0.8 checked)*
-- [ ] 1.1 `core/read_ops.py`: status/diff/log/blame + unit tests
-- [ ] 1.2 `core/write_ops.py`: `run_git()` + commit/branch/stash ops
-- [ ] 1.3 `core/identity.py`: identity check/prompt
-- [ ] 1.4 `storage/schema.sql` + `db.py` + `repo_registry.py`
-- [ ] 1.5 `core/engine.py`: façade wiring
-- [ ] 1.6 Hunk/line staging — use the exact patch-construction algorithm in §5 Phase 1 step 6, not an improvised one
-- [ ] 1.7 `watcher/inotify_watcher.py`: single-shot-`QTimer` debounce per §5 Phase 1 step 7
-- [ ] 1.8 `watcher/polling_fallback.py`: inotify-limit fallback
-- [ ] 1.9 `core/lock_recovery.py`: mtime-only stale-lock algorithm per §5 Phase 1 step 9 — no PID checks
-- [ ] 1.10 `core/reflog.py`: reflog read + restore-to-ref
-- [ ] 1.11 `core/snapshots.py` + `storage/snapshots.py`: capture/prune per §4.6; wire `commit` and `manual` triggers now, plus `delete_branch` as a `pre_risky_op` point
-- [ ] 1.12 `ui/main_window.py` + `ui/sidebar/` + `ui/diff_view/` (default tab) + `ui/workers.py` (§4.8 — needed starting Phase 3, scaffold now)
-- [ ] 1.13 **CHECK**: `pytest tests/unit/core tests/unit/storage -v` green; manual QA per §5 Phase 1 acceptance check, including a snapshot appearing after commit and after manual "snapshot now"
+- [x] 1.1 `core/read_ops.py`: status/diff/log/blame + unit tests
+- [x] 1.2 `core/write_ops.py`: `run_git()` + commit/branch/stash ops
+- [x] 1.3 `core/identity.py`: identity check/prompt
+- [x] 1.4 `storage/schema.sql` + `db.py` + `repo_registry.py`
+- [x] 1.5 `core/engine.py`: façade wiring
+- [x] 1.6 Hunk/line staging — use the exact patch-construction algorithm in §5 Phase 1 step 6, not an improvised one
+- [x] 1.7 `watcher/inotify_watcher.py`: single-shot-`QTimer` debounce per §5 Phase 1 step 7
+- [x] 1.8 `watcher/polling_fallback.py`: inotify-limit fallback
+- [x] 1.9 `core/lock_recovery.py`: mtime-only stale-lock algorithm per §5 Phase 1 step 9 — no PID checks
+- [x] 1.10 `core/reflog.py`: reflog read + restore-to-ref
+- [x] 1.11 `core/snapshots.py` + `storage/snapshots.py`: capture/prune per §4.6; wire `commit` and `manual` triggers now, plus `delete_branch` as a `pre_risky_op` point
+- [x] 1.12 `ui/main_window.py` + `ui/sidebar/` + `ui/diff_view/` (default tab) + `ui/workers.py` (§4.8 — needed starting Phase 3, scaffold now)
+- [x] 1.13 **CHECK**: `pytest tests/unit/core tests/unit/storage -v` green; manual QA per §5 Phase 1 acceptance check, including a snapshot appearing after commit and after manual "snapshot now"
 
 **Phase 1.5 — UI Shell Overhaul** *(prerequisites: 1.13 checked)*
 - [x] 1.5.1 `ui/main_window.py` rewrite: `QMenuBar` + menu structure (File/Edit/View/Help), window geometry persistence, quit guards (unsaved commit msg, background ops)
@@ -2526,17 +2526,20 @@ Flattened, in strict execution order, across every phase — the literal path th
 - [x] 3.6 **CHECK**: full §5 Phase 3 step 6 list executed — pytest green; real HTTPS push/pull/fetch with helper-supplied credentials verified via `GIT_TRACE=1`; strace shows zero plaintext credential files; two-account same-host → linked-account-wins, unlinked-ambiguous → fails closed; rejection dialogs (push-rejected / merge-required / auth) shown correctly; mid-clone cancel leaves no directory; SSH plain-agent works; Remotes dialog round-trips
 
 **Phase 4 — Forge Integration Layer** *(prerequisites: 3.6 checked)*
-- [ ] 4.1 `forge/models.py`: dataclasses + normalized state strings; `forge/exceptions.py`: the §4.3.A six-class hierarchy (lives in `forge/`, not `core/` — no new core→forge imports)
-- [ ] 4.2 `forge/capability.py`: `ForgeCapability` + `ForgeAdapter` ABC — account bound in `__init__`, argument-less `authenticate()`, shared `_request()` (timeouts, 401/403/429→exception map) + `_paged_get` (10-page cap)
-- [ ] 4.3 `forge/registry.py`: entry-points discovery (already in `pyproject.toml` — verify, don't re-add), cached discovery, `cls(account)` construction, loud duplicate-provider failure
-- [ ] 4.4 `storage/forge_accounts.py`: full CRUD — two-step `add_account` (placeholder key → final key → `store_secret`, row-rollback on secret-store failure), `get_account_full`, `link_repo_to_account` upsert, `get_link_for_remote`, `get_remote_slug`, `remove_account`
-- [ ] 4.5 `forge/adapters/github.py` — build first; `/issues`-returns-PRs filter
-- [ ] 4.6 `forge/adapters/gitlab.py`
-- [ ] 4.7 `forge/adapters/forgejo.py` — build third, deliberately; TLS is per-account policy via `verify=` (§3.1 columns), not adapter code; min supported server Gitea/Forgejo ≥ 1.20
-- [ ] 4.8 `forge/adapters/bitbucket.py` — API-token Basic Auth (email+token); do **not** implement App Passwords (dead since June 2026)
-- [ ] 4.9 Forge UI: the four §3 tab files + shared `ui/forge_panel/` widgets — all adapter HTTP via `run_in_background`, no N+1 CI in lists, per-class error banners, capability gating (no call-and-catch), review actions gated on `ForgeCapability.REVIEWS` + `supported_review_actions`, `tr()` + full keyboard operation
-- [ ] 4.10 Accounts manager + link flow (FR-5.6/5.8/5.9): validate-before-save via background `authenticate()`; advanced TLS group (custom CA bundle / warning-gated insecure mode) on editable-instance providers; one-time picker on ambiguous host match, always confirmed, never re-prompted; linking upserts `repo_forge_links` **and** sets `credential.useHttpPath`
-- [ ] 4.11 **CHECK**: unit + adapter-integration tests green on a **clean clone** (entry-points behave differently editable-installed); real-account QA per provider, plus the two-accounts-same-host case with the picker, plus failure-path QA (401 re-entry, 429 banner, unreachable banner, keyring-down add); documentation-gate checklist — TLS-policy texts reviewed, review actions QA'd on a test PR per provider (§11 items 13, 14 resolved)
+- [x] 4.1 `forge/models.py`: dataclasses + normalized state strings; `forge/exceptions.py`: the §4.3.A six-class hierarchy (lives in `forge/`, not `core/` — no new core→forge imports)
+- [x] 4.2 `forge/capability.py`: `ForgeCapability` + `ForgeAdapter` ABC — account bound in `__init__`, argument-less `authenticate()`, shared `_request()` (timeouts, 401/403/429→exception map) + `_paged_get` (10-page cap), `get_primary_email()`
+- [x] 4.3 `forge/registry.py`: entry-points discovery (already in `pyproject.toml` — verify, don't re-add), cached discovery, `cls(account)` construction, loud duplicate-provider failure
+- [x] 4.4 `storage/forge_accounts.py`: full CRUD — two-step `add_account` (placeholder key → final key → `store_secret`, row-rollback on secret-store failure), `get_account_full`, `link_repo_to_account` upsert, `get_link_for_remote`, `get_remote_slug`, `remove_account`
+- [x] 4.5 `forge/adapters/github.py` — build first; `/issues`-returns-PRs filter; `/user/emails` verified email resolution
+- [x] 4.6 `forge/adapters/gitlab.py`
+- [x] 4.7 `forge/adapters/forgejo.py` — build third, deliberately; TLS is per-account policy via `verify=` (§3.1 columns), not adapter code; min supported server Gitea/Forgejo ≥ 1.20
+- [x] 4.8 `forge/adapters/bitbucket.py` — API-token Basic Auth (email+token); do **not** implement App Passwords (dead since June 2026)
+- [x] 4.9 Forge UI: the four §3 tab files + shared `ui/forge_panel/` widgets — all adapter HTTP via `run_in_background`, no N+1 CI in lists, per-class error banners, capability gating (no call-and-catch), review actions gated on `ForgeCapability.REVIEWS` + `supported_review_actions`, `tr()` + full keyboard operation
+- [x] 4.10 Accounts manager + link flow (FR-5.6/5.8/5.9): validate-before-save via background `authenticate()`; advanced TLS group (custom CA bundle / warning-gated insecure mode) on editable-instance providers; one-time picker on ambiguous host match, always confirmed, never re-prompted; linking upserts `repo_forge_links` **and** sets `credential.useHttpPath`
+- [x] 4.11 **CHECK**: unit + adapter-integration tests green on a **clean clone** (entry-points behave differently editable-installed); real-account QA per provider, plus the two-accounts-same-host case with the picker, plus failure-path QA (401 re-entry, 429 banner, unreachable banner, keyring-down add); documentation-gate checklist — TLS-policy texts reviewed, review actions QA'd on a test PR per provider (§11 items 13, 14 resolved)
+- [x] 4.12 Extended OAuth scopes: Assisted Device Flow requesting `repo workflow user:email read:org`; preset radios ("Full Access" vs "Public Repositories Only") + collapsible "Advanced Scopes" selector in `AccountsDialog`
+- [x] 4.13 Granular push protection & recovery dialogs: `write_ops` regex classification for `SecretScanningRejectedError` (`GH007`), `ProtectedBranchRejectedError` (`GH006`), `FileTooLargeRejectedError` (`GH001`), `SignedCommitsRequiredError` (`GH008`), and `RepoPermissionDeniedError` (`403`); dedicated `SecretScanningDialog`, `ProtectedBranchDialog`, `FileTooLargeDialog` with guided recovery & unblock links
+- [x] 4.14 Local git author identity alignment: `adapter.get_primary_email()` + asynchronous author alignment in `LinkRepoDialog` syncing authenticated forge `user.name` and verified `user.email` to local `.git/config`
 
 **Phase 4.5 — Multi-Repository Directory Discovery** *(prerequisites: 4.11 checked)*
 - [ ] 4.5.1 `core/discovery.py` — bounded cancellable walk (depth 3, dot-dirs skipped, symlinks unfollowed, prune at repo roots, `.git` file-or-directory counts, permission errors skipped-and-counted); façade re-export

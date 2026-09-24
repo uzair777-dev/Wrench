@@ -241,6 +241,56 @@ class TestLinkRepoDialog:
             handle = RepoHandle(pygit2_repo, str(repo_path))
             assert handle.pygit2_repo.config["credential.useHttpPath"] == "true"
 
+    def test_link_repo_auto_aligns_identity(self, tmp_path: Path, db_conn):
+        db_path = db_file_path(db_conn)
+        repo_path = tmp_path / "align_repo"
+        repo_path.mkdir()
+        pygit2_repo = pygit2.init_repository(str(repo_path))
+        sig = pygit2.Signature("Old Name", "old@example.com")
+        tree = pygit2_repo.TreeBuilder().write()
+        pygit2_repo.create_commit("HEAD", sig, sig, "Initial", tree, [])
+        pygit2_repo.remotes.create("origin", "https://github.com/alice/coolproject.git")
+
+        repo_registry.add_repo(db_conn, str(repo_path), "align_repo")
+
+        mock_backend = MagicMock()
+        mock_backend.get_secret.return_value = "ghp_mock_token"
+        with patch("wrench.credentials.get_backend", return_value=mock_backend):
+            forge_accounts.add_account(
+                db_conn,
+                provider="github",
+                instance_url="https://github.com",
+                label="GitHub Acc",
+                username="alice",
+                token="tok_gh",
+            )
+
+        with (
+            patch(
+                "wrench.storage.db.get_connection",
+                side_effect=lambda: sqlite3.connect(db_path),
+            ),
+            patch("wrench.credentials.get_backend", return_value=mock_backend),
+            patch(
+                "wrench.ui.dialogs.link_dialog.run_in_background",
+                side_effect=_sync_run_in_background,
+            ),
+            patch(
+                "wrench.forge.adapters.github.GitHubAdapter.get_primary_email",
+                return_value="alice@example.com",
+            ),
+        ):
+            dlg = LinkRepoDialog(str(repo_path))
+            dlg._auto_match_remotes()
+            dlg._save_links()
+
+            # Verify local identity was aligned
+            from wrench.core.identity import check_identity
+
+            name, email = check_identity(str(repo_path))
+            assert name == "alice"
+            assert email == "alice@example.com"
+
 
 class TestAssistedFlowUI:
     """UI tests for AddAccountDialog assisted flow, chooser, and tooltips."""

@@ -17,11 +17,13 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from wrench.core import engine
+from wrench.core import engine, identity
 from wrench.core.engine import RepoHandle
 from wrench.core.remote_urls import parse_remote_url
+from wrench.forge.registry import create_adapter
 from wrench.storage import db, forge_accounts
 from wrench.ui.dialogs.accounts_dialog import AccountsDialog
+from wrench.ui.workers import run_in_background
 
 logger = logging.getLogger(__name__)
 
@@ -230,6 +232,42 @@ class LinkRepoDialog(QDialog):
                         owner,
                         repo,
                     )
+
+                    # Auto-align local git author identity
+                    _repo_path = str(self.repo_path)
+                    _account_id = account_id
+
+                    def _align_identity(
+                        target_repo: str = _repo_path,
+                        target_acct_id: int = _account_id,
+                    ) -> None:
+                        """Background: fetch email from forge and set local git identity."""
+                        try:
+                            from wrench.storage import db as db_mod
+                            from wrench.storage import forge_accounts as fa_mod
+
+                            c = db_mod.get_connection()
+                            try:
+                                acct = fa_mod.get_account_full(c, target_acct_id)
+                            finally:
+                                c.close()
+                            if acct is None:
+                                return
+                            adapter = create_adapter(acct)
+                            try:
+                                email = adapter.get_primary_email()
+                            finally:
+                                adapter.close()
+                            if email:
+                                identity.set_identity(
+                                    target_repo,
+                                    acct.username or acct.label,
+                                    email,
+                                )
+                        except Exception:
+                            pass  # best-effort, don't block linking
+
+                    run_in_background(fn=_align_identity, on_finished=lambda _: None)
         finally:
             conn.close()
 

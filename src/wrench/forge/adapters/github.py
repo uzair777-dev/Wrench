@@ -236,3 +236,25 @@ class GitHubAdapter(ForgeAdapter):
             author=item.get("user", {}).get("login", ""),
             created_at=item.get("created_at", ""),
         )
+
+    def get_primary_email(self) -> str | None:
+        """Fetch primary verified email from GitHub /user/emails endpoint.
+
+        Requires 'user:email' OAuth scope. Falls back to first verified email
+        if no primary is found. Returns None on any error.
+        """
+        try:
+            resp = self._request("GET", "/user/emails")
+            data = resp.json()
+        except Exception:
+            return None
+
+        # Prefer primary + verified
+        for item in data:
+            if item.get("primary") and item.get("verified"):
+                return item.get("email")
+        # Fall back to any verified
+        for item in data:
+            if item.get("verified"):
+                return item.get("email")
+        return None

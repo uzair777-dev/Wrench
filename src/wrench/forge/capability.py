@@ -280,3 +280,11 @@ class ForgeAdapter(ABC):
     def get_issue(self, owner: str, repo: str, issue_id: str) -> Issue:
         """Fetch details for a single issue by ID or number."""
         raise NotImplementedError(f"{self.provider_id} does not support issues")
+
+    def get_primary_email(self) -> str | None:
+        """Fetch the primary verified email of the authenticated user.
+
+        Returns None if the provider doesn't support this or if no verified email is found.
+        Override in provider-specific adapters.
+        """
+        return None

@@ -56,6 +56,9 @@ def get_adapter_for_account(account: ForgeAccount) -> ForgeAdapter:
     return cls(account)
 
 
+create_adapter = get_adapter_for_account
+
+
 def clear_adapter_cache() -> None:
     """Testing helper to reset cached entry points."""
     global _adapter_cache

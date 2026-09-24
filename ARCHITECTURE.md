@@ -33,128 +33,116 @@ Wrench is engineered around four non-negotiable architectural tenets:
 
 ## 2. High-Level Component Diagram
 
-```mermaid
-graph TD
-    subgraph UI ["UI Layer (PySide6)"]
-        MW[MainWindow]
-        TC[TabContainer / TabButton]
-        CT[ChangesTab]
-        HT[HistoryTab - Commit Graph]
-        PRL[PRListTab & IssueListTab]
-        PRD[PRDetailTab & IssueDetailTab]
-        BW[BranchSwitcherWidget]
-        DV[DiffView]
-        CG[CommitGraphWidget]
-        MT[MergeDialog]
-        RD[RemotesDialog]
-        AD[AccountsDialog & EditAccountDialog]
-        LD[LinkRepoDialog]
-        BD[BusyOperationDialog]
-        WKR[Worker Thread Pool & Dispatcher]
-        THM[Theme Engine - theme.py]
-    end
-
-    subgraph Core ["Core Git Engine (src/wrench/core)"]
-        ENG[engine.py Façade]
-        READ[read_ops.py - pygit2]
-        WRITE[write_ops.py - git subprocess]
-        STREAM[run_git_streaming - pipe drainer]
-        STG[Staging Patch Synthesizer]
-        SNP[snapshots.py]
-        LCK[lock_recovery.py]
-        RFL[reflog.py]
-        IDN[identity.py]
-        SSH[ssh_agent.py - platform guard]
-        RCV[recovery / crash_handler.py]
-    end
-
-    subgraph Watcher ["Filesystem Watcher (src/wrench/watcher)"]
-        INOT[inotify_watcher.py]
-        POLL[polling_fallback.py]
-    end
-
-    subgraph Storage ["Storage Layer (src/wrench/storage)"]
-        DB[(SQLite: wrench.db)]
-        REG[repo_registry.py]
-        SET[settings.py]
-        SNPREG[snapshots.py]
-        FACC[forge_accounts.py]
-    end
-
-    subgraph Forge ["Multi-Forge Subsystem (src/wrench/forge)"]
-        FREG[forge.registry - Pluggable Discovery]
-        FAD[forge.capability - ForgeAdapter Base]
-        FGH[GitHubAdapter]
-        FGL[GitLabAdapter]
-        FFJ[ForgejoAdapter]
-        FBB[BitbucketAdapter]
-        FDF[github_device_flow.py - RFC 8628]
-    end
-
-    subgraph Credentials ["Credentials Layer (src/wrench/credentials)"]
-        CRED[credentials.get_backend()]
-        SS[SecretServiceBackend D-Bus]
-        GCH[git-credential-wrench]
-    end
-
-    MW --> TC
-    TC --> CT
-    TC --> HT
-    TC --> PRL
-    TC --> PRD
-    HT --> CG
-    CT --> BW
-    CT --> DV
-    MW --> ENG
-    MW --> RD
-    MW --> AD
-    MW --> LD
-    MW --> BD
-    MW --> THM
-    THM -.->|Recursive Palette & Event Broadcast| TC
-    THM -.->|Recursive Palette & Event Broadcast| CT
-    THM -.->|Recursive Palette & Event Broadcast| HT
-    THM -.->|Recursive Palette & Event Broadcast| DV
-    THM -.->|Recursive Palette & Event Broadcast| BW
-    THM -.->|Recursive Palette & Event Broadcast| CG
-    PRL --> FREG
-    PRD --> FREG
-    AD --> FDF
-    AD --> FREG
-    LD --> FACC
-    FREG --> FAD
-    FAD --> FGH
-    FAD --> FGL
-    FAD --> FFJ
-    FAD --> FBB
-    CT --> ENG
-    HT --> ENG
-    BW --> ENG
-    DV --> ENG
-    CT --> REG
-    MW --> SET
-    ENG --> READ
-    ENG --> WRITE
-    WRITE --> STREAM
-    WRITE --> SSH
-    ENG --> STG
-    ENG --> SNP
-    ENG --> LCK
-    ENG --> RFL
-    ENG --> IDN
-    ENG --> RCV
-    INOT -->|Qt Signal| MW
-    SNP --> DB
-    REG --> DB
-    SET --> DB
-    FACC --> DB
-    GCH --> FACC
-    GCH --> CRED
-    FAD --> CRED
-    FDF --> CRED
-    CRED --> SS
-    WKR -.->|Main-Thread Queued Signal| MW
+```text
+┌────────────────────────────────────────────────────────────────────────────────────────┐
+│                               UI LAYER (PySide6 / Qt 6)                                │
+│                                                                                        │
+│  ┌──────────────────────────────────────────────────────────────────────────────────┐  │
+│  │ MainWindow (ui/main_window.py)                                                   │  │
+│  │   • MenuBar: File | Edit | View | Repository | Help                              │  │
+│  │   • Central Lifecycle Coordinator & Actionable Error Routing Engine              │  │
+│  │   • Dialogs: MergeDialog | RemotesDialog | AccountsDialog | LinkRepoDialog | ... │  │
+│  │   • Theme Engine (theme.py): Recursive Palette & Event Broadcast to all widgets  │  │
+│  └───────┬──────────────────────────────────────────────────────────────────▲───────┘  │
+│          │                                                                  │          │
+│          ▼                                                                  │          │
+│  ┌──────────────────────────────────────────────────────────────────────┐   │          │
+│  │ TabContainer (ui/tabs/tab_bar.py) - Dynamic Hybrid Tab Shell         │   │ Queued   │
+│  │  ┌─────────────────────────────────┐ ┌─────────────────────────────┐ │   │ Signals  │
+│  │  │ ChangesTab (Pinned Workspace)   │ │ HistoryTab                  │ │   │          │
+│  │  │  • BranchSwitcherWidget         │ │  • CommitGraphWidget (DAG)  │ │   │          │
+│  │  │  • Unified File List (Checks)   │ │  • Search/Filter Bar (300ms)│ │   │          │
+│  │  │  • DiffView & Staging UI        │ │  • Commit Detail Pane       │ │   │          │
+│  │  │  • Commit & Amend Box           │ │  • Branch & Ref Badges      │ │   │          │
+│  │  └─────────────────────────────────┘ └─────────────────────────────┘ │   │          │
+│  │  ┌─────────────────────────────────────────────────────────────────┐ │   │          │
+│  │  │ Multi-Forge Tabs (ui/tabs/ & ui/forge_panel/)                   │ │   │          │
+│  │  │  • PRListTab & IssueListTab (SWR 60s Cache, Filterable Tables)  │ │   │          │
+│  │  │  • PRDetailTab & IssueDetailTab (CI Status, Review Dialogs)     │ │   │          │
+│  │  └─────────────────────────────────────────────────────────────────┘ │   │          │
+│  └────────────────────────────────────────┬─────────────────────────────┘   │          │
+│                                           │                                 │          │
+│  ┌────────────────────────────────────────▼─────────────────────────────┐   │          │
+│  │ Worker Thread Pool & Dispatcher (ui/workers.py)                      ├───┘          │
+│  │  • Python daemon threads with safe queued main-thread signal dispatch│              │
+│  └──────────────────────────────────────────────────────────────────────┘              │
+└──────────────▲────────────────────┬─────────────────────────────┬──────────────────────┘
+               │                    │                             │                       
+    Qt Signals │   Git Operations   │                             │ Forge REST APIs       
+     (Inotify) │  (Façade Pipeline) │                             │ (SWR 60s Cache)       
+               │                    ▼                             ▼                       
+┌──────────────┴───────┐  ┌─────────┬──────────────────────┐  ┌───┬──────────────────────┐
+│  FILESYSTEM WATCHER  │  │   CORE GIT ENGINE (core/)      │  │  MULTI-FORGE (forge/)    │
+│ (src/wrench/watcher) │  │                                │  │                          │
+│                      │  │ • engine.py (Façade API)       │  │ • forge.registry         │
+│ • inotify_watcher.py │  │ • read_ops.py (pygit2 reads)   │  │   - Entry-point plugins  │
+│   - Linux inotify    │  │   - status, diff, log, blame   │  │ • forge.capability       │
+│   - 300ms debouncing │  │ • write_ops.py (git CLI writes)│  │   - ForgeAdapter Base    │
+│   - Atomic rename    │  │   - commit, branch, merge, push│  │ • Concrete Adapters:     │
+│     (tempfile/index) │  │ • run_git_streaming            │  │   - GitHubAdapter        │
+│ • polling_fallback.py│  │   - Pipe drainer & cancel event│  │   - GitLabAdapter        │
+│   - Portable safety  │  │ • ssh_agent platform guard     │  │   - ForgejoAdapter       │
+│     polling loop     │  │ • snapshots.py (safety stash)  │  │   - BitbucketAdapter     │
+│ • Signals Emitted:   │  │ • lock_recovery.py (index.lock)│  │ • github_device_flow.py  │
+│   - working tree     │  │ • reflog.py (history restore)  │  │   - RFC 8628 Device Flow │
+│   - head/ref updates │  │ • identity.py (author sync)    │  │   - Workflow scope setup │
+│   - lock releases    │  │ • crash_handler.py (recovery)  │  │ • TLS Custom CA / Verify │
+└──────────────────────┘  └────────────────┬───────────────┘  └────────────┬─────────────┘
+                                           │                               │              
+                    Snapshot / Config      │              Token Storage    │              
+                          Persistence      ▼               & Resolution    ▼              
+┌────────────────────────────────────────┬─┐  ┌────────────────────────────┬─────────────┐
+│   STORAGE LAYER (src/wrench/storage)   │ │  │  CREDENTIALS (src/wrench/credentials)    │
+│                                        │ │  │                                          │
+│ • SQLite Database (wrench.db)          │ │  │ • credentials.py: Backend factory        │
+│   - Single coarse mutex (thread-safe)  │ │  │ • SecretServiceBackend (D-Bus Secret API)│
+│ • repo_registry.py: MRU, paths, missing│ │  │   - KDE KWallet & GNOME Keyring          │
+│ • settings.py: Theme, diff preferences │ │  │   - Zero plaintext tokens on disk        │
+│ • snapshots.py: Recovery records & OIDs│ │  │ • OAuth RFC 8628 tokens resolution       │
+│ • forge_accounts.py: Accounts & links  │ │  │ • Disambiguated accounts per remote host │
+│ • Schema migrations & backup handling  │ │  │                                          │
+└────────────────────────────────────────┴─┘  └────────────────────────────┴─────────────┘
+                                         │                                 │              
+                                         │ Query Account Link              │ D-Bus Secret 
+                                         └────────────────┬────────────────┘ Handshake    
+                                                          ▼                               
+                                           ┌──────────────┬──────────────┐                
+                                           │    git-credential-wrench    │                
+                                           │   (CLI Credential Helper)   │                
+                                           │ • Git credential protocol   │                
+                                           │ • Disambiguated link lookup │                
+                                           └─────────────────────────────┘                
 ```
+
+### 2.1 Subsystem Dataflow & Interaction Summary
+
+1. **User Interface (`src/wrench/ui`)**:
+   - `MainWindow` coordinates top-level application actions, modal dialogs (`MergeDialog`, `RemotesDialog`, `AccountsDialog`, `LinkRepoDialog`, `BusyOperationDialog`), and actionable error routing.
+   - `TabContainer` manages dynamic tab lifecycles (`ChangesTab`, `HistoryTab`, `PRListTab`, `IssueListTab`, `PRDetailTab`, `IssueDetailTab`).
+   - Theme changes in `theme.py` trigger recursive palette recalculation and broadcast across all child widgets without application restarts.
+   - Heavy background tasks run through `run_in_background` (`ui/workers.py`), which uses native daemon threads and posts results via thread-safe Qt queued signals back to the main thread.
+
+2. **Core Git Operations (`src/wrench/core`)**:
+   - Strict read/write separation: read operations (status, diffs, log traversal, blame) execute in-memory via `pygit2`/libgit2 (`read_ops.py`); write operations (commit, branch creation/switching/renaming, push, pull, fetch, merge, rebase) invoke the system `git` CLI (`write_ops.py`).
+   - All write executions funnel through `run_git_streaming` with pipe draining and cooperative `threading.Event` cancellation.
+   - Destructive operations are guarded by automatic pre-operation safety snapshots (`snapshots.py`) and lock recovery (`lock_recovery.py`).
+
+3. **Filesystem Watcher (`src/wrench/watcher`)**:
+   - `InotifyWatcher` monitors the active repository directory on Linux with a 300ms debounce timer, accounting for atomic temporary-file renames during git index writes.
+   - Changes trigger main-thread signals to refresh `ChangesTab`, `CommitGraphWidget`, and active repository state.
+
+4. **Multi-Forge Subsystem (`src/wrench/forge`)**:
+   - Pluggable architecture based on Python entry points (`wrench.forge_adapters`) and the `ForgeAdapter` abstract base class.
+   - Built-in adapters for GitHub, GitLab, Forgejo/Gitea, and Bitbucket Cloud normalize PRs, issues, CI checks, and review submissions.
+   - Assisted GitHub setup uses RFC 8628 Device Authorization Flow (`github_device_flow.py`) requesting necessary OAuth scopes (`repo`, `workflow`, `user:email`, `read:org`).
+
+5. **Storage Layer (`src/wrench/storage`)**:
+   - Local SQLite database (`wrench.db`) managed via a dedicated coarse-grained thread lock.
+   - Persists tracked repository registry (`repo_registry.py`), UI settings and session state (`settings.py`), safety snapshot metadata (`snapshots.py`), and forge account credentials / remote link associations (`forge_accounts.py`).
+
+6. **Credentials Layer (`src/wrench/credentials`)**:
+   - Uses `SecretServiceBackend` to store and retrieve authentication tokens securely over D-Bus via the FreeDesktop Secret Service specification (KDE KWallet / GNOME Keyring) with zero plaintext disk exposure.
+   - The standalone `git-credential-wrench` helper integrates with git CLI commands, consulting `storage/forge_accounts.py` and `credentials` to provide host- and path-specific credentials without leaking credentials between multiple accounts on the same forge host.
 
 ---
 

@@ -58,12 +58,16 @@
 
 | Phase | Milestone | Status | Details |
 |---|---|---|---|
-| **Phase 1** | Core Git Engine & MVP Backend | **Completed** | [`phase-1.md`](dev/planning/phase-1.md) |
+| **Phase 1** | Core Local Git Engine & MVP UI | **Completed** | [`phase-1.md`](dev/planning/phase-1.md) |
 | **Phase 1.5** | UI Shell Overhaul & Hybrid Tabs | **Completed** | [`phase-1.5.md`](dev/planning/phase-1.5.md) |
 | **Phase 2** | Visual Commit Graph & 3-Way Merge Tool | **Completed** | [`phase-2.md`](dev/planning/phase-2.md) |
-| **Phase 3** | Remotes, Push/Pull & Credential Helper | **Completed** | [`phase-3.md`](dev/planning/phase-3.md) |
+| **Phase 3** | Remote Operations, Push/Pull & Credential Helper | **Completed** | [`phase-3.md`](dev/planning/phase-3.md) |
 | **Phase 4** | Multi-Forge Integration (GitHub, GitLab, Forgejo, Bitbucket) | **Completed** | [`phase-4.md`](dev/planning/phase-4.md) |
-| **Phase 5** | Flatpak Packaging, Native Integrations & Release Polish | *In Progress* | [`implementation-plan.md`](dev/planning/implementation-plan.md) |
+| **Phase 4.5** | Multi-Repository Directory Discovery | *In Progress* | [`implementation-plan.md`](dev/planning/implementation-plan.md) |
+| **Phase 5** | Git LFS & Submodules | *Planned* | [`implementation-plan.md`](dev/planning/implementation-plan.md) |
+| **Phase 6** | Packaging Hardening & Flathub Submission | *Planned* | [`implementation-plan.md`](dev/planning/implementation-plan.md) |
+| **Phase 7** | v1 Polish & Final Release | *Planned* | [`implementation-plan.md`](dev/planning/implementation-plan.md) |
+| **Phase 8** | v2 Backlog (Interactive Rebase, GPG Signing, SourceForge) | *Planned (v2)* | [`v2-implementation-plan.md`](dev/planning/v2-implementation-plan.md) |
 
 ---
 
@@ -93,7 +97,7 @@ To install dependencies in editable mode, set up git hooks, and run all tests:
 |---|---|---|
 | `wrench-run` | Launch the Wrench desktop application | `./bin/wrench-run` |
 | `wrench-debug` | Launch with verbose `--debug` structured logging | `./bin/wrench-debug` |
-| `wrench-test` | Run the complete pytest test suite (373 tests) | `./bin/wrench-test` |
+| `wrench-test` | Run the complete pytest test suite | `./bin/wrench-test` |
 | `wrench-lint` | Run Ruff linter and Black formatting checks | `./bin/wrench-lint` |
 | `wrench-format` | Automatically fix and format code with Ruff/Black | `./bin/wrench-format` |
 | `wrench-ci-check` | Run all linters, formatters, and unit tests in one step | `./bin/wrench-ci-check` |
@@ -125,6 +129,7 @@ For an in-depth exploration of data flows, concurrency models, and database sche
 - **[dev/planning/phase-2.md](dev/planning/phase-2.md)**: Phase 2 completion summary (DAG commit graph & 3-way merge tool).
 - **[dev/planning/phase-3.md](dev/planning/phase-3.md)**: Phase 3 completion summary (Remotes, sync & credential helper).
 - **[dev/planning/phase-4.md](dev/planning/phase-4.md)**: Phase 4 completion summary (Multi-forge integration layer).
+- **[dev/planning/v2-implementation-plan.md](dev/planning/v2-implementation-plan.md)**: v2 deferred roadmap and backlog specifications.
 
 ---
 

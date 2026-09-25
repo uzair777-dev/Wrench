@@ -88,7 +88,7 @@
 **Prerequisites:** VP-4's acceptance check passed (VP-4.3 checked).
 
 **Executor guardrails:**
-1. `clone_repo`'s change is additive-keywords-only with `None` defaults; every v1 caller passes neither keyword and observes byte-identical argv — regression-pin that in the clone tests.
+1. `clone_repo`'s change is additive-keywords-only with `None` defaults; every v1 caller passes neither keyword and observes byte-identical argv **against the post-Phase-4.1 baseline** — that baseline now includes the `-c credential.helper=wrench -c credential.useHttpPath=true` pairs in front of `clone` (v1 §5 Phase 4.1 step 2); the regression pin covers the full arg list including those flags.
 2. `fetch --unshallow` routes through Phase 3's fetch machinery (progress/cancel/credential path), never a bespoke subprocess.
 3. "Persistent dismissible" banner semantics, pinned here: it reappears on every open while the repo is shallow; dismissal is per-session, never a persisted never-show flag (surfacing the restriction is the point).
 4. Gate: shallow fixture — log stops at the boundary, banner shows, unshallow completes history; a `--filter=blob:none` fixture clone stays fully usable in the Changes tab.
@@ -129,7 +129,7 @@
 3. The batch pool runs at cap-3 through v1 §4.8's machinery; per-repo failures collect into the summary and never abort the batch; credential prompts surface per repo, never process-global.
 4. Gate: migration test (pre-migration schema DB → migrated, rows intact); batch over three `file://` fixture remotes with one dead — the summary itemizes the failure and the other two succeed.
 
-**Step 0:** **first verify the storage migration story** — if v1's `storage/` has no schema-version mechanism, this phase introduces the pattern (`PRAGMA user_version` + idempotent migration steps at startup) and documents it as the standing convention for all future schema changes. The Changes-tab selector and `repo_registry` API are v1-known; batch ops reuse Phase 3's push/pull/fetch façade.
+**Step 0:** **first verify the storage migration story** — v1 §3.1 already specifies the convention (`PRAGMA user_version` + `storage/migrations/schema_v{N}.sql` applied via `run_migrations` at startup), and Phase 4 already exercised a real v1→v2 migration for the `forge_accounts` TLS columns (phase-4.md test list). Confirm `storage/migrations/` exists and extends cleanly; only if it's missing does this phase introduce the pattern per v1 §3.1 verbatim, documenting it then as the standing convention. The Changes-tab selector and `repo_registry` API are v1-known; batch ops reuse Phase 3's push/pull/fetch façade.
 
 1. Schema: nullable `repos.workspace TEXT` column via the migration runner (no new table — one denormalized column beats a join at this scale; revisit only if workspaces gain their own settings).
 2. Batch engine: `fetch_all(workspace: str | None = None)` / same for pull — sequential-with-cap-3 worker pool via §4.8's machinery (network ops; never parallel-unbounded: credential prompts and keyring contention are real). Per-repo results collected into a summary (ok / up-to-date / error with typed exception) — one failing repo never aborts the batch; the summary dialog shows per-repo status and offers Retry for failures.
@@ -234,11 +234,11 @@
 3. The 30 s timeout kills the process and reports "killed (timeout)" in the output dialog; there is no run-forever mode in v2.0.
 4. Gate: CRUD + env-construction + quoted-argument + timeout-kill unit tests (fixture command: `sleep`); settings round-trip through `app_settings`.
 
-**Step 0 — reconciliation:** no settings dialog exists in v1 (the tree's `ui/dialogs/` contains only `remotes_dialog.py`, and no v1 phase schedules one) — the settings surface in step 3 is a new minimal dialog this phase introduces under v1's dialog conventions, specified inline in step 3 rather than in ui-planning.md (which stays v1-scoped until v2 is picked up). Persistence reuse is confirmed real: `storage/settings.py` exposes `get_setting`/`set_setting` over `app_settings` with the namespaced-key convention (Phase 3's `repo.{repo_id}.remote_last_fetch.*` precedent); `custom.actions` is a *global* key because actions are user-global, not per-repo.
+**Step 0 — reconciliation:** v1 DOES ship a settings dialog — `ui/dialogs/settings_dialog.py` (Phase 4.3, ui-planning §6.11) with its `SettingsPage` base class and instant-apply contract — so this phase ADDS a "Custom Actions" page to that existing dialog and never introduces a parallel one-off settings surface. (Historical note: an earlier revision of this Step 0 assumed v1 had no settings dialog at all — corrected when Phase 4.3 landed one.) Persistence reuse is confirmed real: `storage/settings.py` exposes `get_setting`/`set_setting` over `app_settings` with the namespaced-key convention (Phase 3's `repo.{repo_id}.remote_last_fetch.*` precedent); `custom.actions` is a *global* key because actions are user-global, not per-repo.
 
 1. Storage: JSON list in `app_settings` (`custom.actions`): `{name, scope: repo|commit|file, command, confirm: bool}`.
 2. Runner: subprocess, `cwd=repo`, env `WRENCH_REPO_PATH`/`WRENCH_SELECTED_SHA`/`WRENCH_SELECTED_FILE`, 30 s kill timeout, captured output shown in a dialog. Trust model stated in the UI once: "actions run with your account's full permissions — author them as you would a shell script."
-3. UI: the new settings dialog's Custom Actions section to add/edit/remove; context-menu group "Custom ▸ {name}" per scope, keyboard-reachable like every other menu.
+3. UI: the v1 settings dialog (`ui/dialogs/settings_dialog.py`, Phase 4.3) gains a **Custom Actions** page — add/edit/remove rows following ui-planning §6.11's instant-apply contract (writes on change, no Apply button); context-menu group "Custom ▸ {name}" per scope, keyboard-reachable like every other menu.
 
 **Acceptance check:** the step-4 gates green; one repo-scope and one commit-scope action run end-to-end with the captured-output dialog verified; the trust notice renders once, dismissibly, before the first run.
 
@@ -371,7 +371,7 @@
 - [ ] VP-12.3 **CHECK**: repo-A→repo-B round-trip; dirty refusal + stash path; series in topological order
 
 **Phase VP-13 — Custom Actions** *(prerequisite: VP-12.3 checked)*
-- [ ] VP-13.1 `custom.actions` CRUD in `app_settings` + new minimal settings-dialog section
+- [ ] VP-13.1 `custom.actions` CRUD in `app_settings` + the Custom Actions page in v1's Phase-4.3 settings dialog (§6.11 instant-apply contract)
 - [ ] VP-13.2 runner: `shlex.split` argv exec, scoped env contract, 30 s kill, captured-output dialog
 - [ ] VP-13.3 per-scope "Custom ▸ {name}" menu group + one-time trust notice
 - [ ] VP-13.4 **CHECK**: CRUD/env/quoted-arg/timeout-kill tests; repo- and commit-scope actions end-to-end

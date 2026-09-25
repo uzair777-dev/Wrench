@@ -1107,6 +1107,42 @@ Reached from **File → Open** (or the Changes tab's Open action) when the picke
 
 All strings `tr()`-wrapped; Enter/Esc contract matches the other modal dialogs.
 
+### 6.11 Application Settings Dialog (SRS FR-13.1)
+
+Opened from **Edit → Preferences…**. One unified modal dialog hosting every user-facing toggle, organized as per-module pages (this section satisfies the "unify everything" and "separate page per module" requirements simultaneously — one dialog, many pages).
+
+```
+┌────────── Settings ────────────────────────────[x]─┐
+│ ▸ Appearance    │  Theme:  (•) Auto  ( ) Pastel Light │
+│   Tabs          │          ( ) Pastel Dark             │
+│   Repositories  │  ☑ Match system …                    │
+│   Snapshots     │                                      │
+│   Forge         │   (instant-apply — no OK/Apply)      │
+│   Advanced      │                                      │
+└──────────────────────────────────────────────────────┘
+```
+
+| Property | Detail |
+|---|---|
+| Widget | `QDialog` (modal), Escape closes; no size/state persistence (KISS) |
+| Structure | left `QListWidget` module switcher (each row `setAccessibleName`d) → right `QStackedWidget` of `SettingsPage` subclasses (`title()`/`build()`/`load()`; instant-apply — controls write on change, no Apply button) |
+| Sync contract | pages and View/Repository menu actions share ONE MainWindow setter per toggle (e.g. `_set_theme`, `_set_tab_orientation`, `_set_auto_fetch`); pages never write `app_settings` directly; `showEvent` re-runs every page's `load()` |
+| v1 module set | Appearance (theme; Phase 4.4 adds the gravatar opt-in here), Tabs (orientation), Repositories (auto-fetch on open), Snapshots (active-repo trigger/retention editor via `update_snapshot_settings` + `restart_snapshot_timer()`), Forge (summary + button opening AccountsDialog), Advanced (overflow; hidden when empty) |
+| Hard rule | mirrors existing toggles and MOVES nothing (menu items all keep working); any toggle found in code but unreachable in the dialog is a phase-blocking omission |
+
+### 6.12 Avatars (SRS FR-5.14)
+
+Avatar rendering rules app-wide: **initials tile first, fetched image swaps in later**; failure anywhere (offline, 404, 429, corrupt bytes) stays initials forever — silently. No avatar fetch ever runs on the GUI thread or blocks a list render; repeated URLs in one refresh are one HTTP request (in-flight dedup); disk cache `avatars/sha256(url).png`, 7-day TTL; sizes 24/40/64 px buckets.
+
+| Surface | Avatar source |
+|---|---|
+| PR/Issue list rows + detail headers | adapter payload `author_avatar_url` (GitHub `user.avatar_url`, GitLab `author.avatar_url`, Forgejo `user.avatar_url`, Bitbucket `author.links.avatar.href`) |
+| Commit-box account button | linked account's avatar, persisted as `account.{id}.avatar_url` at link time |
+| History detail panel author row | Gravatar (`md5(lower(email))`, `?d=identicon`) — **opt-in only**, `ui.avatars_gravatar` default OFF; settings tooltip discloses that enabling it sends hashed emails to gravatar.com |
+| Commit-graph rows | **deliberately none** — density/perf cut for v1, documented so nobody adds it casually |
+
+A11y: avatar controls expose `accessibleName` = the person's display name/username, never "image".
+
 ---
 
 ## 7. File/Component Mapping
@@ -1134,6 +1170,8 @@ Summary of new and modified files for implementation:
 | `src/wrench/ui/dialogs/backup_dialog.py` | **NEW** | Backup & Restore dialogs (§6.9, FR-8.1–8.4) |
 | `src/wrench/ui/dialogs/identity_dialog.py` | **NEW** | Git Identity override dialog (§6.5, FR-1.5) |
 | `src/wrench/ui/dialogs/discover_repos_dialog.py` | **NEW** | Repository Discovery dialog (§6.10, FR-1.12) |
+| `src/wrench/ui/dialogs/settings_dialog.py` | **NEW** | Modular Settings dialog (§6.11, FR-13.1) |
+| `src/wrench/ui/widgets/avatar.py` | **NEW** | Async avatar loader + disk cache (§6.12, FR-5.14) |
 | `src/wrench/ui/snapshots_panel/__init__.py` | **NEW** | Snapshot browse/restore panel (§6.4, FR-10.6) |
 | `src/wrench/ui/widgets/branch_switcher.py` | **NEW** | Branch indicator/switcher widget (§3.2b, FR-1.6) |
 | `src/wrench/ui/diff_view/diff_widget.py` | **KEEP** | Reused as-is in Changes tab, History detail panel, and PR detail tab |
@@ -1166,4 +1204,9 @@ Summary of new and modified files for implementation:
 17. **Snapshot panel** — Implement browse/restore UI (§6.4). Wire to menu.
 18. **Remotes & Backup dialogs** — Implement Remotes Manager (§6.8) and Backup/Restore dialogs (§6.9).
 19. **Polish** — Keyboard shortcuts, theme consistency, status bar updates, accessibility audit, localization check (`tr()`), edge cases.
+20. **Forge panel tabs** (Phase 4) — PR/Issue list + detail tabs (§0's dedup keys), badges/CI widgets, create-PR dialog, submit-review dialog, accounts manager + link flow dialogs.
+21. **Repository Discovery dialog** (§6.10, Phase 4.5) — background scan with live counter, checkable results list, idempotent accept.
+22. **Application Settings dialog** (§6.11, Phase 4.3) — module list + stacked pages, instant-apply, shared MainWindow setters; add the Avatars opt-in to Appearance when Phase 4.4 lands.
+23. **Avatars** (§6.12, Phase 4.4) — initials-first swap-in loader in PR/issue rows, detail headers, commit-box account button; gravatar path behind its opt-in toggle.
+
 

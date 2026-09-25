@@ -79,6 +79,17 @@ The phases below assume a rigorous executor; these rules defend against the mist
 8. **Completed `dev/planning/phase-*.md` summaries are historical records.** Never edit them to match new work; drift is reconciled only in this plan's §4/§5 and SRS §3 (Phase 7's reconcile item).
 9. **No new runtime dependencies** beyond §2 and `pyproject.toml` as it stands at the phase's start. If a step seems to require one, that's a stop-and-flag, not an install.
 
+### 0.6 Document map (which file answers which question)
+
+| File | Answers | Edited when |
+|---|---|---|
+| `srs.md` | **What/why** — FRs (M/S/D priorities), NFRs, open decisions (§6.1), decisions log (§7) | scope/requirements change; a decision resolves |
+| `implementation-plan.md` (this file) | **How, v1** — §3 tree, §4 interfaces, §5 phases 0–8, packaging/CI, §8.1 edges, §12 checklist | v1 plan changes; per §0.5 rule 8, reality-drift reconciles here only |
+| `ui-planning.md` | **How it looks** — every UI surface, §6.x per-dialog specs, §7 file mapping, §8 order | a UI surface is added/changed |
+| `v2-implementation-plan.md` | **How, v2** — VP-1..VP-15 phases; authoritative for everything post-v1 | v2 scope changes |
+| `phase-*.md` | **History** — immutable completion summaries; never edit (§0.5 rule 8) | once, at that phase's completion |
+| `../ARCHITECTURE.md` (repo root) | **As-built** system description — update alongside code, not plans | code structure changes land |
+
 ---
 
 ## 1. Architecture Overview
@@ -156,6 +167,8 @@ wrench/
 │   │   ├── read_ops.py            # pygit2-backed: status, diff, log, blame
 │   │   ├── write_ops.py           # subprocess-backed: push, pull, fetch, rebase, merge
 │   │   ├── lock_recovery.py       # FR-1.9: detect/clear stale .git/index.lock
+│   │   ├── crash_handler.py       # global crash hook; auto-saves session drafts on crash (Phase 4-era)
+│   │   ├── recovery/              # crash resilience subsystem: process_guard, sweeper, transaction, classifier, actions
 │   │   ├── reflog.py              # FR-1.10: reflog read + restore-to-ref
 │   │   ├── snapshots.py           # FR-10.x: rolling snapshot capture/restore/prune (§4.6)
 │   │   ├── identity.py            # FR-1.1/1.5: user.name/email check, per-repo override
@@ -163,6 +176,7 @@ wrench/
 │   │   ├── paths.py               # FR-11.2: platformdirs wrapper — the only file that resolves data/config dirs, §4.7
 │   │   ├── ssh_agent.py           # FR-11.3: isolates $SSH_AUTH_SOCK access, §4.7
 │   │   ├── git_credential_helper.py # §5 Phase 3: git credential helper entrypoint (git-credential-wrench)
+│   │   ├── remote_urls.py         # shared remote-URL parse (protocol/host/owner/repo) — §5 Phase 4.1 step 1
 │   │   ├── lfs.py                 # FR-6.1: LFS detect/track/pull/push + pointer-file detection (§5 Phase 5)
 │   │   ├── discovery.py           # FR-1.12: bounded multi-repo directory scan (§5 Phase 4.5)
 │   │   ├── submodules.py          # FR-6.2: submodule list/status/init/update/add (§5 Phase 5)
@@ -175,12 +189,13 @@ wrench/
 │   │   ├── exceptions.py          # forge error hierarchy (§4.3.A) — separate from core/exceptions.py
 │   │   │                          #   because these aren't git errors: they must never be conflated
 │   │   │                          #   by the UI's git-error dialog path
-│   │   └── adapters/
+│   │   ├── adapters/
 │   │       ├── __init__.py
 │   │       ├── github.py          # FR-5.2
 │   │       ├── gitlab.py          # FR-5.3
 │   │       ├── forgejo.py         # FR-5.4
 │   │       └── bitbucket.py       # FR-5.5
+│   │   └── oauth/               # Phase 4: OAuth flows — github_device_flow.py (RFC 8628 device flow)
 │   ├── credentials/
 │   │   ├── __init__.py             # get_backend() factory — FR-11.1, §4.7
 │   │   ├── backend.py              # CredentialBackend ABC — the platform-neutral interface, §4.7
@@ -200,7 +215,9 @@ wrench/
 │   ├── ui/
 │   │   ├── __init__.py
 │   │   ├── main_window.py
-│   │   ├── workers.py              # GitOperationWorker + run_in_background — §4.8, used by every
+│   │   ├── workers.py              # run_in_background over daemon WorkerThread — §4.8 (revised in
+│   │   │                            #   Phase 4: plain threading.Thread + queued _Dispatcher, no
+│   │   │                            #   QThread/event-loop), used by every
 │   │   │                            #   UI call site that invokes a long-running core.engine function
 │   │   ├── sidebar/                # [DEPRECATED by Phase 1.5] replaced by repo dropdown in changes_tab
 │   │   ├── tabs/                   # Phase 1.5: hybrid tab navigation shell (singletons + dynamic detail tabs)
@@ -214,7 +231,8 @@ wrench/
 │   │   │   └── issue_detail_tab.py # Phase 4: Issue detail dynamic tab
 │   │   ├── widgets/                # Reusable UI widgets
 │   │   │   ├── __init__.py
-│   │   │   └── branch_switcher.py  # branch indicator/switcher dropdown (FR-1.6, ui-planning §3.2b)
+│   │   │   ├── branch_switcher.py  # branch indicator/switcher dropdown (FR-1.6, ui-planning §3.2b)
+│   │   │   └── avatar.py           # Phase 4.4: async avatar loader + disk cache (§5 Phase 4.4, ui-planning §6.12)
 │   │   ├── dialogs/                # Dedicated dialogs
 │   │   │   ├── __init__.py
 │   │   │   ├── clone_dialog.py     # Clone repository dialog (FR-4.1, ui-planning §6.2)
@@ -223,6 +241,10 @@ wrench/
 │   │   │   ├── reflog_dialog.py    # Reflog history & restore dialog (FR-1.10, ui-planning §6.7)
 │   │   │   ├── remotes_dialog.py   # Manage remotes configuration dialog (FR-4.4, ui-planning §6.8)
 │   │   │   ├── backup_dialog.py    # On-demand backup & restore dialogs (FR-8.1-8.4, ui-planning §6.9)
+│   │   │   ├── accounts_dialog.py  # Phase 4: forge accounts manager + device flow + TLS group
+│   │   │   ├── link_dialog.py      # Phase 4: repo↔account link flow + identity sync
+│   │   │   ├── push_recovery_dialogs.py # Phase 4: GH001/GH006/GH007/GH008/403 recovery dialogs
+│   │   │   ├── settings_dialog.py  # Phase 4.3: modular settings dialog (§5 Phase 4.3, ui-planning §6.11)
 │   │   │   ├── submodule_dialog.py # FR-6.2: add-submodule dialog (§5 Phase 5 step 3)
 │   │   │   └── discover_repos_dialog.py # FR-1.12: multi-repo discovery results (§5 Phase 4.5, ui-planning §6.10)
 │   │   ├── diff_view/              # FR-2.1 (re-parented into changes_tab in Phase 1.5)
@@ -814,6 +836,8 @@ class LfsUnavailableError(WrenchGitError):
     git's own "'lfs' is not a git command" stderr must never reach the user raw."""
 ```
 
+**Phase 4 additions (shipped — phase-4.md §2.6; listed here so later phases classify rather than invent):** `write_ops`'s push stderr classifier maps GitHub push-protection rejections to typed classes **before** the generic `PushRejectedError` fallback (order matters — these patterns must match first, since their stderr also contains "rejected"): `WorkflowScopeRequiredError` (token lacks the OAuth `workflow` scope and the push touches `.github/workflows/` — routes to in-place re-auth, never to "fetch & retry"), `SecretScanningRejectedError` (GH007; carries secret type, file, unblock URL), `ProtectedBranchRejectedError` (GH006; carries branch + rule reason; routes to the guided new-branch-and-repush dialog), `FileTooLargeRejectedError` (GH001; carries filename/size/quota), `SignedCommitsRequiredError` (GH008), `RepoPermissionDeniedError` (403 write denial). Their dedicated dialogs live in `ui/dialogs/push_recovery_dialogs.py`; `MainWindow._route_remote_error` dispatches on them.
+
 `RepoHandle` wraps a `pygit2.Repository` for reads and the repo's filesystem `Path` for subprocess calls. It is created once per opened repo and cached by `ui/main_window.py`; never re-open a repo per operation.
 
 **Where implementation lives vs. what UI calls**: `core/read_ops.py` and `core/write_ops.py` (§5 Phase 1, steps 1–2) contain the actual `pygit2`/subprocess logic; `core/engine.py` re-exports every one of these as a thin façade function (e.g. `engine.get_log = read_ops.get_log`, or a one-line wrapper if error-translation is needed per step 5 below). UI code calls `core.engine.get_log(...)`, `core.engine.get_diff(...)`, etc. — **never** `core.read_ops.get_log(...)` directly, per §1's one-directional dependency rule. This applies uniformly to every function above, including the read-path ones.
@@ -848,6 +872,10 @@ class PullRequest:
     url: str
     author: str
     created_at: str  # ISO 8601
+    author_avatar_url: str | None = None  # Phase 4.4 addition — trailing field WITH a
+    # default, deliberately: a defaulted field before non-defaulted fields is a
+    # dataclass TypeError, and keeping it last with a default means every
+    # pre-4.4 fixture and constructor call keeps working unchanged
 
 
 @dataclass
@@ -859,6 +887,8 @@ class Issue:
     url: str
     author: str
     created_at: str
+    author_avatar_url: str | None = None  # Phase 4.4 — same trailing-default rule as
+    # PullRequest above
 
 
 @dataclass
@@ -973,6 +1003,18 @@ class ForgeAdapter(ABC):
     # `ForgeCapability.ISSUES in self.capabilities`
     def list_issues(self, owner: str, repo: str) -> list[Issue]:
         raise NotImplementedError(f"{self.provider_id} does not support issues")
+
+    # Phase 4 addition (shipped — phase-4.md §2.8): deliberately NOT abstract —
+    # providers without a clean "verified primary email" endpoint keep the None
+    # default; only GitHub overrides it today (/user/emails, needs `user:email`
+    # scope, which is exactly why the device flow requests it).
+    def get_primary_email(self) -> str | None:
+        """Verified primary email of the authenticated user, or None when the
+        provider/token can't supply one (never raises for that case). Consumed
+        by the link flow's identity sync (ui/dialogs/link_dialog.py →
+        core/identity.py). Never log or retain the returned value beyond the
+        config write."""
+        return None
 ```
 
 Every adapter (`forge/adapters/*.py`) subclasses `ForgeAdapter`. UI code must check `adapter.capabilities` before showing a feature (e.g. don't render an "Issues" tab if `ForgeCapability.ISSUES` isn't set) rather than calling the method and catching `NotImplementedError`.
@@ -1329,54 +1371,40 @@ def get_ssh_auth_socket() -> str | None:
 
 ```python
 # ui/workers.py — one shared helper, used by every UI call site that invokes core.engine
-from PySide6.QtCore import QObject, QThread, Signal
+# REVISED in Phase 4 (see phase-4.md §2.7 and ARCHITECTURE.md §4.3): the previous
+# QObject-worker-on-QThread design (moveToThread + cross-thread deleteLater)
+# deadlocked the Python GIL against Qt's C++ signalSlotLock during widget
+# destruction — real SIGABRTs ("QThread: Destroyed while thread is still
+# running"). The shipped model replaces it while keeping run_in_background's
+# exact signature and caller contract:
+
+import threading
+
+from PySide6.QtCore import QObject, Signal
 
 
-class GitOperationWorker(QObject):
-    """Runs exactly one core.engine call on a background thread. Create a new
-    instance per operation — do not reuse one worker across multiple calls."""
+class WorkerThread(threading.Thread):
+    """Daemon thread running exactly one core.engine call. No QThread event
+    loop, no moveToThread, no cross-thread deleteLater — the old failure trio.
+    Create a new instance per operation; never reuse one across calls."""
 
-    finished = Signal(object)  # emits the function's return value on success
-    failed = Signal(Exception)  # emits the exception on failure — connect this to
-    # the same error-dialog code core.engine's typed
-    # exceptions (§5 Phase 1 step 5) already feed
-    progress = Signal(int)  # 0-100; only emitted by clone/push/pull/fetch
-
-    def __init__(self, fn, *args, **kwargs):
-        super().__init__()
-        self._fn, self._args, self._kwargs = fn, args, kwargs
-
-    def run(self):
-        try:
-            if "progress_cb" in self._fn.__code__.co_varnames:
-                self._kwargs.setdefault("progress_cb", self.progress.emit)
-            self.finished.emit(self._fn(*self._args, **self._kwargs))
-        except Exception as e:
-            self.failed.emit(e)
-
+class _Dispatcher(QObject):
+    """Main-thread singleton holding the Qt side: finished/failed/progress
+    Signals delivered via Qt.QueuedConnection, so callbacks ALWAYS execute on
+    the GUI thread regardless of which WorkerThread emitted them. This is the
+    only part of the worker machinery that touches Qt types at all."""
 
 def run_in_background(
     fn, *args, on_finished=None, on_failed=None, on_progress=None, **kwargs
-) -> QThread:
-    """Standard call pattern. Returns the QThread — the caller MUST keep a reference
-    to it (e.g. as self._active_thread on the widget) for as long as it might be
-    running. A QThread that gets garbage-collected mid-run is a real, silently-crashing
-    bug in PySide6, not a theoretical one — this is the single most common way a first
-    attempt at this pattern breaks."""
-    thread = QThread()
-    worker = GitOperationWorker(fn, *args, **kwargs)
-    worker.moveToThread(thread)
-    thread.started.connect(worker.run)
-    if on_finished:
-        worker.finished.connect(on_finished)
-    if on_failed:
-        worker.failed.connect(on_failed)
-    if on_progress:
-        worker.progress.connect(on_progress)
-    worker.finished.connect(thread.quit)
-    worker.failed.connect(thread.quit)
-    thread.start()
-    return thread
+) -> "WorkerThread":
+    """Standard call pattern. Returns the WorkerThread — the caller MUST keep a
+    reference to it (e.g. as self._active_thread on the widget) for as long as
+    it might be running. The retention rule survived the Phase 4 rewrite
+    unchanged: a thread handle abandoned mid-run is still the classic way this
+    pattern breaks, qthread or not. on_progress receives percent ints; the
+    (percent, stage) pair from §4.1's ProgressCallback is adapted at the worker
+    boundary (stage string dropped — call sites wanting stage text pass their
+    own callback object instead of taking the signal)."""
 ```
 
 **Which calls need this, which don't:**
@@ -1742,7 +1770,7 @@ Each phase should be independently shippable/testable — don't let phases bleed
         5. **Write the credential config into the fresh clone** (step 2's two `git config` commands verbatim) — the first fetch/push from this repo must go through the helper.
         6. On any exception or cancellation: `shutil.rmtree(temp_dir, ignore_errors=True)`; `dest` is left exactly as found. Cancellation raises `CloneAbortedError` (§4.1.A); the UI shows no error for it.
         7. Return `CloneResult(path=dest)`. The engine wrapper stays a thin pass-through; opening the repo flows through the UI's existing `open_repo` completion path (which auto-registers in `repo_registry`).
-   e. **engine.py wiring + the workers.py int-signal reconciliation.** Replace the three `NotImplementedError` stubs with the §4.1 signatures, delegating to write_ops, translating per (c). `ui/workers.py` keeps `progress = Signal(int)` — in `GitOperationWorker.run`, inject `progress_cb=lambda pct, stage: self.progress.emit(pct)` when the target accepts `progress_cb` (the stage string is dropped at this boundary; call sites that want stage text pass their own callback object instead of taking the signal). One adapter line, no Qt signature churn, and the busy dialog's bar keeps its existing int contract.
+   e. **engine.py wiring + the workers.py progress-signal reconciliation.** Replace the three `NotImplementedError` stubs with the §4.1 signatures, delegating to write_ops, translating per (c). `ui/workers.py` keeps `progress` as an int-only signal (0–100) — at the worker boundary, inject `progress_cb=lambda pct, stage: <emit pct>` when the target accepts `progress_cb`; the stage string is dropped at this seam and call sites that want stage text pass their own callback object instead of taking the signal. *(Doc-sync note, reconciled post-Phase-4: the worker class is now the daemon `WorkerThread` + main-thread `_Dispatcher` of §4.8's revised model, not the originally-planned `GitOperationWorker`/`QThread` — the int-only progress contract described here is unchanged and still load-bearing.)*
    f. **Tests** (`tests/unit/core/test_write_ops_remotes.py`, new): against a **bare fixture remote** (`git init --bare` in `tmp_path`, clone it, commit, push) — real git both sides, no mocks:
       1. push happy path: new commit pushed to bare remote; assert exit 0 and the ref exists in the bare repo.
       2. push non-fast-forward (advance the bare repo from a second clone) → `PushRejectedError`.
@@ -1867,8 +1895,135 @@ Each phase should be independently shippable/testable — don't let phases bleed
    - **Failure-path QA** (do not skip — these are the dialogs hours-of-debugging turned into): revoke one account's token at the provider, trigger a forge tab load → the 401 banner offers re-entry, replace the token, retry → works; firewall-block one instance's host (`iptables` or a hosts-file blackhole) → `ForgeUnreachableError` banner with actionable text; paste a deliberately-under-scoped token (e.g. GitHub `public_repo` on a private repo) → 403 banner names the missing scope; revoke the Secret Service daemon (`killall gnome-keyring-daemon` on a GNOME session) mid-session → add-account fails cleanly with the no-row-orphan behavior from step 4, existing accounts that were already running keep working until the next secret read.
    - **Documentation gate**: §11 items 13 and 14 are resolved (per-account TLS policy; in-app review actions) — this gate is now a *confirmation* checklist: review the three TLS-policy UI texts (CA-bundle picker label, insecure-mode warning, self-signed failure hint) against what's written in step 7, and confirm the review action flows (approve/request-changes/comment on a test PR per provider, plus the GitLab grayed-button case) behaving as step 5's adapter notes describe — sign-off requires both, since these were the two items that reshaped this phase's scope.
 
+### Phase 4.1 — Credential-Aware Clone & Open-Time Forge Link Resolution
+**Prerequisites:** Phase 4's acceptance check passed — §12 rows 4.1–4.14 all checked (the phase-4 core plus its OAuth-scope, push-protection, and identity-alignment extensions; accounts manager + one-time picker + link flow exist and are tested). Delivers the user's TODO items 1 and 2; new SRS rows FR-4.6 / FR-5.13.
+
+**Executor guardrails (phase-specific §0.5 enforcement):**
+- READ FIRST: §5 Phase 3 step 2 (the credential helper's exact matching order — clone-time auth lands there), §5 Phase 4 step 7 (the one-time account picker and `link_repo_to_account` upsert + `credential.useHttpPath` writes), §4.1.A (`AuthRequiredError`/`AuthFailedError` contract), §4.8 (all this phase's network/git work is background).
+- DO NOT: put a token on a command line or in an env var (visible via `ps`/procfs — the pre-created link row is the whole mechanism, step 3); refactor `git_credential_helper.py`'s parsing beyond what's named (it's freeze-tested by Phase 3's (a)–(l) matrix; `_host_of` moves home in step 1, nothing else); do account matching for SSH remotes (SSH identity is out of scope per SRS §7 row 10 — HTTPS only); pop a modal dialog on repo open/switch (open-time resolution is a banner, never a popup).
+- Per-step gates: 1) `pytest tests/unit/core/test_remote_urls.py -x -q`; 2) `pytest tests/unit/core/test_write_ops_remotes.py tests/unit/core/test_git_credential_helper.py -x -q` (regression — must stay green after the arg change); 3) `pytest tests/ui -x -q -k "clone"` incl. the new rollback cases; 4) `pytest tests/ui -x -q -k "link"`; 5) full `bin/wrench-ci-check`.
+
+**Step 0 — repo-state reconciliation (run these greps, record results in the phase completion notes):**
+   - `grep -n "_on_clone_repo\|_on_open_repo\|open_repo_dialog_requested" src/wrench/ui/main_window.py src/wrench/ui/tabs/changes_tab.py` — the two clone/open funnels.
+   - `grep -n "def clone_repo" src/wrench/core/engine.py src/wrench/core/write_ops.py` — confirm the ACTUAL signature (§4.1 documents `progress_cb` only; phase-3.md documents `cancel_event` too — whichever exists in code is authoritative for step 2).
+   - `grep -rn "class.*Picker\|one-time\|link_repo_to_account(" src/wrench/ui/ | head -20` — locate the FR-5.9 picker dialog class and the link-flow code (Step 0 of Phase 4 says it lives near `accounts_dialog.py`/`link_dialog.py`; record the real class name here before step 3 uses it).
+   - `grep -n "_host_of\|urlsplit\|urlparse" src/wrench/core/git_credential_helper.py` — the existing host-normalization helper step 1 re-homes.
+   - `grep -n "_route_remote_error\|AuthRequiredError" src/wrench/ui/main_window.py | head` — the Phase 3 error routing to reuse.
+   - `grep -n "_on_repo_changed\|set_active_repository\|repo_changed" src/wrench/ui/main_window.py | head` — the repo-switch seam step 4 hooks.
+
+1. `core/remote_urls.py` [NEW — §3 tree updated]: one shared, pure-python remote-URL parser used by the clone flow and the open-time linker (the credential helper keeps its own code path — it runs in a subprocess and is freeze-tested; do NOT make it import this). Exact shapes:
+   - `parse_remote_url(url: str) -> RemoteUrlParts | None` where `RemoteUrlParts(protocol: str, host: str, owner: str, repo: str)` is a frozen dataclass. Handles: `https://host[:port]/owner/repo[.git][/]` (and `http`), scp-style `git@host:owner/repo[.git]`, `ssh://[git@]host[:port]/owner/repo[.git]`, `file://` and bare local paths (`protocol='file'`, empty host/owner/repo of the path tail). Normalization, identical to the helper's existing `_host_of` semantics: host lowercased, port stripped, trailing `.git` stripped from `repo`, leading `/` stripped from the path before splitting owner/repo. Returns `None` only when even the host can't be determined — never raises; an unparseable URL is a normal outcome (a typo'd clone URL earns git's own error downstream), not an exception farm.
+   - `host_of_instance_url(instance_url: str) -> str` — moves the helper's `_host_of` normalization here verbatim (lowercase, port-strip); `git_credential_helper.py` re-points at it (one import line change — its tests pin the behavior, so this refactor is safe ONLY because tests (a)–(l) exist; if any go red, revert the re-point, not the tests).
+2. Clone-time credential plumbing (`core/write_ops.py`'s clone invocation): prepend `-c credential.helper=wrench -c credential.useHttpPath=true` to the git args, so `run_git_streaming(dest.parent, ["-c", "credential.helper=wrench", "-c", "credential.useHttpPath=true", "clone", "--progress", url, tmp], ...)` — the to-be-cloned repo doesn't exist yet, so the usual "write repo-local config after clone" trick cannot cover the clone itself; `-c` flags are git's per-invocation config and leave no persistent trace. The post-clone config write from Phase 3 stays (self-healing on subsequent opens). Test: the existing clone fixtures still pass PLUS one arg-shape assertion that the two `-c` pairs precede `clone`.
+3. Multi-account clone picker (UI, in the `_on_clone_repo` flow): after URL entry validation and BEFORE starting the clone worker, when `parse_remote_url(url)` yields an https URL with a non-empty host: candidates = `[a for a in storage.forge_accounts.list_accounts(conn) if host_of_instance_url(a.instance_url) == parts.host]`.
+   - 0 candidates → proceed exactly as today (anonymous; a private repo then fails with the existing `AuthRequiredError` routing — unchanged behavior).
+   - 1 candidate → proceed silently (the helper's unique-host fallback in §5 Phase 3 step 2 already resolves it).
+   - ≥2 candidates → show the FR-5.9 one-time picker (the class located in Step 0 — reuse it, do NOT build a second picker) with explanatory text naming the clone URL. On Cancel → abort the whole clone (no directory created). On choose: compute the final destination path exactly as the flow already does, then **pre-create the registry row + link BEFORE starting the worker**: `repo_registry.add_repo(conn, final_path, ...)` (guarded by `get_repo_by_path` first — picking an already-registered destination is idempotent) followed by `link_repo_to_account(conn, repo_id, account_id, "origin", parts.owner, parts.repo)`. The clone then runs; git calls `git-credential-wrench get` with `path=owner/repo.git`, which the helper resolves through `find_link_by_path` to the chosen account — this is the disambiguation hitching the clone to the right identity with the token never leaving Secret Service.
+   - **Rollback is mandatory**: on `CloneAbortedError` or any clone failure, if this flow pre-created the row, `remove_repo` it again (cascades the link row via the schema's ON DELETE CASCADE — verify `PRAGMA foreign_keys` is on per §3.1). A failed clone must not leave a registry ghost pointing at a nonexistent path.
+4. Open-time link resolution (TODO item 2): a single new private method on `MainWindow` — `_maybe_offer_forge_link(repo_record)` — called in the background after every successful open/switch (the Step-0 seam), BEFORE triggering any auto-fetch (Phase 4.2's step 3; if these land in different orders, ordering rule stays: resolve links first). Logic, per remote from `engine.list_remotes(repo)` (sync, local, cheap):
+   a. `parse_remote_url(remote.url)`; skip non-https or unparseable.
+   b. Skip when `storage.forge_accounts.get_link_for_remote(conn, repo_id, remote.name)` already returns a row.
+   c. Skip when a decline marker exists: settings key `forge.link_declined` holds a JSON list of `"{repo_id}:{remote_name}"` strings via `storage.settings` — read/write through get_setting/set_setting, json.loads/json.dumps, default `[]`.
+   d. Candidates = same host-match query as step 3. Zero → nothing (silent). Exactly one → auto-link silently via `link_repo_to_account` + confirm a status-bar note "Linked {owner}/{repo} to {label}" (5s transient). Multiple → show a **non-modal banner** in the Changes tab (reuse its existing banner pattern from the merge-conflict banner): "Multiple forge accounts can reach {owner}/{repo} — [Link account…] [Dismiss]". Link button → the existing link dialog/picker; Dismiss → append the decline marker so the banner never reappears for that (repo, remote). Never auto-link into ≥2 candidates, never re-ask a declined pair.
+5. Tests & **acceptance check**: unit — the full parse matrix (https with/without port/`.git`/trailing slash, scp-form, ssh://, file://, garbage→None, self-hosted subpath hosts); `-c` arg injection; helper behavior pinned unchanged by the Phase 3 matrix (all (a)–(l) still green after the `_host_of` re-home); pre-create+rollback (clone worker mocked to raise → no repo row, no link row wart); decline-marker persistence across two calls; auto-link-single path; banner-appears-once multi path. UI tests: clone flow with a picker-mock asserting abort/choose/rollback branches; banner buttons wired. **Acceptance check (manual QA, github.com):** clone a PRIVATE repo with exactly one configured account → succeeds without prompting; add a second account, clone another private repo → picker appears, chosen account pushes successfully afterward; cancel a picker → no clone, no registry row; open an existing repo matching two accounts → banner once, Dismiss → never again; Link → PR tab populates and `git config --local --list` shows `credential.useHttpPath=true`.
+
+### Phase 4.2 — Repository Switching UX: Lazy Tabs, Loading States, Auto-Fetch
+**Prerequisites:** Phase 4.1's acceptance check passed (link resolution runs before fetch — this phase's auto-fetch depends on that ordering). Delivers TODO items 5 and 6; new SRS rows FR-1.17 / FR-4.7.
+
+**Executor guardrails (phase-specific §0.5 enforcement):**
+- READ FIRST: §4.8 (threading model AS REVISED in Phase 4 — daemon `WorkerThread` + `_Dispatcher`, retain the returned handle), Phase 4.5's tab-system notes and Phase 1.5's session-restore mechanics, phase-4.md §4.9.1 (the forge tabs' generation-counter pattern — reuse, don't reinvent).
+- DO NOT: construct hidden tab contents eagerly "to keep code simple" (defeats the phase); use a modal busy dialog for repo switching (inline spinners only — a modal on every switch is a hostile UX regression); remove or weaken the per-repo draft/selection save-restore machinery (Phase 1.5's `get_current_repo_state`/`restore_repo_state` stays byte-behavior-identical); fire auto-fetch more than once per open/switch event; surface auto-fetch failures modally (status-bar note only); run the background warm on the GUI thread.
+- Per-step gates: 1) `pytest tests/ui -x -q -k "tab"` with the new lazy-construction tests; 2) `pytest tests/ui -x -q -k "switch"`; 3) `pytest tests/ui -x -q -k "fetch or autoload"`; 4) `bin/wrench-ci-check` green.
+
+**Step 0 — repo-state reconciliation (greps, recorded in the completion notes):**
+   - `grep -n "def add_tab\|def _restore\|restore_tabs\|serialize_tabs\|ensure_" src/wrench/ui/tabs/tab_bar.py` — learn TabContainer's CURRENT construction strategy (are tab contents built eagerly at add/restore time? the answer shapes step 2's diff).
+   - `grep -n "repo_changed\|_on_repo_changed\|set_active_repository" src/wrench/ui/ -r` — every listener to a repo switch (forge tabs already implement generation-guarded reloads per phase-4.md).
+   - `grep -rn "set_setting(\|get_setting(" src/wrench --include="*.py" | grep -v test_ | head -30` — the existing settings API + keys in play (Phase 4.3 step 0 consumes the same output).
+   - `grep -rn "_get_default_remote" src/wrench/ | head` — locate the default-remote resolver (engine or main_window) for step 3.
+
+1. Lazy tab construction (`ui/tabs/tab_bar.py`): tab content widgets become construct-on-first-activation. Contract: `TabContainer.add_tab(...)` stores a factory closure and installs a cheap placeholder (empty `QFrame` with `setAccessibleName("not loaded")`); content is built on first `setCurrentIndex` to that tab (or an explicit `ensure_loaded(index)`), exactly once. **Session restore must stay lazy**: restoring five tabs constructs only the active one. Dedup keys, pinning, drag-reorder, and `Ctrl+N` switching all operate on the tab *metadata* and are untouched. Migration fence: any tab type whose constructor raises before this change must still raise the same way on activation — lazy moves timing, never behavior.
+2. Switch pipeline + loading indicator: on repo switch (the Step-0 seam), in order: (a) bump every open tab's generation counter / cancel its in-flight warmers; (b) immediately show the target tab's loading state — an inline centered spinner + "Loading {repo}…" label inside the tab content area (never modal); (c) `ensure_loaded` the visible tab and drive its normal refresh; (d) queue ONE background warm pass for the repo's other category tabs — forge list tabs re-run their existing SWR-backed load; history pre-builds its widget and warms the first `get_log` page via `run_in_background` (already the §4.8 rule for the graph); changes tab needs no warm (local reads are sub-200 ms by NFR). A second switch mid-warm bumps generations again — stale warm results are always discarded, never rendered.
+3. Auto-fetch on open/switch (FR-4.7): invoked from the switch pipeline AFTER visible-tab load and AFTER Phase 4.1's link-resolution worker (so a first-open-of-the-day on a linked repo fetches with credentials present). Maybe-fetch decision tree: setting `repo.auto_fetch_on_open` (app_settings, values `"true"`/`"false"`, **default true** when the key is absent) off → do nothing; repo has zero remotes → do nothing; otherwise `run_in_background(engine.fetch, repo, default_remote)` where `default_remote` comes from the Step-0 resolver (tracking remote → fallback "origin" → first remote). Failure classes collapse to ONE quiet outcome: any of `ForgeUnreachableError`-flavored `GitCommandError`, `AuthRequiredError`, or timeout → a 5-second status-bar transient "Auto-fetch skipped ({reason})" and nothing else — no banner, no dialog, no retry storm. Success → the existing post-fetch refresh path (status + branch switcher + graph if visible). Rate discipline: the maybe-fetch is per open/switch event, never on a timer, and never from a background warm.
+4. Menu toggle (so the setting is user-controllable before Phase 4.3 lands): Repository menu gains a checkable "Fetch automatically when opening a repository" action, checked-state mirrored from the same key at menu-show time; writing goes through one shared setter (`MainWindow._set_auto_fetch(bool)`) that Phase 4.3's settings page will ALSO call — one key, one writer function, zero split-brain.
+5. Tests & **acceptance check**: unit/UI — add_tab constructs no content until activation (monkeypatch a counter on the factory); session restore with 3 tabs constructs exactly 1; double activation constructs exactly once; dedup/pin/reorder regressions stay green (existing tab tests must not be edited to pass — if one fails, the lazy implementation is wrong, not the test); switch cancels in-flight warmers (generation guard fires); auto-fetch fires exactly once per switch with remote present, never when the key is `"false"`, and offline produces the quiet transient (test with a dead `file://`... no — with a URL pointing at a port nothing listens on); picker-mock clone flows from Phase 4.1 still green (ordering: link before fetch). **Manual QA:** switch between two repos repeatedly while watching a debug overlay/log — hidden tabs stay unconstructed; visible tab shows the spinner state instead of stale rows; forge tabs show their SWR content instantly on second visits; `git -C <repo> reflog show origin/main` (or the remote-tracking ref's mtime) proves the fetch actually ran on open; uncheck the menu item and repeat — no fetch fires.
+
+### Phase 4.3 — Theming Consistency & Modular Settings Dialog
+**Prerequisites:** Phase 4.2's acceptance check passed (it introduces `repo.auto_fetch_on_open`, mirrored here). Delivers TODO items 3 and 7 — ONE unified dialog with per-module pages — plus the styling-consistency mandate: exactly three theme modes (System default, Pastel Light, Pastel Dark) rendering consistently everywhere, text always visible and pleasant. New SRS rows FR-13.1 / FR-13.2 (§3.14).
+
+**Executor guardrails (phase-specific §0.5 enforcement):**
+- READ FIRST: `src/wrench/ui/theme.py` end-to-end (token maps: `SECONDARY_TEXT`, `ACCENT_COLORS`, `DIFF_STYLES`, `BADGE_STYLES`, `CONFLICT_BANNER_STYLES`, `COMMIT_STAT_COLORS`, plus `is_dark_theme()`'s luminance rule); ARCHITECTURE.md §4.7 (the recursive palette propagation + stylesheet-isolation + recursion-guard machinery — these exist because removing them breaks themes); §5 Phase 3's theme lifecycle notes; Phase 4.2's inventory of settings keys (`theme`, `ui.tab_orientation`, `ui.session_state`, `repo.{id}.remote_*`, `repo.auto_fetch_on_open`) and the `snapshot_settings` table.
+- DO NOT: delete or "simplify" the recursion guards (`_updating_style` / `_refreshing_theme`) while cleaning up styles — they are load-bearing against `setStyleSheet`→`PaletteChange` re-entry loops; invent settings keys not produced by Step 0's inventory; hardcode a hex color anywhere outside `theme.py` after this phase (there is a test gate, step 2); assume "the user will like it" as a reason to skip a settings control — the phase contract is total configurability: every user-adjustable choice gets a control, with Advanced placement as the ONLY permitted concealment; touch `ui.session_state`'s schema (geometry/tab/session blobs are transient state, exempt by rationale, not preference knobs — record that rationale in the inventory).
+- Per-step gates: 1) both inventories written into the completion notes; 2) hex-gate test green AND the grep returns empty; 3) contrast test green AND the manual three-theme matrix fully checked; 4) pages round-trip green; 5) `bin/wrench-ci-check` + keyboard-only walkthrough of every page.
+
+**Step 0 — two inventories (the deliverable is two recorded lists, not code):**
+   a. **Toggle inventory** — run and record: `grep -rn "setCheckable(True)" src/wrench/ui --include="*.py"`, `grep -rhn "set_setting(\|get_setting(" src/wrench --include="*.py" | grep -v test_`, plus a manual read of the View and Repository menu construction and `ui/snapshots_panel/__init__.py` (snapshot trigger/retention controls). Classify each item as: *Application pref* (global), *Per-repo pref* (snapshot settings etc.), *Session/transient* (geometry, drafts — exempt by rationale), or *Owns an existing dialog* (accounts → AccountsDialog; identity → identity dialog — linked from the settings dialog, not duplicated). Every exempted item MUST appear in the completion notes with its one-line rationale — an inventory silently missing rows is a phase failure.
+   b. **Style inventory** — run and record: `grep -rno "#[0-9a-fA-F]\{3\}\b\|#[0-9a-fA-F]\{6\}\b" src/wrench/ui --include='*.py' | grep -v theme.py`. At plan time this finds 137 literals across 18 files (worst: `forge_panel/error_banner.py` 30, `forge_panel/badges.py` 28, `dialogs/accounts_dialog.py` 19, `tabs/changes_tab.py` 14, `forge_panel/info_popover.py` 10, `commit_graph/layout.py` 10 — re-verify at execution time; counts will drift). Group them by semantic role during step 1.
+1. **Token expansion + extraction sweep (`ui/theme.py` + every file above):**
+   - Expand `theme.py` with whatever token groups the sweep surfaces — expected additions: `BANNER_COLORS` (info/warning/error × light/dark) absorbing error_banner.py's literals, `BADGE_STYLES` extension for the forge state pills, `POPOVER_COLORS`, `GRAPH_LANES` (the 10 lane colors currently living in `commit_graph/layout.py` move here, keyed light/dark), `LINK_COLOR`, `PANEL_BORDER`. Rule: Catppuccin Latté/Mocha family values only, each with a comment naming the Catppuccin swatch — ARCHITECTURE.md §4.7.4's design token table stays the source of truth (update it in the same commit if a group is added).
+   - **Mode resolution rule (the crux — write it exactly like this):** tokens resolve by **effective luminance via `is_dark_theme()`, never by mode name**. System mode = native style + zero custom palette, which means any widget that hardcodes a pastel value is *already wrong in System* — that's the entire bug class this phase kills. Token consumers fall into two classes: (a) widgets that must track the host system in System mode → they are converted to **QPalette role lookups** (`palette()` based, zero tokens) — buttons, inputs, lists, dialogs, menu bars; (b) widgets whose colors carry semantics the palette lacks (diff add/remove, badges, banners, lane colors) → the `light`/`dark` variant chosen by `is_dark_theme()` works correctly under all three modes, because System-dark and Pastel-Dark both read dark. This is the rule that keeps three modes supportable: two variant sets, keyed by *what the user actually sees*.
+   - Extraction: for each sweep hit, move the value into its group (light/dark pair — derive the missing side from the nearest Catppuccin swatch), replace the literal with the token/palette lookup, delete the literal. Re-applying an inline stylesheet containing a token must go through the existing guarded refresh paths (`refresh_theme()` / `changeEvent` pattern) — match the file's existing convention, never add a fourth way.
+   - **Gate test** in `tests/unit/ui/test_theme_tokens.py`: `grep`-equivalent scan asserting NO hex literal exists outside `theme.py` (read each `ui/**/*.py` and assert the regex finds nothing) — a hard failure so literals can never silently drift back.
+2. **Three-theme consistency + contrast proof:**
+   - `tests/unit/ui/test_theme_contrast.py`: WCAG-ish relative-luminance contrast check over every registered text/background token pair. Formula, implemented exactly (no library): per channel c ∈ [0,1] sRGB → `c ≤ 0.03928 ? c/12.92 : ((c+0.055)/1.055)^2.4`; `L = 0.2126R + 0.7152G + 0.0722B`; `contrast = (L_lighter + 0.05) / (L_darker + 0.05)`; assert **≥ 4.5** for text-role pairs and **≥ 3.0** for large/decorative roles (lane lines, dividers, bars). Every new token added in step 1 must be registered in the tested pair list — the test failing to cover a token is the test's bug, not an exemption.
+   - Qt smoke coverage: with each of the three modes applied, instantiate each top-level dialog/tab and assert no label's resolved foreground equals its resolved background (catches palette-wiring mistakes screenshots would miss in CI).
+   - **Manual matrix (the real gate):** for each mode (System, Pastel Light, Pastel Dark) walk — Changes tab (file rows, badges, commit box incl. amend/active/disabled states, conflict banner, clean-state quote), History (graph lanes, pills, detail panel, filter bar), PR/Issue lists + details, CI icons, and every dialog (accounts incl. TLS group + device flow, link, remotes, clone, stash, identity, reflog, merge tool, recovery, busy, the three push-recovery dialogs, snapshot panel, the settings dialog itself). Each row records PASS/FAIL for: text visible, accent legible, focus outline visible, badge/pill contrast. A FAIL gets fixed with a token, not a one-off literal — that's the point of no return for the bug class.
+3. **Settings dialog skeleton** (`ui/dialogs/settings_dialog.py`) as previously specified: `SettingsPage` base (`title()`/`build()`/`load()`), left module `QListWidget` (accessible names), right `QStackedWidget`, modal, instant-apply (no Apply/OK), Escape closes, `showEvent` re-runs `load()` on every page.
+4. **Module pages — coverage is the contract.** Pages and their content:
+   - **Appearance** — the three-mode theme selector (System / Pastel Light / Pastel Dark) via `MainWindow._set_theme`; a live token preview strip (a row of chips painted with `GRAPH_LANES`, `BADGE_STYLES`, `DIFF_STYLES` snapshot entries so a mode switch is immediately visible); Phase 4.4 later adds its gravatar opt-in here.
+   - **Tabs** — orientation via the shared `_set_tab_orientation` setter.
+   - **Repositories** — auto-fetch toggle (Phase 4.2's setter/key); anything else the inventory classifies as per-repo-app-level.
+   - **Snapshots** — the active-repo `snapshot_settings` editor (all four triggers, interval, `max_count`, `max_age_days`, untracked mode + both caps) going through the existing `update_snapshot_settings()` + `restart_snapshot_timer()` wiring; repo defaults to the active repository, no-repo state is disabled-with-explanation.
+   - **Editor & Diff** — exists iff the inventory finds diff/editor prefs; drop the page entirely if empty (a dead page is worse than no page).
+   - **Forge** — summary + button opening `AccountsDialog`; nothing duplicated.
+   - **Advanced** — inventory items the notes marked expert-only (e.g. any debug/logging level toggles, unusual git plumbing knobs found). Advanced is the ONLY concealment allowed: a control is either on its module page or on Advanced with a one-line "why it's advanced" tooltip; it is never simply absent.
+   - Every inventory row maps to exactly one page control or one exemption note — the settings page and the menu-surface controls stay mirrors via shared MainWindow setters; a page never writes a key/blob directly.
+5. Tests & **acceptance check**: per-page round-trips; menu↔dialog state agreement both directions (theme AND orientation AND auto-fetch); snapshot page spy-test on `restart_snapshot_timer`; the two test-gates from steps 1–2 green; dialog open with no repo → Snapshot page disabled-cleanly; app restart → persisted. **Manual acceptance (all mandatory):** the full three-theme matrix from step 2 recorded PASS on every row; the settings inventory table reproduced in `dev/planning/phase-4.3.md` with pages/exemptions; keyboard-only walkthrough of every page; and a retro-check — flip through every theme while the Accounts and Merge dialogs are open (the two most style-dense surfaces) and observe zero illegible text.
+
+**Executor guardrails (phase-specific §0.5 enforcement):**
+- READ FIRST: Step 0's settings inventory output; `storage/settings.py`'s actual API (§3 signatures have drifted before); `ui/snapshots_panel/__init__.py` (the only existing per-repo settings UI — its save path is reused, not duplicated).
+- DO NOT: remove/rename any existing menu toggle or key (settings MIRRORS existing controls — TODO item 3's "does not move anything that currently exists" is normative); write to `ui.session_state` from a settings page directly (use the extracted MainWindow setters); invent new settings keys not listed in step 2; build a search/filter box (deliberate cut — nine pages don't need one; adding it later is cheap); make it a modal that blocks the main window on open (plain `QDialog`, non-modal is allowed but modal is simpler — pick modal, note why: settings edits are short, focused tasks).
+- Per-step gates: 1) skeleton + inventory docstring reviewed; 2) each page's round-trip test green; 3) menu↔dialog sync test green; 4) `bin/wrench-ci-check` plus the keyboard walkthrough of every page.
+
+**Step 0 — settings inventory (the deliverable is a list, not code):** re-run Phase 4.2's `grep -rn "set_setting(\|get_setting(" src/wrench` and classify every key found into a module page below; ALSO enumerate non-key toggles (View ▸ Theme, View ▸ tab orientation, snapshot settings via `update_snapshot_settings`, the new auto-fetch action). Any toggle found in code but NOT reachable from a page in step 2 is a phase-blocking omission — record it in the completion notes or add it to a page.
+
+1. **Skeleton (`ui/dialogs/settings_dialog.py` [NEW — §3 tree + ui-planning §6.11 updated]):** `SettingsDialog(QDialog)` — left `QListWidget` of modules (icon optional, requires `setAccessibleName`), right `QStackedWidget` of pages; one `SettingsPage` base class (`title() -> str`, `build()`, `load()`, `save()`-free — **instant-apply**: every control writes on change, KDE-style, no Apply/OK split-brain surface). Escape closes; every control keyboard-reachable; every string `tr()`.
+2. **Module pages (initial, exhaustive per Step 0):**
+   - **Appearance** — theme radio (Auto / Pastel Light / Pastel Dark) through the same setter the View menu uses (`MainWindow._set_theme`); gravatar opt-in checkbox is NOT here (Phase 4.4 adds it to this page — same pattern, same key discipline).
+   - **Tabs** — orientation (Vertical/Horizontal) via `MainWindow._set_tab_orientation` (`extract from the existing menu action if needed — one shared setter, both callers`).
+   - **Repositories** — auto-fetch checkbox (Phase 4.2's key/writer); nothing else until later phases add keys.
+   - **Snapshots** — active-repo `SnapshotSettings` editor (four triggers + interval + `max_count` + `max_age_days` + untracked mode + caps) calling the existing `update_snapshot_settings` and the existing `restart_snapshot_timer()` slot after save (§5 Phase 2 step 6's wiring); a repo selector matching the Changes tab's current repo by default.
+   - **Forge** — summary text + a button opening the existing `AccountsDialog` (account management is NOT duplicated here).
+   - **Advanced** — anything Step 0 finds that fits nowhere else; empty page hidden.
+3. **Sync discipline:** View-menu actions and settings controls never write keys/blobs directly — both call the named MainWindow setter; on dialog `showEvent`, every page calls `load()` reflecting CURRENT live state (opening the dialog mid-session after a menu-side change must show the right state — test covers exactly this).
+4. Tests & **acceptance check**: per-page round-trip (set via dialog → key/value storage reflects → reload dialog → UI reflects); menu→dialog and dialog→menu sync for theme and orientation; snapshot page edits reach `update_snapshot_settings` and restart the timer (assert the slot called with a spy); opening with no repo loaded renders the Snapshots page disabled-with-explanation, not broken. **Manual QA:** every page reachable by keyboard only; toggling theme in the dialog while the View menu is open shows both in agreement; close/reopen dialog → state persisted; app restart → persisted.
+
+### Phase 4.4 — Forge Avatars
+**Prerequisites:** Phase 4.2 + 4.3 passed (async list mechanics + the settings page that hosts this phase's one toggle). Delivers TODO item 4; new SRS row FR-5.14.
+
+**Executor guardrails (phase-specific §0.5 enforcement):**
+- READ FIRST: §4.3's `PullRequest`/`Issue` avatar fields (added for this phase — trailing-with-default, never reorder); phase-4.md's fixture discipline (fixtures come from provider docs with source URLs noted); the Phase 1.5 changes-tab "account avatar button" that already exists as a placeholder.
+- DO NOT: fetch avatars synchronously or on the GUI thread; render avatars in the commit-graph's per-row cells (v1 scope cut — detail panel and lists only; graph rows stay text-density-first); call Gravatar when `ui.avatars_gravatar` is not exactly `"true"` (default OFF — the privacy NFR forbids the silent third-party call; the settings checkbox's tooltip says plainly that enabling it sends MD5-hashed author emails to gravatar.com); crash the UI on corrupt/never-arriving image data (initials are the permanent fallback); add `pillow` or any imaging dependency (QPixmap+QImage cover it).
+- Per-step gates: 1) all four adapter matrix tests assert the avatar field; 2) `pytest tests/unit/ui -x -q -k avatar` (cache/TTL/dedup/corrupt-data); 3) UI integration tests green; 4) `bin/wrench-ci-check`.
+
+**Step 0 — repo-state reconciliation (greps, recorded):**
+   - `grep -rl "avatar_url" tests/fixtures/forge_responses/ | head` and per-provider: if a provider's fixtures lack the field, regenerate that fixture from the provider's doc example (comment the source URL — Phase 4's rule), pinning: GitHub `user.avatar_url`, GitLab `author.avatar_url`, Forgejo `user.avatar_url`, Bitbucket `author.links.avatar.href`.
+   - `grep -rn "PullRequest(\|Issue(" src/wrench tests --include="*.py" | grep -v test_ | head` — every constructor call site (all keep working by the defaulted-field rule; verify).
+   - `grep -n "account.*btn\|avatar" src/wrench/ui/tabs/changes_tab.py | head` — the commit-box account button to upgrade in step 3.
+   - `grep -n "def user_cache_dir\|cache" src/wrench/core/paths.py src/wrench/credentials/*.py | head` — confirm `paths.py` lacks a cache resolver; step 1 adds `cache_dir()` (same one-liner shape as the existing three, FR-11.2 — nothing reads env dirs directly).
+
+1. `core/paths.py`: add `cache_dir() -> Path` via `platformdirs.user_cache_dir(APP_NAME)` (one function, mirrors the existing three exactly; needed by the disk cache so Phase 4.4 adds no fourth way to resolve dirs).
+2. Adapter field mapping: each adapter's mappers populate `author_avatar_url` per the Step-0 pinned JSON paths; the four test files gain one assertion each on an existing happy-path test (no new fixture files unless Step 0 found a field missing). 
+3. `ui/widgets/avatar.py` [NEW]: `AvatarLoader` — module-level singleton:
+   - `avatar(url: str | None, initials: str, size: int = 40) -> QPixmap`-style contract: returns the initials-tile pixmap IMMEDIATELY (colored circle + initials letters, deterministic hue from the name) and fires a queued signal when a fetched image arrives so widgets swap in place. `url=None` means initials forever (Bitbucket-private, offline, gravatar-off).
+   - Cache: in-memory `dict[url, QPixmap]` + disk at `paths.cache_dir()/"avatars"/sha256(url).hex().png` with 7-day mtime TTL (expired → refetch; corrupt decode → delete file + initials); in-flight dedup dict so five rows of the same reviewer cause exactly one request.
+   - Fetch: `run_in_background` + `httpx.get(url, timeout=10)` with NO auth (public avatars only; a 401/403/404/429/network error = initials, logged at debug, never surfaced), bytes returned over the dispatcher, decode to QImage/QPixmap on the GUI thread, downscale with `Qt.SmoothTransformation` to the requested size bucket (only 24/40/64 px buckets painted).
+4. Integrations (each behind the same loader): PR and Issue **list rows** (avatar at the leading edge, initials until loaded), PR/Issue **detail headers**, the **commit-box account button** (its source: persist `account.{id}.avatar_url` via `set_setting` during `LinkRepoDialog`'s existing identity-sync — extend `ForgeAdapter` with the sibling optional default `get_avatar_url() -> str | None` mirroring `get_primary_email()`'s Phase-4 pattern: default None, GitHub overrides (the `/user` payload already carries it), others ship None until their payloards are verified), and the **History detail panel's author row** (email → md5 → gravatar ONLY when the `ui.avatars_gravatar` toggle is on; otherwise initials). The settings toggle lands on Phase 4.3's Appearance page with its privacy tooltip.
+5. Tests & **acceptance check**: unit — sha256 cache keying; TTL expiry forces refetch; in-flight dedup (two simultaneous gets → one HTTP); corrupt bytes → initials + file deleted; four-adapter field assertions; gravatar-off ⇒ assert zero fetches attempted for email-derived URLs (patch the fetch and assert never called); a11y: avatars expose `accessibleName` = the person's name/username, never bare "image". **Manual QA:** PR list of a live repo shows real faces on second load (first load = initials → swap-in); airplane mode → initials everywhere with zero error UI; enable gravatar → commit author avatars appear in the detail panel; disable → they stop with no stale cache reuse.
+
+
+
 ### Phase 4.5 — Multi-Repository Directory Discovery
-**Prerequisites:** Phase 4's acceptance check passed. Inserted with the Phase 1.5 X.5 convention so no later phase number (and no existing §8.1/§12 cross-reference) moves. Delivers SRS FR-1.12.
+**Prerequisites:** Phase 4.4's acceptance check passed (avatars shipped — the last of the 4.x batch). Inserted with the Phase 1.5 X.5 convention so no later phase number (and no existing §8.1/§12 cross-reference) moves. Delivers SRS FR-1.12.
 
 **Executor guardrails (phase-specific §0.5 enforcement):**
 - READ FIRST: §4.1's "Phase 4.5 surface" signature; ui-planning §6.10; the existing `mark_missing`/`add_repo`/`get_repo_by_path` in `storage/repo_registry.py` (copy their shape for `clear_missing` — same lock, same key handling, only the written value differs); `main_window._on_open_repo` as it exists NOW (the is-a-repo fast path stays byte-identical).
@@ -2390,6 +2545,14 @@ Every row below is detailed in full where cited — this table exists so none of
 | Repo discovery | Unreadable directories mid-scan (permissions, stale NFS) | §5 Phase 4.5 step 1 — skipped and counted, never aborts the scan |
 | Repo discovery | Submodule worktrees carry a `.git` file and must not register as independent repos | §5 Phase 4.5 step 1 — pruning at repo roots makes them unreachable |
 | Repo discovery | `$HOME`-scale or huge picked trees | §5 Phase 4.5 — depth cap 3, cancellable background scan, no passive re-scanning |
+| Credentials/clone | A token riding a clone command line or env var (visible via `ps`/procfs to same-user processes) | §5 Phase 4.1 steps 2–3 — `-c credential.helper` + the pre-created link row; the secret never leaves Secret Service |
+| Credentials/clone | Clone fails or is cancelled after the account link was pre-created | §5 Phase 4.1 step 3 — mandatory `remove_repo` rollback (link cascade-deletes with the row) |
+| Forge links | Dialog-on-every-open is hostile; silently picking among multiple host-matching accounts is worse | §5 Phase 4.1 step 4 — one-time banner, `forge.link_declined` persistence, silent auto-link only when unambiguous |
+| Tabs/UX | Session restore eagerly building every hidden tab, defeating lazy loading | §5 Phase 4.2 step 1 — factory + placeholder + `ensure_loaded`; restore constructs the active tab only |
+| Auto-fetch | Offline or unlinked credential at switch → modal error storm on every open | §5 Phase 4.2 step 3 — a single quiet status-bar transient; never modal, never retried inline |
+| Settings | Menu toggle and settings page writing different keys = split-brain preferences | §5 Phase 4.3 steps 2–3 — one shared setter per toggle; dialog mirrors live state on show |
+| Avatars | Gravatar sends MD5-hashed author emails to a third party | §5 Phase 4.4 step 4 — opt-in toggle, default OFF, privacy tooltip; forge-API avatars involve no third party |
+| Avatars | Slow/rate-limited image fetches blocking or erroring list rendering | §5 Phase 4.4 step 3 — initials-first swap-in, in-flight dedup, silent failure to initials |
 | Packaging | Flatpak build sandbox has no network access — plain `pip install` in a build step fails | §6.1 — `flatpak-pip-generator`, regenerated whenever dependencies change, never hand-edited |
 | Packaging | The Flatpak runtime does not promise the `git`/`git-lfs`/`ssh` binaries every write op shells out to | §5 Phase 6 step 1 — empirical probe first, then manifest modules for whatever's absent; contents never assumed |
 | Packaging | Flathub distribution isn't something CI can automate end-to-end | §7 stage 7 — initial listing is a one-time manual PR + human review; only later updates auto-build |
@@ -2541,7 +2704,31 @@ Flattened, in strict execution order, across every phase — the literal path th
 - [x] 4.13 Granular push protection & recovery dialogs: `write_ops` regex classification for `SecretScanningRejectedError` (`GH007`), `ProtectedBranchRejectedError` (`GH006`), `FileTooLargeRejectedError` (`GH001`), `SignedCommitsRequiredError` (`GH008`), and `RepoPermissionDeniedError` (`403`); dedicated `SecretScanningDialog`, `ProtectedBranchDialog`, `FileTooLargeDialog` with guided recovery & unblock links
 - [x] 4.14 Local git author identity alignment: `adapter.get_primary_email()` + asynchronous author alignment in `LinkRepoDialog` syncing authenticated forge `user.name` and verified `user.email` to local `.git/config`
 
-**Phase 4.5 — Multi-Repository Directory Discovery** *(prerequisites: 4.11 checked)*
+**Phase 4.1 — Credential-Aware Clone & Open-Time Link Resolution** *(prerequisites: 4.14 checked — note: "4.1" here is a PHASE; the Phase 4 step rows above keep their existing 4.1–4.14 numbering, different namespace)*
+- [ ] 4.1.1 `core/remote_urls.py` — `parse_remote_url`/`host_of_instance_url` + full parse matrix tests; `_host_of` re-homed (helper's (a)–(l) matrix stays green)
+- [ ] 4.1.2 clone injects `-c credential.helper=wrench -c credential.useHttpPath=true`; arg-shape test + existing clone tests unedited-green
+- [ ] 4.1.3 multi-account clone picker (reuse the Phase 4 picker, ≥2 candidates only); registry row + link pre-created before clone; mandatory rollback on cancel/failure
+- [ ] 4.1.4 `_maybe_offer_forge_link` on open/switch — silent auto-link on single match, one-time banner on multiple, `forge.link_declined` persistence; ordered before auto-fetch
+- [ ] 4.1.5 **CHECK**: private clone with one account unprompted; with two → picker, chosen account pushes; cancel → no clone/dir/row; two-account repo open → banner once, dismiss persists, link → PR tab populates
+
+**Phase 4.2 — Repository Switching UX** *(prerequisites: 4.1.5 checked)*
+- [ ] 4.2.1 lazy tab construction (factory + placeholder + `ensure_loaded`, session restore constructs only the active tab; existing tab tests pass unedited)
+- [ ] 4.2.2 switch pipeline: generation bumps, inline spinner (never modal), visible-tab-first refresh, background warm of other tabs
+- [ ] 4.2.3 auto-fetch on open/switch (`repo.auto_fetch_on_open`, default on) — once per event, quiet failure, existing refresh on success; Repository-menu toggle via shared `_set_auto_fetch` setter
+- [ ] 4.2.4 **CHECK**: lazy/restore/switch/auto-fetch suites green; manual QA — spinner on switch, no stale renders, fetch provably ran (ref mtime), toggle respected
+
+**Phase 4.3 — Modular Settings Dialog** *(prerequisites: 4.2.4 checked)*
+- [ ] 4.3.1 settings inventory recorded (Step 0 grep output) + `ui/dialogs/settings_dialog.py` skeleton with `SettingsPage` base and instant-apply
+- [ ] 4.3.2 module pages: Appearance / Tabs / Repositories / Snapshots (active-repo `update_snapshot_settings` + `restart_snapshot_timer()`) / Forge (opens AccountsDialog); shared setters only, no direct key writes from pages
+- [ ] 4.3.3 **CHECK**: per-page round-trip + menu↔dialog sync tests; keyboard-only walkthrough of every page; state survives restart
+
+**Phase 4.4 — Forge Avatars** *(prerequisites: 4.3.3 checked)*
+- [ ] 4.4.1 avatar fields pinned from fixtures/docs; `author_avatar_url` mapped in all four adapters; zero pre-existing constructor call sites broken
+- [ ] 4.4.2 `core/paths.py::cache_dir()` + `ui/widgets/avatar.py` AvatarLoader — initials-first, sha256 disk cache (7-day TTL), in-flight dedup, silent failure, GUI-thread decode, 24/40/64 buckets
+- [ ] 4.4.3 integrations: PR/issue rows + detail headers, commit-box account button (`get_avatar_url()` optional-method pattern + `account.{id}.avatar_url` persisted at link time), history detail panel author row via gravatar behind default-OFF `ui.avatars_gravatar` with privacy tooltip
+- [ ] 4.4.4 **CHECK**: cache/TTL/dedup/corrupt tests green; gravatar-off ⇒ zero fetches; manual QA — initials→swap-in, airplane-mode initials everywhere, no error UI
+
+**Phase 4.5 — Multi-Repository Directory Discovery** *(prerequisites: 4.4.4 checked)*
 - [ ] 4.5.1 `core/discovery.py` — bounded cancellable walk (depth 3, dot-dirs skipped, symlinks unfollowed, prune at repo roots, `.git` file-or-directory counts, permission errors skipped-and-counted); façade re-export
 - [ ] 4.5.2 `storage/repo_registry.py` — `clear_missing`; registration loop semantics (missing → restore, known → skip, new → `add_repo`, resolve-canonicalized)
 - [ ] 4.5.3 `ui/dialogs/discover_repos_dialog.py` + `_on_open_repo` branch on `WrenchRepoNotFoundError` per ui-planning §6.10 — background scan with live count, checkbox results, idempotent accept, selector refresh, `tr()`/a11y

@@ -103,6 +103,7 @@ Priority key: **M** = Must have (v1), **S** = Should have (v1), **D** = Deferred
 | FR-1.14 | Batch operations over the FR-1.12 registry: fetch/pull across all registered repos or a user-defined workspace group, with a per-repo result summary | **D (v2)** |
 | FR-1.15 | Git worktree management: list, add, remove, and prune worktrees of a repository | **D (v2)** |
 | FR-1.16 | Shallow and partial clone options (`--depth`, `--filter=blob:none`) in the clone flow, with degraded-history states surfaced honestly in the UI | **D (v2)** |
+| FR-1.17 | Switching/opening a repository shows an immediate loading state and loads only the visible tab's data; other tabs construct lazily and warm in the background; session restore must not force-construct hidden tabs | S |
 
 ### 3.2 History & Diff Visualization
 | ID | Requirement | Priority |
@@ -131,6 +132,8 @@ Priority key: **M** = Must have (v1), **S** = Should have (v1), **D** = Deferred
 | FR-4.3 | Credential storage via freedesktop Secret Service (D-Bus), portable across GNOME Keyring and KWallet backends — the Linux/BSD implementation of the `CredentialBackend` interface (FR-11.1) | M |
 | FR-4.4 | Multiple remote support per repo (origin, upstream, etc.) | S |
 | FR-4.5 | Git-level credential resolution disambiguates by account, not just by host — required once multiple accounts share a host (e.g. two `github.com` accounts); SSH-remote identity is explicitly out of scope (see §7 Assumptions) | M |
+| FR-4.6 | Clone over HTTPS authenticates through the configured forge accounts — git invokes the app's credential helper during the clone, and when several accounts match the remote's host the user picks once before cloning starts (the choice persists as the repo's account link) | S |
+| FR-4.7 | Opening or switching to a repository triggers a background fetch of its default remote (toggleable, default on; every failure mode is quiet — never a modal on open) | S |
 
 ### 3.5 Forge Integration
 | ID | Requirement | Priority |
@@ -147,6 +150,8 @@ Priority key: **M** = Must have (v1), **S** = Should have (v1), **D** = Deferred
 | FR-5.10 | In-app review threads: view and reply to PR/MR review comments, including inline diff comments (v1 ships review *actions* only — approve/request-changes/comment — with thread viewing deferred to Open-in-browser) | **D (v2)** |
 | FR-5.11 | CI run details: inspect individual check runs/jobs for a PR/MR (names, states, deep links; log viewing itself stays in the browser in v2.0) | **D (v2)** |
 | FR-5.12 | Forge notifications: aggregate review requests, mentions, and subscription updates into an in-app inbox per configured account (capability-gated — not every provider exposes this) | **D (v2)** |
+| FR-5.13 | On opening a repository whose remote's host matches configured accounts but has no link: silently link when exactly one account matches; offer a one-time, dismissible choice when several do; never re-ask a dismissed (repo, remote) pair | S |
+| FR-5.14 | Forge avatars visible in PR/issue list rows and detail headers and the commit-box account button; commit-author avatars via Gravatar are opt-in only (default off, privacy disclosure in the setting) | S |
 
 ### 3.6 Backend Extension Architecture
 The forge layer's extensibility rests on two mechanisms, both required for v1 (they're how the four confirmed backends themselves are implemented, not a v2 add-on):
@@ -214,6 +219,11 @@ See §7.1 for the roadmap of additional backends this architecture is designed t
 |---|---|---|
 | FR-12.1 | Custom user actions: user-defined shell commands runnable on the selected repo/commit/file, surfaced in context menus (`WRENCH_REPO_PATH`/`WRENCH_SELECTED_SHA`/`WRENCH_SELECTED_FILE` environment contract; user-authored, no sandboxing promised) | **D (v2)** |
 
+### 3.14 Settings & Preferences
+| ID | Requirement | Priority |
+|---|---|---|
+| FR-13.1 | One unified settings dialog with per-module pages (Appearance, Tabs, Repositories, Snapshots, Forge, …) that mirrors every user-facing toggle in the app — instant-apply, and it never removes or relocates the existing menu-surface controls it mirrors | S |
+
 ---
 
 ## 4. Non-Functional Requirements
@@ -249,7 +259,7 @@ See §7.1 for the roadmap of additional backends this architecture is designed t
 ## 6. Out of Scope for v1 (confirmed deferrals)
 
 - Interactive drag-and-drop rebase in the commit graph → v2
-- OAuth-based login for forge accounts (v1 is token/PAT-only across all providers and all accounts) → v2, if there's demand
+- OAuth app-based login for forge accounts → v2 (VP-15c), if there's demand. Clarification after Phase 4: v1 **does** ship GitHub's RFC 8628 Device Authorization Flow as an assisted account-setup path (requesting `repo workflow user:email read:org`) — Assumptions Log #9's "PAT-only" now reads "no full OAuth-app login beyond GitHub device flow; manual PAT entry stays available for every provider"
 - The full v2 feature set — FR-1.13 (tag management), FR-1.14 (batch operations/workspaces), FR-1.15 (worktree management), FR-1.16 (shallow/partial clone), FR-2.5 (blame view), FR-2.6 (pickaxe search), FR-3.4 (cherry-pick/revert), FR-3.5 (patch workflows), FR-5.10 (review threads/inline comments), FR-5.11 (CI run details), FR-5.12 (forge notifications), FR-6.3 (LFS locking), FR-6.4 (image diff), FR-12.1 (custom actions) → v2; plus FR-8.5 (scheduled/automatic backups — S-priority in v1 per §3.9, committed to v2 as its refinement phase) → v2; all planned in `dev/planning/v2-implementation-plan.md`
 
 ---
@@ -288,6 +298,7 @@ Distinct from §6 above: these aren't scheduled for v2 either — they have no c
 | 16 | Which platform is technically closer | Informational, not a commitment | macOS is architecturally closer (POSIX subprocess/path behavior, near-identical SSH-agent model to Linux); Windows has no equivalent to macOS's mandatory $99/year Apple Developer Program notarization cost | Recorded for whenever this is actually revisited — deliberately not used to prioritize one platform's abstraction over the other in §3.12's interfaces |
 | 17 | Credential backend split (v1, within Linux) | ✅ Confirmed (revised) | Two concrete `CredentialBackend` implementations, not one — `FlatpakSecretServiceBackend`/`AppImageSecretServiceBackend` — sharing identical D-Bus logic, differing only in unavailable-provider remediation text | Corrects a gap in the first version of FR-11.1: `sys.platform` alone can't distinguish Flatpak from AppImage from a bare `pip install` (all report the same value), so the original single-backend factory couldn't actually give context-appropriate error guidance. Detection now uses `FLATPAK_ID`/`.flatpak-info` and the `APPIMAGE` env var instead |
 | 18 | v2 feature set | ✅ Confirmed | FR-1.13–1.16, FR-2.5–2.6, FR-3.4–3.5, FR-5.10–5.12, FR-6.3–6.4, FR-12.1 assigned D (v2), enumerated in §6, planned in `dev/planning/v2-implementation-plan.md` | Post-v1-scope review surfaced gaps users would perceive as incompleteness rather than novelty (cherry-pick/revert, tag management, blame view lead the set because their v1 engine machinery already exists); everything else is deepening or power-user surface |
+| 19 | GitHub device flow in v1 (revises #9); post-Phase-4 hardening batch | ✅ Confirmed | Phase 4 shipped RFC 8628 device flow for GitHub account setup; follow-up batch scheduled as Phases 4.1–4.4 (FR-4.6/4.7 clone+auto-fetch auth, FR-5.13/5.14 open-time linking + avatars, FR-1.17 lazy switch UX, FR-13.1 settings dialog) ahead of Phase 4.5 discovery | Device flow turned out to be the only no-friction path to `workflow`-scoped tokens (GH007-class push protections demanded it); the 4.x batch collects UX/credential gaps found while dogfooding Phase 4 |
 | 19 | FR-8.5 (scheduled backups) v2 home | ✅ Confirmed | S-priority in v1 per §3.9, committed to v2 (VP-14 — Scheduled Backups) | It was the last marked deferral bucket with no planned home; the §3.9 backup engine and FR-10.2's timer machinery make it cheap to schedule honestly, and 'scheduled backups' deferred forever would read as a gap rather than as scope discipline |
 
 ### 7.1 Backend Extension Roadmap

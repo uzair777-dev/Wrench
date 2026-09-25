@@ -854,6 +854,7 @@ wrench/
 │       ├── srs.md
 │       ├── implementation-plan.md
 │       ├── ui-planning.md
+│       ├── v2-implementation-plan.md
 │       ├── phase-1.md
 │       ├── phase-1.5.md
 │       ├── phase-2.md

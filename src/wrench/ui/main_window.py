@@ -22,9 +22,12 @@ from PySide6.QtGui import QActionGroup, QGuiApplication, QKeySequence
 from PySide6.QtWidgets import (
     QApplication,
     QDialog,
+    QDialogButtonBox,
     QFileDialog,
     QInputDialog,
     QLabel,
+    QListWidget,
+    QListWidgetItem,
     QMainWindow,
     QMessageBox,
     QStatusBar,
@@ -50,7 +53,8 @@ from wrench.core.exceptions import (
     SignedCommitsRequiredError,
     WorkflowScopeRequiredError,
 )
-from wrench.storage import repo_registry, settings
+from wrench.core.remote_urls import host_of_instance_url, parse_remote_url
+from wrench.storage import forge_accounts, repo_registry, settings
 from wrench.storage.db import get_connection
 from wrench.ui.dialogs.accounts_dialog import AccountsDialog
 from wrench.ui.dialogs.link_dialog import LinkRepoDialog
@@ -90,6 +94,7 @@ class MainWindow(QMainWindow):
         self._watcher: RepoWatcher | None = None
         self._repos_state: dict[str, dict] = {}
         self._is_restoring: bool = True
+        self._repo_switch_generation: int = 0
 
         # 1000ms debounce timer for coalescing auto-save writes
         self._auto_save_timer = QTimer(self)
@@ -317,6 +322,16 @@ class MainWindow(QMainWindow):
         self.act_link_forge = repo_menu.addAction(self.tr("&Link to Forge…"))
         self.act_link_forge.triggered.connect(lambda: self._on_link_forge())
 
+        repo_menu.addSeparator()
+
+        self.act_auto_fetch = repo_menu.addAction(
+            self.tr("Fetch automatically when opening a repository")
+        )
+        self.act_auto_fetch.setCheckable(True)
+        self.act_auto_fetch.toggled.connect(self._set_auto_fetch)
+        repo_menu.aboutToShow.connect(self._sync_auto_fetch_action)
+        self._sync_auto_fetch_action()
+
         # ---------------- Help Menu ----------------
         help_menu = menu_bar.addMenu(self.tr("&Help"))
 
@@ -387,7 +402,7 @@ class MainWindow(QMainWindow):
             if saved_repo_path and saved_repo_path in self._repos_state:
                 self.changes_tab.restore_repo_state(self._repos_state[saved_repo_path])
 
-            # Restore open tabs
+            # Restore open tabs (Phase 4.2: lazy factory closures)
             tabs_data = session_data.get("tabs")
             if tabs_data and isinstance(tabs_data, dict):
                 items = tabs_data.get("items", [])
@@ -400,6 +415,9 @@ class MainWindow(QMainWindow):
                         closable = item.get("closable", True)
                         is_pinned = item.get("is_pinned", False)
 
+                        # "changes", "history", and "snapshots" are singleton
+                        # widgets that already exist — always pass them directly
+                        # (no factory needed).
                         if t_type == "changes":
                             self.tab_container.add_tab(
                                 widget=self.changes_tab,
@@ -407,6 +425,7 @@ class MainWindow(QMainWindow):
                                 tab_type="changes",
                                 closable=closable,
                                 is_pinned=is_pinned,
+                                activate=False,
                             )
                         elif t_type == "history":
                             self.tab_container.add_tab(
@@ -415,6 +434,7 @@ class MainWindow(QMainWindow):
                                 tab_type="history",
                                 closable=closable,
                                 is_pinned=is_pinned,
+                                activate=False,
                             )
                         elif t_type == "snapshots":
                             self.tab_container.add_tab(
@@ -423,66 +443,88 @@ class MainWindow(QMainWindow):
                                 tab_type="snapshots",
                                 closable=closable,
                                 is_pinned=is_pinned,
+                                activate=False,
                             )
 
                         elif t_type == "pr_list":
                             tab_repo = item.get("repo_path") or saved_repo_path or ""
-                            pr_tab = PRListTab(tab_repo, self)
-                            pr_tab.pr_selected.connect(self._open_pr_detail_tab)
-                            pr_tab.link_requested.connect(self._on_link_forge)
+
+                            def _make_pr_list(repo=tab_repo):
+                                pr_tab = PRListTab(repo, self)
+                                pr_tab.pr_selected.connect(self._open_pr_detail_tab)
+                                pr_tab.link_requested.connect(self._on_link_forge)
+                                return pr_tab
+
                             self.tab_container.add_tab(
-                                widget=pr_tab,
+                                widget=_make_pr_list,
                                 label=label or self.tr("Pull Requests"),
                                 tab_type="pr_list",
                                 repo_path=tab_repo,
                                 closable=closable,
                                 is_pinned=is_pinned,
+                                activate=False,
                             )
                         elif t_type in ("issues_list", "issue_list"):
                             tab_repo = item.get("repo_path") or saved_repo_path or ""
-                            issue_tab = IssueListTab(tab_repo, self)
-                            issue_tab.issue_selected.connect(self._open_issue_detail_tab)
-                            issue_tab.link_requested.connect(self._on_link_forge)
+
+                            def _make_issue_list(repo=tab_repo):
+                                issue_tab = IssueListTab(repo, self)
+                                issue_tab.issue_selected.connect(self._open_issue_detail_tab)
+                                issue_tab.link_requested.connect(self._on_link_forge)
+                                return issue_tab
+
                             self.tab_container.add_tab(
-                                widget=issue_tab,
+                                widget=_make_issue_list,
                                 label=label or self.tr("Issues"),
                                 tab_type="issues_list",
                                 repo_path=tab_repo,
                                 closable=closable,
                                 is_pinned=is_pinned,
+                                activate=False,
                             )
                         elif t_type == "pr_detail" and item.get("entity_id"):
                             tab_repo = item.get("repo_path") or saved_repo_path or ""
                             entity_id = item.get("entity_id", "")
                             parts = entity_id.split(":", 1)
                             if len(parts) == 2:
-                                detail_tab = PRDetailTab(tab_repo, parts[0], parts[1], self)
-                                detail_tab.branch_checkout_requested.connect(
-                                    self._on_checkout_branch
-                                )
+
+                                def _make_pr_detail(repo=tab_repo, remote=parts[0], pr_id=parts[1]):
+                                    detail_tab = PRDetailTab(repo, remote, pr_id, self)
+                                    detail_tab.branch_checkout_requested.connect(
+                                        self._on_checkout_branch
+                                    )
+                                    return detail_tab
+
                                 self.tab_container.add_tab(
-                                    widget=detail_tab,
+                                    widget=_make_pr_detail,
                                     label=label or f"PR #{parts[1]}",
                                     tab_type="pr_detail",
                                     repo_path=tab_repo,
                                     entity_id=entity_id,
                                     closable=closable,
                                     is_pinned=is_pinned,
+                                    activate=False,
                                 )
                         elif t_type == "issue_detail" and item.get("entity_id"):
                             tab_repo = item.get("repo_path") or saved_repo_path or ""
                             entity_id = item.get("entity_id", "")
                             parts = entity_id.split(":", 1)
                             if len(parts) == 2:
-                                detail_tab = IssueDetailTab(tab_repo, parts[0], parts[1], self)
+
+                                def _make_issue_detail(
+                                    repo=tab_repo, remote=parts[0], issue_id=parts[1]
+                                ):
+                                    return IssueDetailTab(repo, remote, issue_id, self)
+
                                 self.tab_container.add_tab(
-                                    widget=detail_tab,
+                                    widget=_make_issue_detail,
                                     label=label or f"Issue #{parts[1]}",
                                     tab_type="issue_detail",
                                     repo_path=tab_repo,
                                     entity_id=entity_id,
                                     closable=closable,
                                     is_pinned=is_pinned,
+                                    activate=False,
                                 )
                         else:
                             placeholder = QWidget(self)
@@ -496,7 +538,10 @@ class MainWindow(QMainWindow):
                                 tab_type=t_type,
                                 closable=closable,
                                 is_pinned=is_pinned,
+                                activate=False,
                             )
+                    # Activate ONLY the saved active tab — this triggers
+                    # ensure_loaded() and constructs that single tab.
                     if self.tab_container.count() > 0:
                         idx = max(0, min(saved_active_idx, self.tab_container.count() - 1))
                         self.tab_container.set_current_index(idx)
@@ -655,6 +700,13 @@ class MainWindow(QMainWindow):
             self._watcher.stop()
             self._watcher = None
 
+        # --- Phase 4.2: Bump generation counter to cancel stale warmers ---
+        self._repo_switch_generation += 1
+        current_gen = self._repo_switch_generation
+
+        # --- Phase 4.2: Show loading overlay ---
+        self.tab_container.show_loading(Path(path).name)
+
         try:
             self._current_repo = engine.open_repo(path)
             self.history_tab.set_repo(self._current_repo)
@@ -686,16 +738,25 @@ class MainWindow(QMainWindow):
             if path in self._repos_state:
                 self.changes_tab.restore_repo_state(self._repos_state[path])
 
+            # --- Phase 4.2: Ensure active tab is loaded and refresh it ---
+            active_idx = self.tab_container.current_index()
+            self.tab_container.ensure_loaded(active_idx)
+
             # Trigger background reachability probing for all remotes
             try:
                 engine.probe_remotes_async(self._current_repo, db_conn=self._conn)
             except Exception as probe_err:
                 logger.debug("Remotes reachability probe skipped: %s", probe_err)
 
-            # Notify open tabs of repo change
+            # Notify LOADED open tabs of repo change (skip unloaded placeholders)
             for i in range(self.tab_container.count()):
-                w = self.tab_container.widget(i)
                 meta = self.tab_container.tab_metadata(i)
+                if meta and not meta.is_loaded:
+                    # Skip unloaded lazy tabs — they will pick up the repo on activation
+                    if meta.tab_type in ("pr_list", "issues_list", "issue_list"):
+                        self.tab_container.update_tab_repo_path(i, path)
+                    continue
+                w = self.tab_container.widget(i)
                 if meta and meta.tab_type in ("pr_list", "issues_list", "issue_list"):
                     self.tab_container.update_tab_repo_path(i, path)
                 if hasattr(w, "set_active_repository"):
@@ -703,10 +764,186 @@ class MainWindow(QMainWindow):
                 elif hasattr(w, "reload_links_and_data") and getattr(w, "repo_path", None) == path:
                     w.reload_links_and_data()
 
+            # --- Phase 4.2: Hide loading overlay ---
+            self.tab_container.hide_loading()
+
             self._schedule_auto_save()
+
+            # Phase 4.1: Open-time forge link resolution (runs before auto-fetch)
+            self._maybe_offer_forge_link(path)
+
+            # Phase 4.2: Auto-fetch after link resolution
+            self._maybe_auto_fetch(current_gen)
         except Exception as e:
+            # --- Phase 4.2: Hide loading overlay on error ---
+            self.tab_container.hide_loading()
             logger.error("Error setting up repo watcher: %s", e)
             self.status_label.setText(self.tr(f"Error opening repository: {e}"))
+
+    def _maybe_offer_forge_link(self, repo_path: str) -> None:
+        """Open-time link resolution: auto-link or offer banner for unlinked forge remotes.
+
+        Phase 4.1 step 4: called after every open/switch, BEFORE auto-fetch (Phase 4.2).
+        """
+        if hasattr(self, "changes_tab") and hasattr(self.changes_tab, "hide_forge_link_banner"):
+            self.changes_tab.hide_forge_link_banner()
+
+        conn = self._conn
+        repo_record = repo_registry.get_repo_by_path(conn, repo_path)
+        if not repo_record:
+            return
+
+        repo_id = repo_record.id
+
+        try:
+            handle = (
+                self._current_repo
+                if (self._current_repo and str(self._current_repo.path) == repo_path)
+                else engine.open_repo(repo_path)
+            )
+            remotes = engine.list_remotes(handle, db_conn=conn)
+        except Exception:
+            return
+
+        for remote in remotes:
+            # a. Parse remote URL; skip non-https or unparseable
+            parts = parse_remote_url(remote.url)
+            if not parts or parts.protocol not in ("https", "http"):
+                continue
+            if not parts.host:
+                continue
+
+            # b. Skip if already linked
+            existing_link = forge_accounts.get_link_for_remote(conn, repo_id, remote.name)
+            if existing_link:
+                continue
+
+            # c. Skip if declined
+            declined_raw = settings.get_setting(conn, "forge.link_declined")
+            declined_list: list[str] = []
+            if declined_raw:
+                try:
+                    declined_list = json.loads(declined_raw)
+                except (json.JSONDecodeError, TypeError):
+                    declined_list = []
+
+            decline_key = f"{repo_id}:{remote.name}"
+            if decline_key in declined_list:
+                continue
+
+            # d. Find candidate accounts
+            try:
+                all_accounts = forge_accounts.list_accounts(conn)
+            except Exception:
+                all_accounts = []
+            candidates = [
+                a for a in all_accounts if host_of_instance_url(a.instance_url) == parts.host
+            ]
+
+            if len(candidates) == 0:
+                continue
+            elif len(candidates) == 1:
+                # Auto-link silently
+                acc = candidates[0]
+                forge_accounts.link_repo_to_account(
+                    conn, repo_id, acc.id, remote.name, parts.owner, parts.repo
+                )
+                if self.statusBar():
+                    self.statusBar().showMessage(
+                        self.tr(f"Linked {parts.owner}/{parts.repo} to {acc.label}"),
+                        5000,
+                    )
+            else:
+                # Multiple candidates → show non-modal banner
+                owner = parts.owner
+                repo = parts.repo
+                remote_name = remote.name
+                r_id = repo_id
+
+                def _on_link_clicked(_owner=owner, _repo=repo, _rpath=repo_path):
+                    self.changes_tab.hide_forge_link_banner()
+                    dlg = LinkRepoDialog(_rpath, parent=self, conn=self._conn)
+                    dlg.links_changed.connect(lambda: self._on_repo_changed(_rpath))
+                    dlg.exec()
+
+                def _on_dismiss_clicked(_key=decline_key, _conn=conn):
+                    self.changes_tab.hide_forge_link_banner()
+                    raw = settings.get_setting(_conn, "forge.link_declined")
+                    lst: list[str] = []
+                    if raw:
+                        try:
+                            lst = json.loads(raw)
+                        except (json.JSONDecodeError, TypeError):
+                            lst = []
+                    if _key not in lst:
+                        lst.append(_key)
+                    settings.set_setting(_conn, "forge.link_declined", json.dumps(lst))
+
+                self.changes_tab.show_forge_link_banner(
+                    owner,
+                    repo,
+                    r_id,
+                    remote_name,
+                    on_link=_on_link_clicked,
+                    on_dismiss=_on_dismiss_clicked,
+                )
+                break
+
+    def _maybe_auto_fetch(self, gen: int) -> None:
+        """Phase 4.2 FR-4.7: Background auto-fetch for the default remote.
+
+        Called at the end of ``_on_repo_changed`` *after* forge link resolution.
+        Respects the ``repo.auto_fetch_on_open`` setting and the generation
+        counter to discard results from superseded switches.
+        """
+        if not self._is_auto_fetch_enabled():
+            return
+        if not self._current_repo:
+            return
+        remote = self._get_default_remote()
+        if remote is None:
+            return
+
+        run_in_background(
+            engine.fetch,
+            self._current_repo,
+            remote,
+            on_finished=lambda _res: self._on_auto_fetch_finished(remote, gen),
+            on_failed=lambda exc: self._on_auto_fetch_failed(exc, gen),
+        )
+
+    def _on_auto_fetch_finished(self, remote: str, gen: int) -> None:
+        """Callback for successful auto-fetch."""
+        if gen != self._repo_switch_generation:
+            return  # Stale switch — discard result
+        self._refresh_after_git_op()
+
+    def _on_auto_fetch_failed(self, exc: Exception, gen: int) -> None:
+        """Callback for failed auto-fetch — quiet transient status bar message only.
+
+        NEVER shows a modal dialog, error banner, or retry loop.
+        """
+        if gen != self._repo_switch_generation:
+            return  # Stale switch — discard result
+        reason = str(exc)[:80] if str(exc) else type(exc).__name__
+        self.statusBar().showMessage(self.tr(f"Auto-fetch skipped ({reason})"), 5000)
+
+    def _is_auto_fetch_enabled(self) -> bool:
+        """Returns True if auto-fetch on open/switch is enabled (default: True)."""
+        val = settings.get_setting(self._conn, "repo.auto_fetch_on_open")
+        return val != "false"
+
+    def _set_auto_fetch(self, enabled: bool) -> None:
+        """Single-source setter for the auto-fetch setting."""
+        settings.set_setting(self._conn, "repo.auto_fetch_on_open", "true" if enabled else "false")
+        self._sync_auto_fetch_action()
+
+    def _sync_auto_fetch_action(self) -> None:
+        """Synchronise the menu checkmark with the persisted setting."""
+        if hasattr(self, "act_auto_fetch"):
+            self.act_auto_fetch.blockSignals(True)
+            self.act_auto_fetch.setChecked(self._is_auto_fetch_enabled())
+            self.act_auto_fetch.blockSignals(False)
 
     def _on_new_repo(self) -> None:
         dir_path = QFileDialog.getExistingDirectory(
@@ -762,6 +999,76 @@ class MainWindow(QMainWindow):
             return
 
         target_dest = str(Path(dest_parent) / repo_name)
+
+        # --- Phase 4.1: Multi-account clone picker ---
+        pre_created_repo = False
+        chosen_account_id = None
+        url_parts = parse_remote_url(clean_url)
+
+        if url_parts and url_parts.protocol in ("https", "http") and url_parts.host:
+            try:
+                all_accounts = forge_accounts.list_accounts(self._conn)
+            except Exception:
+                all_accounts = []
+            candidates = [
+                a for a in all_accounts if host_of_instance_url(a.instance_url) == url_parts.host
+            ]
+
+            if len(candidates) >= 2:
+                # Show the FR-5.9 picker dialog for disambiguation
+                picker = QDialog(self)
+                picker.setWindowTitle(self.tr("Choose Forge Account"))
+                picker_layout = QVBoxLayout(picker)
+                picker_layout.addWidget(
+                    QLabel(
+                        self.tr(
+                            f"Multiple forge accounts can reach <b>{url_parts.host}</b>.<br>"
+                            f"Choose which account to use for cloning:<br>"
+                            f"<code>{clean_url}</code>"
+                        )
+                    )
+                )
+                account_list = QListWidget(picker)
+                account_list.setAccessibleName(self.tr("Forge accounts"))
+                for acc in candidates:
+                    item = QListWidgetItem(
+                        f"{acc.label} ({acc.provider} — {acc.username or 'no username'})"
+                    )
+                    item.setData(Qt.UserRole, acc.id)
+                    account_list.addItem(item)
+                account_list.setCurrentRow(0)
+                picker_layout.addWidget(account_list)
+                buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel, picker)
+                buttons.accepted.connect(picker.accept)
+                buttons.rejected.connect(picker.reject)
+                picker_layout.addWidget(buttons)
+
+                if picker.exec() != QDialog.Accepted:
+                    return  # User cancelled → no clone, no directory
+
+                selected = account_list.currentItem()
+                if selected:
+                    chosen_account_id = selected.data(Qt.UserRole)
+
+                if chosen_account_id is not None:
+                    # Pre-create registry row + link BEFORE starting the clone
+                    existing = repo_registry.get_repo_by_path(self._conn, target_dest)
+                    if existing:
+                        repo_id = existing.id
+                    else:
+                        repo_id = repo_registry.add_repo(self._conn, target_dest, repo_name)
+                        pre_created_repo = True
+
+                    forge_accounts.link_repo_to_account(
+                        self._conn,
+                        repo_id,
+                        chosen_account_id,
+                        "origin",
+                        url_parts.owner,
+                        url_parts.repo,
+                    )
+
+        # --- Clone worker ---
         cancel_event = threading.Event()
         busy_dlg = BusyOperationDialog(
             self.tr("Clone Repository"),
@@ -772,12 +1079,17 @@ class MainWindow(QMainWindow):
 
         def on_finished(_res):
             busy_dlg.accept()
-            repo_registry.add_repo(self._conn, target_dest, repo_name)
+            # Only add_repo if we didn't pre-create it
+            if not pre_created_repo:
+                repo_registry.add_repo(self._conn, target_dest, repo_name)
             self.changes_tab.load_repos(select_path=target_dest)
             self._on_repo_changed(target_dest)
 
         def on_failed(exc):
             busy_dlg.reject()
+            # Mandatory rollback: remove pre-created row on clone failure
+            if pre_created_repo:
+                repo_registry.remove_repo(self._conn, target_dest)
             self._route_remote_error(exc, "origin", op="clone")
 
         busy_dlg.show()
@@ -1041,6 +1353,20 @@ class MainWindow(QMainWindow):
             return
 
         if isinstance(exc, AuthFailedError):
+            if exc.stderr and "Permission denied (publickey)" in exc.stderr:
+                host_label = exc.host or "remote"
+                QMessageBox.critical(
+                    self,
+                    self.tr("SSH Authentication Failed"),
+                    self.tr(
+                        f"SSH authentication to '{host_label}' failed (Permission denied).\n\n"
+                        "Your SSH public key was not accepted by GitHub/remote host. "
+                        "Please verify that your SSH key is added to your forge account "
+                        "and loaded into ssh-agent, or use HTTPS to authenticate with your "
+                        "stored Wrench account."
+                    ),
+                )
+                return
             QMessageBox.critical(
                 self,
                 self.tr("Authentication Failed"),
@@ -1402,7 +1728,7 @@ class MainWindow(QMainWindow):
                 self.tr("Please open a repository first to link it to a forge account."),
             )
             return
-        dlg = LinkRepoDialog(target_path, self)
+        dlg = LinkRepoDialog(target_path, self, conn=self._conn)
         dlg.links_changed.connect(self._refresh_forge_tabs)
         dlg.exec()
 

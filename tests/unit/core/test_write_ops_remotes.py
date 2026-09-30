@@ -3,6 +3,7 @@
 import sys
 import threading
 import time
+from unittest.mock import patch
 
 import pytest
 
@@ -443,3 +444,22 @@ class TestRemoteOperations:
             write_ops.clone_repo(str(bare_dir), dest, cancel_event=cancel_event)
 
         assert not dest.exists()
+
+    def test_clone_repo_injects_credential_helper_args(self, tmp_path):
+        dest = tmp_path / "credential_injected_clone"
+        with patch("wrench.core.write_ops.run_git_streaming") as mock_stream:
+            mock_stream.return_value = (0, "", "")
+            with patch("shutil.move"), patch("wrench.core.write_ops.run_git"):
+                write_ops.clone_repo("https://github.com/org/repo.git", dest)
+
+            assert mock_stream.called
+            args = mock_stream.call_args[0][1]
+            assert args[:4] == [
+                "-c",
+                "credential.helper=wrench",
+                "-c",
+                "credential.useHttpPath=true",
+            ]
+            assert args[4] == "clone"
+            assert args[5] == "--progress"
+            assert args[6] == "https://github.com/org/repo.git"

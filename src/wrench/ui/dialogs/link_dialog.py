@@ -1,6 +1,7 @@
 """FR-5.6 / FR-8.7: Link Repository to Forge Account Dialog."""
 
 import logging
+import sqlite3
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
@@ -33,9 +34,15 @@ class LinkRepoDialog(QDialog):
 
     links_changed = Signal()
 
-    def __init__(self, repo_path: str, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        repo_path: str,
+        parent: QWidget | None = None,
+        conn: sqlite3.Connection | None = None,
+    ) -> None:
         super().__init__(parent)
         self.repo_path = repo_path
+        self._conn = conn
         self.setWindowTitle("Link Repository to Forge Account")
         self.resize(720, 380)
 
@@ -101,7 +108,7 @@ class LinkRepoDialog(QDialog):
         layout.addLayout(btn_bar)
 
     def reload_data(self) -> None:
-        conn = db.get_connection()
+        conn = self._conn if self._conn is not None else db.get_connection()
         try:
             repo_row = conn.execute(
                 "SELECT id FROM repos WHERE path = ?", (self.repo_path,)
@@ -148,10 +155,11 @@ class LinkRepoDialog(QDialog):
             host = ""
             owner = ""
             repo = ""
-            try:
-                host, owner, repo = parse_remote_url(remote.url)
+            parts = parse_remote_url(remote.url)
+            if parts and parts.host:
+                host, owner, repo = parts.host, parts.owner, parts.repo
                 slug_text = f"{owner}/{repo} ({host})"
-            except ValueError:
+            else:
                 slug_text = "(Non-forge / Local URL)"
 
             self._row_data[row] = (remote.name, host, owner, repo)
@@ -203,7 +211,7 @@ class LinkRepoDialog(QDialog):
         if self._repo_id is None:
             return
 
-        conn = db.get_connection()
+        conn = self._conn if self._conn is not None else db.get_connection()
         try:
             for row, (remote_name, _host, owner, repo) in self._row_data.items():
                 combo = self._combos.get(row)

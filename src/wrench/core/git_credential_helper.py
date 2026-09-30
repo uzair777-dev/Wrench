@@ -8,27 +8,16 @@ import sqlite3
 import sys
 import time
 from pathlib import Path
-from urllib.parse import urlsplit
 
 from wrench import credentials
 from wrench.core import paths
+from wrench.core.remote_urls import host_of_instance_url
 from wrench.storage import forge_accounts
 
 
 def _host_of(url: str) -> str:
     """Extract normalized host component from a URL."""
-    try:
-        parsed = urlsplit(url)
-        if parsed.hostname:
-            return parsed.hostname.lower()
-    except Exception:
-        pass
-    # Fallback for plain host:port or scp-style user@host:path
-    raw = url.replace("https://", "").replace("http://", "").replace("ssh://", "").split("/")[0]
-    host_part = raw.split(":")[0].lower()
-    if "@" in host_part:
-        host_part = host_part.split("@")[-1]
-    return host_part
+    return host_of_instance_url(url)
 
 
 def _normalize_path(path: str) -> str:

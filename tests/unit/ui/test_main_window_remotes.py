@@ -279,6 +279,21 @@ class TestMainWindowRemotes:
 
         win.close()
 
+    def test_error_routing_auth_failed_ssh(self, test_db):
+        win = MainWindow(conn=test_db)
+        exc = AuthFailedError(
+            "github.com",
+            stderr="git@github.com: Permission denied (publickey).",
+        )
+
+        with patch.object(QMessageBox, "critical") as mock_crit:
+            win._route_remote_error(exc, "origin")
+            assert mock_crit.called
+            assert "SSH Authentication Failed" in mock_crit.call_args[0][1]
+            assert "github.com" in mock_crit.call_args[0][2]
+
+        win.close()
+
     def test_error_routing_clone_aborted_clean(self, test_db):
         win = MainWindow(conn=test_db)
         exc = CloneAbortedError()

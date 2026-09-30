@@ -2741,17 +2741,17 @@ Flattened, in strict execution order, across every phase — the literal path th
 - [x] 4.14 Local git author identity alignment: `adapter.get_primary_email()` + asynchronous author alignment in `LinkRepoDialog` syncing authenticated forge `user.name` and verified `user.email` to local `.git/config`
 
 **Phase 4.1 — Credential-Aware Clone & Open-Time Link Resolution** *(prerequisites: 4.14 checked — note: "4.1" here is a PHASE; the Phase 4 step rows above keep their existing 4.1–4.14 numbering, different namespace)*
-- [ ] 4.1.1 `core/remote_urls.py` — `parse_remote_url`/`host_of_instance_url` + full parse matrix tests; `_host_of` re-homed (helper's (a)–(l) matrix stays green)
-- [ ] 4.1.2 clone injects `-c credential.helper=wrench -c credential.useHttpPath=true`; arg-shape test + existing clone tests unedited-green
-- [ ] 4.1.3 multi-account clone picker (reuse the Phase 4 picker, ≥2 candidates only); registry row + link pre-created before clone; mandatory rollback on cancel/failure
-- [ ] 4.1.4 `_maybe_offer_forge_link` on open/switch — silent auto-link on single match, one-time banner on multiple, `forge.link_declined` persistence; ordered before auto-fetch
-- [ ] 4.1.5 **CHECK**: private clone with one account unprompted; with two → picker, chosen account pushes; cancel → no clone/dir/row; two-account repo open → banner once, dismiss persists, link → PR tab populates
+- [x] 4.1.1 `core/remote_urls.py` — `parse_remote_url`/`host_of_instance_url` + full parse matrix tests; `_host_of` re-homed (helper's (a)–(l) matrix stays green)
+- [x] 4.1.2 clone injects `-c credential.helper=wrench -c credential.useHttpPath=true`; arg-shape test + existing clone tests unedited-green
+- [x] 4.1.3 multi-account clone picker (reuse the Phase 4 picker, ≥2 candidates only); registry row + link pre-created before clone; mandatory rollback on cancel/failure
+- [x] 4.1.4 `_maybe_offer_forge_link` on open/switch — silent auto-link on single match, one-time banner on multiple, `forge.link_declined` persistence; ordered before auto-fetch
+- [x] 4.1.5 **CHECK**: private clone with one account unprompted; with two → picker, chosen account pushes; cancel → no clone/dir/row; two-account repo open → banner once, dismiss persists, link → PR tab populates (automated suite green; 438 tests pass)
 
 **Phase 4.2 — Repository Switching UX** *(prerequisites: 4.1.5 checked)*
-- [ ] 4.2.1 lazy tab construction (factory + placeholder + `ensure_loaded`, session restore constructs only the active tab; existing tab tests pass unedited)
-- [ ] 4.2.2 switch pipeline: generation bumps, inline spinner (never modal), visible-tab-first refresh, background warm of other tabs
-- [ ] 4.2.3 auto-fetch on open/switch (`repo.auto_fetch_on_open`, default on) — once per event, quiet failure, existing refresh on success; Repository-menu toggle via shared `_set_auto_fetch` setter
-- [ ] 4.2.4 **CHECK**: lazy/restore/switch/auto-fetch suites green; manual QA — spinner on switch, no stale renders, fetch provably ran (ref mtime), toggle respected
+- [x] 4.2.1 lazy tab construction (factory + placeholder + `ensure_loaded`, session restore constructs only the active tab; existing tab tests pass unedited)
+- [x] 4.2.2 switch pipeline: generation bumps, inline spinner (never modal), visible-tab-first refresh, background warm of other tabs
+- [x] 4.2.3 auto-fetch on open/switch (`repo.auto_fetch_on_open`, default on) — once per event, quiet failure, existing refresh on success; Repository-menu toggle via shared `_set_auto_fetch` setter
+- [x] 4.2.4 **CHECK**: lazy/restore/switch/auto-fetch suites green; manual QA — spinner on switch, no stale renders, fetch provably ran (ref mtime), toggle respected
 
 **Phase 4.3 — Theming Consistency & Modular Settings Dialog** *(prerequisites: 4.2.4 checked)*
 - [ ] 4.3.1 Two inventories recorded in the completion notes: toggle inventory (settings keys + checkable menu actions + snapshot settings table fields, each classified with exemption rationale) and style inventory (per-file hardcoded-hex sweep)

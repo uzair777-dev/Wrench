@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from typing import Callable
 
 from PySide6.QtCore import QEvent, QMimeData, QPoint, Qt, Signal
 from PySide6.QtGui import (
@@ -27,6 +28,7 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import (
     QApplication,
     QBoxLayout,
+    QFrame,
     QHBoxLayout,
     QMenu,
     QPushButton,
@@ -37,6 +39,8 @@ from PySide6.QtWidgets import (
     QToolButton,
     QWidget,
 )
+
+from wrench.ui.widgets.loading_overlay import TabLoadingOverlay
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +55,8 @@ class TabMetadata:
     entity_id: str | None = None
     closable: bool = True
     is_pinned: bool = False
+    factory: Callable[[], QWidget] | None = None
+    is_loaded: bool = True
 
 
 class TabButton(QWidget):
@@ -442,6 +448,7 @@ class TabContainer(QWidget):
         self._strip_layout.setSpacing(2)
 
         self._stack = QStackedWidget(self)
+        self._loading_overlay = TabLoadingOverlay(self._stack)
         self._main_layout.addWidget(self._strip_widget)
         self._main_layout.addWidget(self._stack, 1)
 
@@ -613,7 +620,7 @@ class TabContainer(QWidget):
 
     def add_tab(
         self,
-        widget: QWidget,
+        widget: QWidget | Callable[[], QWidget],
         label: str,
         icon: QIcon | None = None,
         tab_type: str = "custom",
@@ -621,17 +628,41 @@ class TabContainer(QWidget):
         entity_id: str | None = None,
         closable: bool = True,
         is_pinned: bool = False,
+        activate: bool = True,
     ) -> int:
-        """Adds a new tab or switches to an existing one if already open (deduplication rule)."""
+        """Adds a new tab or switches to an existing one if already open (deduplication rule).
+
+        ``widget`` may be either a ready QWidget *or* a zero-argument callable
+        (factory) that returns a QWidget.  When a factory is supplied the tab
+        starts in the *unloaded* state with a lightweight QFrame placeholder;
+        the real widget is constructed lazily on first activation via
+        ``ensure_loaded()``.
+
+        When ``activate`` is False the tab is appended without switching to it
+        and without invoking the factory.
+        """
         # Only deduplicate if tab_type is a specific category/detail type or has an entity_id
         if tab_type != "custom" or entity_id is not None or repo_path != "":
             existing_idx = self.find_tab(tab_type, repo_path, entity_id)
             if existing_idx is not None:
-                self.set_current_index(existing_idx)
+                if activate:
+                    self.set_current_index(existing_idx)
                 return existing_idx
 
+        # Determine whether widget is a factory or a ready widget
+        if callable(widget) and not isinstance(widget, QWidget):
+            factory = widget
+            placeholder = QFrame()
+            placeholder.setAccessibleName("not loaded")
+            actual_widget = placeholder
+            is_loaded = False
+        else:
+            factory = None
+            actual_widget = widget
+            is_loaded = True
+
         meta = TabMetadata(
-            widget=widget,
+            widget=actual_widget,
             label=label,
             icon=icon,
             tab_type=tab_type,
@@ -639,13 +670,18 @@ class TabContainer(QWidget):
             entity_id=entity_id,
             closable=closable and not is_pinned,
             is_pinned=is_pinned,
+            factory=factory,
+            is_loaded=is_loaded,
         )
         self._tabs.append(meta)
-        self._stack.addWidget(widget)
+        self._stack.addWidget(actual_widget)
 
         self._rebuild_strip()
         idx = len(self._tabs) - 1
-        self.set_current_index(idx)
+
+        if activate:
+            self.set_current_index(idx)
+
         self.tabs_mutated.emit()
         return idx
 
@@ -749,10 +785,64 @@ class TabContainer(QWidget):
     def set_current_index(self, index: int) -> None:
         if 0 <= index < len(self._tabs):
             self._current_index = index
+            self.ensure_loaded(index)
             self._stack.setCurrentWidget(self._tabs[index].widget)
             for i, btn in enumerate(self._tab_buttons):
                 btn.set_active(i == index)
             self.current_changed.emit(index)
+
+    def ensure_loaded(self, index: int) -> QWidget | None:
+        """Materialises a lazy tab's real widget on demand.
+
+        If the tab at *index* is already loaded, returns its widget immediately.
+        If it holds a factory closure, the factory is invoked exactly once, the
+        placeholder QFrame is swapped out for the real widget in the stack, and
+        the factory reference is cleared.
+
+        Returns the (now-loaded) widget, or ``None`` if the index is invalid.
+        """
+        if not (0 <= index < len(self._tabs)):
+            return None
+        meta = self._tabs[index]
+        if meta.is_loaded:
+            return meta.widget
+
+        if meta.factory is None:
+            return meta.widget
+
+        # Invoke the factory exactly once
+        real_widget = meta.factory()
+
+        # Swap placeholder out of the stack
+        old_placeholder = meta.widget
+        stack_index = self._stack.indexOf(old_placeholder)
+        self._stack.removeWidget(old_placeholder)
+        self._stack.insertWidget(stack_index, real_widget)
+        old_placeholder.deleteLater()
+
+        # Update metadata
+        meta.widget = real_widget
+        meta.is_loaded = True
+        meta.factory = None
+
+        # If this tab is the currently active tab, show the real widget
+        if self._current_index == index:
+            self._stack.setCurrentWidget(real_widget)
+
+        return real_widget
+
+    def show_loading(self, repo_name: str) -> None:
+        """Show an inline loading overlay over the tab content area."""
+        self._loading_overlay.show_loading(repo_name)
+
+    def hide_loading(self) -> None:
+        """Hide the loading overlay."""
+        self._loading_overlay.hide_loading()
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        if hasattr(self, "_loading_overlay") and self._loading_overlay.isVisible():
+            self._loading_overlay.setGeometry(self._stack.geometry())
 
     def set_tab_label(self, index: int, label: str) -> None:
         if 0 <= index < len(self._tabs):

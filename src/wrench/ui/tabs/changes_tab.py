@@ -15,6 +15,7 @@ from __future__ import annotations
 import logging
 import random
 import sqlite3
+from collections.abc import Callable
 from pathlib import Path
 
 from PySide6.QtCore import QByteArray, QEvent, QPoint, Qt, Signal
@@ -265,6 +266,25 @@ class ChangesTab(QWidget):
         self.conflict_banner.setVisible(False)
         self._update_conflict_banner_theme()
         left_layout.addWidget(self.conflict_banner)
+
+        # Forge link banner (hidden by default) — Phase 4.1
+        self.forge_link_banner = QFrame(self)
+        forge_link_layout = QHBoxLayout(self.forge_link_banner)
+        forge_link_layout.setContentsMargins(6, 4, 6, 4)
+        self.forge_link_label = QLabel("", self.forge_link_banner)
+        self.forge_link_label.setWordWrap(True)
+        forge_link_layout.addWidget(self.forge_link_label, 1)
+        self.forge_link_btn = QPushButton(self.tr("Link account…"), self.forge_link_banner)
+        forge_link_layout.addWidget(self.forge_link_btn)
+        self.forge_link_dismiss_btn = QPushButton(self.tr("Dismiss"), self.forge_link_banner)
+        forge_link_layout.addWidget(self.forge_link_dismiss_btn)
+        self._on_forge_link_cb: Callable | None = None
+        self._on_forge_dismiss_cb: Callable | None = None
+        self.forge_link_btn.clicked.connect(self._handle_forge_link_clicked)
+        self.forge_link_dismiss_btn.clicked.connect(self._handle_forge_dismiss_clicked)
+        self.forge_link_banner.setVisible(False)
+        self._update_forge_link_banner_theme()
+        left_layout.addWidget(self.forge_link_banner)
 
         # Separator
         line = QFrame(self)
@@ -650,6 +670,52 @@ class ChangesTab(QWidget):
         self.conflict_banner.setStyleSheet(f"QFrame {{ {styles['frame']} }}")
         self.conflict_label.setStyleSheet(styles["label"])
 
+    def _update_forge_link_banner_theme(self) -> None:
+        """Updates the forge link banner styling according to current theme."""
+        if not hasattr(self, "forge_link_banner") or not hasattr(self, "forge_link_label"):
+            return
+        is_dark = is_dark_theme(self)
+        if is_dark:
+            self.forge_link_banner.setStyleSheet(
+                "QFrame { background-color: rgba(59, 130, 246, 0.15); "
+                "border: 1px solid rgba(59, 130, 246, 0.4); border-radius: 4px; }"
+            )
+            self.forge_link_label.setStyleSheet("color: #93c5fd; font-size: 11px;")
+        else:
+            self.forge_link_banner.setStyleSheet(
+                "QFrame { background-color: rgba(59, 130, 246, 0.1); "
+                "border: 1px solid rgba(59, 130, 246, 0.3); border-radius: 4px; }"
+            )
+            self.forge_link_label.setStyleSheet("color: #1e40af; font-size: 11px;")
+
+    def _handle_forge_link_clicked(self) -> None:
+        if callable(self._on_forge_link_cb):
+            self._on_forge_link_cb()
+
+    def _handle_forge_dismiss_clicked(self) -> None:
+        if callable(self._on_forge_dismiss_cb):
+            self._on_forge_dismiss_cb()
+
+    def show_forge_link_banner(
+        self,
+        owner: str,
+        repo: str,
+        repo_id: int,
+        remote_name: str,
+        on_link: Callable,
+        on_dismiss: Callable,
+    ) -> None:
+        """Show a non-modal banner offering forge account linking."""
+        self.forge_link_label.setText(
+            self.tr(f"Multiple forge accounts can reach {owner}/{repo} — ")
+        )
+        self._on_forge_link_cb = on_link
+        self._on_forge_dismiss_cb = on_dismiss
+        self.forge_link_banner.setVisible(True)
+
+    def hide_forge_link_banner(self) -> None:
+        self.forge_link_banner.setVisible(False)
+
     def changeEvent(self, event: QEvent) -> None:
         super().changeEvent(event)
         if getattr(self, "_refreshing_theme", False):
@@ -671,6 +737,7 @@ class ChangesTab(QWidget):
         self._update_repo_combo_theme()
         self._update_commit_btn_theme()
         self._update_conflict_banner_theme()
+        self._update_forge_link_banner_theme()
         if hasattr(self, "branch_switcher"):
             self.branch_switcher._update_display()
         if hasattr(self, "files_list"):

@@ -726,7 +726,16 @@ def clone_repo(
     try:
         code, stdout, stderr = run_git_streaming(
             d.parent,
-            ["clone", "--progress", url, str(temp_dir.name)],
+            [
+                "-c",
+                "credential.helper=wrench",
+                "-c",
+                "credential.useHttpPath=true",
+                "clone",
+                "--progress",
+                url,
+                str(temp_dir.name),
+            ],
             timeout=timeout,
             on_stderr_line=on_line,
             cancel_event=cancel_event,

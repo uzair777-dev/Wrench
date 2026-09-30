@@ -3,6 +3,13 @@
 **Status:** Draft  
 **Purpose:** Detailed UI specification for Wrench's desktop interface. Written to be executable by a lower-tier model — every layout, widget, interaction, and edge case is spelled out explicitly.
 
+**Companion documents — this spec is only one of them; sections here point outward and are pointed at:**
+- `srs.md` — the source of every `(SRS FR-x.y)` tag in this document's section headings; priorities (M/S/D) and the NFRs that bind this UI live there.
+- `implementation-plan.md` — the phases that build these surfaces (§5; `Phase X` / `Phase X.Y` names in this document mean it, and its §12 checklist owns execution order). Surfaces here are created/verified by those steps.
+- `v2-implementation-plan.md` — anything the SRS marks **D (v2)**; never start it early.
+- `../ARCHITECTURE.md` (repo root) — the as-built UI description once phases land; on disagreement, the code wins and the plans get reconciled.
+References by section number (`§x.y`) between these documents are normative links: open the referenced section rather than working from the one-line summary.
+
 ---
 
 ## 0. Reading Guide
@@ -1128,7 +1135,9 @@ Opened from **Edit → Preferences…**. One unified modal dialog hosting every 
 | Structure | left `QListWidget` module switcher (each row `setAccessibleName`d) → right `QStackedWidget` of `SettingsPage` subclasses (`title()`/`build()`/`load()`; instant-apply — controls write on change, no Apply button) |
 | Sync contract | pages and View/Repository menu actions share ONE MainWindow setter per toggle (e.g. `_set_theme`, `_set_tab_orientation`, `_set_auto_fetch`); pages never write `app_settings` directly; `showEvent` re-runs every page's `load()` |
 | v1 module set | Appearance (theme; Phase 4.4 adds the gravatar opt-in here), Tabs (orientation), Repositories (auto-fetch on open), Snapshots (active-repo trigger/retention editor via `update_snapshot_settings` + `restart_snapshot_timer()`), Forge (summary + button opening AccountsDialog), Advanced (overflow; hidden when empty) |
-| Hard rule | mirrors existing toggles and MOVES nothing (menu items all keep working); any toggle found in code but unreachable in the dialog is a phase-blocking omission |
+| Hard rule | mirrors existing toggles and MOVES nothing (menu items all keep working); any toggle found in code but unreachable in the dialog is a phase-blocking omission — **Advanced is the only permitted concealment**, and only with a "why it's advanced" tooltip |
+| Theme modes | exactly three — System / Pastel Light / Pastel Dark — rendered as the Appearance-page radio + a live token preview strip; token/luminance/mode-resolution rules live in implementation-plan §5 Phase 4.3 |
+| Coverage rule | **total configurability** — no assumed preferences: every user-adjustable option reachable on a page; exemptions need a written rationale in the phase's completion notes |
 
 ### 6.12 Avatars (SRS FR-5.14)
 
@@ -1142,6 +1151,142 @@ Avatar rendering rules app-wide: **initials tile first, fetched image swaps in l
 | Commit-graph rows | **deliberately none** — density/perf cut for v1, documented so nobody adds it casually |
 
 A11y: avatar controls expose `accessibleName` = the person's display name/username, never "image".
+
+### 6.13 Activity Log, Progress & Personality (SRS FR-14.1–14.3)
+
+**Voice & tone charter (applies to every personality surface, everywhere in the app):** dry, warm, competent, self-aware — Wrench jokes *with* the user, never *at* them. The rules are absolute: (1) humor is garnish — it never carries information, and no user-facing fact may depend on reading a joke; (2) waiting/success/empty-state surfaces only — errors, conflicts, destructive confirmations, auth failures, and anything financial/legal stay plain and actionable; (3) one line, muted, secondary to real status text; (4) niche references are seasoning for those who get them and harmless noise for those who don't — never gate comprehension on the reference; (5) screen readers get semantic `accessibleName`s — the joke is visual, the a11y name stays factual; (6) the `ui.humor_lines` toggle disables everything below instantly; (7) translators may localize or substitute jokes freely.
+
+**The activity dock** (Phase 4.6; `ui/widgets/activity_log.py`): a one-line strip docked immediately above the status bar — latest event as `icon + elided text + timestamp`; click or `Ctrl+`` expands an inline ~8-line monospace scrollback (newest at bottom; hover pauses auto-scroll; Copy on the context menu). In-memory only (`deque(maxlen=200)`); expanded/collapsed is session-transient, never persisted. Level colors come from theme tokens (FR-13.2) and are covered by the contrast test.
+
+```
+│ ⏱ 14:02  Receiving objects: 47% (9,204/19,550) — pull origin main        [▸] │
+└ (expanded) ─────────────────────────────────────────────────────────────┐
+│ 14:00  started pull origin/main                                          │
+│ 14:00  counted objects                                                   │
+│ 14:02  receiving objects 47%                                             │
+│ 14:02  it's not stuck — it's doing its best                              │
+└──────────────────────────────────────────────────────────────────────────┘
+```
+
+**Progress policy (authoritative):** determinate bars only where git emits a real numerator (clone/push/pull/fetch %; `Rebasing (n/m)`; LFS "N of M files"; countable submodule steps). Everywhere else: indeterminate spinner + real stage text + optional waiting line. **Estimated/faked progress is banned.** Determinate variants show the real stage text in the primary line — a waiting line may appear *under* it, muted, never replacing it.
+
+**Humor rules (hard):** waiting/success surfaces only — never on errors, rejections, conflicts, data-loss, or anything the user did wrong. One muted line max. One fixed cadence (appears after ~8 s, rotates ~4 s). Toggleable via the Appearance page (`ui.humor_lines`, default on, deliberate). All strings `tr()`-wrapped; translators are free to substitute a locally-known joke rather than translate the reference.
+
+**Banks (`ui/quotes.py` — transplant verbatim; extend tone-matched later):**
+
+```
+CLEAN_STATE_QUOTES = [
+    tr("Clean tree. A rare and beautiful biome."),
+    tr("Nothing to commit. Working as intended — allegedly."),
+    tr("Zero changes. Even the watcher is calm."),
+    tr("The working tree is clean. So say we all."),
+    tr("No changes. The cake, today, is real."),
+    tr("Clean. Shiny. Not a thing in the wire."),
+    tr("git status: this is fine. (Genuinely, this time.)"),
+    tr("A clean tree on a Friday. Freeze it in amber."),
+    tr("Nothing staged. Nothing feared. Winter is not coming."),
+    tr("It's a UNIX system — and it's tidy."),
+]
+
+EMPTY_REPO_LINES = [   # zero repos registered at all
+    tr("Once upon a time, a developer opened a git client…"),
+    tr("No repositories yet. The canvas is blank and the DAG is unborn."),
+    tr("Nothing here. Somewhere, an `init` is waiting."),
+    tr("Empty. The graph of your future commits has no edges — yet."),
+]
+
+EMPTY_PR_LINES = [
+    tr("No open PRs. Enjoy the silence."),
+    tr("Zero pull requests. The timeline is unmeddled-with."),
+    tr("Nothing to review. The reviewers rest."),
+]
+
+EMPTY_ISSUES_LINES = [
+    tr("No issues. Suspicious."),
+    tr("Zero issues. The void is well-behaved today."),
+    tr("Nothing broken reported. (The tracker doubts this too.)"),
+]
+
+WAITING_LINES = [
+    tr("Reticulating splines…"),
+    tr("Do not panic if it looks stuck."),
+    tr("It's not stuck — it's doing its best."),
+    tr("Hold on to your butts."),
+    tr("I'm givin' her all she's got, Captain!"),
+    tr("Wibbly-wobbly, objecty-wojecty…"),
+    tr("Counting objects. The objects remember everything."),
+    tr("As you wish."),
+    tr("Negotiating with the server. Witness me."),
+    tr("Compressing objects — the luggage folds itself."),
+    tr("One does not simply walk this DAG."),
+    tr("Resolving deltas. The deltas never asked for this."),
+    tr("It is dangerous to go alone — wait for the packfile."),
+]
+
+SUCCESS_LINES = [
+    tr("Done. It works on my machine and yours."),
+    tr("Nailed it. Nobody saw anything."),
+    tr("Shipped* (*locally)."),
+    tr("Checkpoint secured. The timeline is preserved."),
+    tr("Flawless. Add it to the ballad."),
+    tr("Redeemed."),            # only ever after a recovered-from failure
+    tr("Merged. The timeline holds."),
+    tr("Stashed. Into the drawer it goes."),
+]
+
+IDLE_LINES = [           # one-shot quip; see the idle rule below
+    tr("Still here. The snapshots kept watch."),
+    tr("Idle detected. Your uncommitted changes are being admired from a distance."),
+    tr("Thirty quiet minutes. The working tree meditates."),
+]
+
+MILESTONE_LINES = {    # one-shot toasts, fire-once-ever — see milestone rule below
+    "first_pr_created": tr("Your first PR from here. Frame it."),
+    "snapshot_100th":   tr("Snapshot 100. Paranoia: validated."),
+    "push_after_recovery": tr("Redeemed."),
+]
+```
+
+**Idle & milestone rules (behavior, not garnish):** the idle quip fires once per stretch of inactivity — a single-shot 30-minute timer reset by any user input or watcher event, posts one `IDLE_LINES` entry to the activity dock only if a dirty tree exists, then disarms until activity resumes. Milestones fire **once, ever, per key** — fired keys persist in `app_settings` key `ui.milestones_seen` (JSON list) so restarts don't re-celebrate; detection hooks live at the existing success call sites (`create_pull_request` completion for `first_pr_created`, `take_snapshot` count check for `snapshot_100th`, push-after-resumed-failure for `push_after_recovery`). Both are humor-toggle-gated like everything else here; both post through the activity dock, never as dialogs or toasts-over-content.
+
+### 6.14 About Dialog (SRS FR-9.3)
+
+Help ▸ About. The one surface where personality is the content itself; everything legal still gets top billing.
+
+```
+┌────────────── About Wrench ──────────────[x]─┐
+│         🔧  Wrench  v1.0.0                    │
+│   "A native Git client for people who read   │
+│    the log before they blame the merge."      │
+│                                              │
+│  [GitHub] [Report a bug] [License & Notices] │
+│                                              │
+│  AGPL-3.0-or-later · Built with Qt/pygit2    │
+│  © the Wrench contributors                   │
+│                        [ About Qt ] [ Close ] │
+└──────────────────────────────────────────────┘
+```
+
+| Property | Detail |
+|---|---|
+| Widget | `QDialog`, modal, Escape closes |
+| Version | `importlib.metadata.version("wrench")` — never a hardcoded string |
+| Links | QPushButton row → `QDesktopServices.openUrl`: GitHub repo, prefilled "Report a bug" (FR-9.1), docs |
+| License pane | Scrollable read-only text: bundled AGPL-3.0 LICENSE + third-party notices for Qt/PySide6 (LGPL), pygit2/libgit2, httpx, watchdog, secretstorage, platformdirs — the licensing NFR's in-app discharge point |
+| Personality | one rotating line from `ABOUT_WISDOM` (ui/quotes.py) under the pitch; obeys `ui.humor_lines`; §6.13's charter applies |
+| Extra | "About Qt" standard button; full keyboard focus chain; all strings `tr()` |
+
+`ABOUT_WISDOM` (lives in `ui/quotes.py` with the other banks; transplant verbatim):
+
+```
+ABOUT_WISDOM = [
+    tr("Forty-two commits deep and still finding truth."),
+    tr("Powered by Qt, pygit2, and an unwise amount of `git reflog`."),
+    tr("Reads your DAG. Judges nothing."),
+    tr("All checkpoints accounted for."),
+    tr("Never force-push on a Friday. (You're safe — lease is on.)"),
+]
+```
 
 ---
 
@@ -1172,6 +1317,9 @@ Summary of new and modified files for implementation:
 | `src/wrench/ui/dialogs/discover_repos_dialog.py` | **NEW** | Repository Discovery dialog (§6.10, FR-1.12) |
 | `src/wrench/ui/dialogs/settings_dialog.py` | **NEW** | Modular Settings dialog (§6.11, FR-13.1) |
 | `src/wrench/ui/widgets/avatar.py` | **NEW** | Async avatar loader + disk cache (§6.12, FR-5.14) |
+| `src/wrench/ui/widgets/activity_log.py` | **NEW** | Activity feed widget + bounded history buffer (§6.13, FR-14.2) |
+| `src/wrench/ui/quotes.py` | **NEW** | Quote/humor banks as translatable data (§6.13, FR-14.3) |
+| `src/wrench/ui/dialogs/about_dialog.py` | **NEW** | About dialog with license/notices + links (§6.14, FR-9.3) |
 | `src/wrench/ui/snapshots_panel/__init__.py` | **NEW** | Snapshot browse/restore panel (§6.4, FR-10.6) |
 | `src/wrench/ui/widgets/branch_switcher.py` | **NEW** | Branch indicator/switcher widget (§3.2b, FR-1.6) |
 | `src/wrench/ui/diff_view/diff_widget.py` | **KEEP** | Reused as-is in Changes tab, History detail panel, and PR detail tab |
@@ -1184,6 +1332,8 @@ Summary of new and modified files for implementation:
 
 > [!IMPORTANT]
 > Each step must be completed and visually verified before moving to the next. Do not skip ahead.
+>
+> Cross-reference convention: `Phase X` / `Phase X.Y` names refer to `implementation-plan.md` §5 (execution order lives in its §12); `FR-x.y` refers to `srs.md` §3; `§Y.Z` without a document prefix refers to sections of this document.
 
 1. **Menu bar + window chrome** — Wire up `QMenuBar` with all items from §1.2. Wire quit guards and geometry persistence.
 2. **Tab bar widget** — Build the `TabBar` with vertical/horizontal toggle, add button, close button, reordering, and hybrid model support (category singletons + dynamic detail tabs + per-repo dedup).
@@ -1208,5 +1358,7 @@ Summary of new and modified files for implementation:
 21. **Repository Discovery dialog** (§6.10, Phase 4.5) — background scan with live counter, checkable results list, idempotent accept.
 22. **Application Settings dialog** (§6.11, Phase 4.3) — module list + stacked pages, instant-apply, shared MainWindow setters; add the Avatars opt-in to Appearance when Phase 4.4 lands.
 23. **Avatars** (§6.12, Phase 4.4) — initials-first swap-in loader in PR/issue rows, detail headers, commit-box account button; gravatar path behind its opt-in toggle.
+24. **Operation feedback & delight** (§6.13, Phase 4.6) — progress-type matrix in the git-progress parser, activity dock above the status bar, waiting/success line rotation + clean-state quote bank behind the `ui.humor_lines` toggle.
+25. **About dialog** (§6.14, Phase 4.6) — version/links/license-and-notices pane, About Qt, rotating wisdom line.
 
 

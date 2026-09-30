@@ -3,6 +3,13 @@
 **Version:** 0.1 (draft)
 **Status:** Living document, updated across multiple requirements/design sessions. The large majority of items are ✅ Confirmed (see §7's Assumptions & Decisions Log for the full history of what changed and why). Items with no committed direction yet are listed separately in §6.1, rather than scattered through the document as inline ⚠️ markers.
 
+**Companion documents — the SRS is the what/why; it does not stand alone:**
+- `implementation-plan.md` — the how: every FR row below is implemented by exactly one phase in its §5 (traceable through §12's master checklist). When that plan cites "FR-x.y" or "SRS §z", it means this file — and conversely, a row here is only *scheduled* once a phase there owns it.
+- `ui-planning.md` — the UI shape of many FRs: per-surface layouts and behavior in its §6.x. A requirement here does not fix pixels; that document does.
+- `v2-implementation-plan.md` — the committed home of every **D (v2)** row (phases VP-1..VP-15).
+- `../ARCHITECTURE.md` (repo root) — the as-built description of what exists today; when it and this SRS disagree, the code wins and the SRS gets reconciled (the completed `phase-*.md` summaries are immutable history).
+Documents reference each other by section number (`§x.y`) — those references are normative links: open the referenced section when tracing anything.
+
 ---
 
 ## 1. Introduction
@@ -83,6 +90,8 @@ Wrench is a new, independent product — not a fork of an existing client. It co
 ## 3. Functional Requirements
 
 Priority key: **M** = Must have (v1), **S** = Should have (v1), **D** = Deferred (v2+)
+
+*Traceability for every §3 row: v1 (M/S) rows are implemented by exactly one phase in `implementation-plan.md` §5 (traceable there via §12's master checklist); `**D (v2)**` rows are scheduled in `v2-implementation-plan.md`; UI-shaping details for many rows live in `ui-planning.md` §6.x.*
 
 ### 3.1 Local Repository Management
 | ID | Requirement | Priority |
@@ -189,6 +198,7 @@ See §7.1 for the roadmap of additional backends this architecture is designed t
 |---|---|---|
 | FR-9.1 | In-app "Report a bug" action: opens a pre-filled GitHub Issues page (app version, OS/desktop environment) in the default browser; no automatic submission — user reviews and submits manually | M |
 | FR-9.2 | Local, rotating log file at a known, user-discoverable path, with enough context on errors to be useful when attached to a bug report | M |
+| FR-9.3 | About dialog: app name + real installed version, project GitHub and issue-report links (FR-9.1), license text and third-party notices for every bundled dependency (the licensing-compliance NFR's in-app discharge point), credits, and personality (a rotating wisdom line) | M |
 
 ### 3.11 Local Rolling Snapshots (Safety Net)
 | ID | Requirement | Priority |
@@ -222,7 +232,15 @@ See §7.1 for the roadmap of additional backends this architecture is designed t
 ### 3.14 Settings & Preferences
 | ID | Requirement | Priority |
 |---|---|---|
-| FR-13.1 | One unified settings dialog with per-module pages (Appearance, Tabs, Repositories, Snapshots, Forge, …) that mirrors every user-facing toggle in the app — instant-apply, and it never removes or relocates the existing menu-surface controls it mirrors | S |
+| FR-13.1 | One unified settings dialog with per-module pages (Appearance, Tabs, Repositories, Snapshots, Forge, Advanced, …) — **total configurability**: every user-adjustable preference is reachable from it, with no "assumed preferences" (anything the user can reasonably want changed has a control; rare/expert options live on the Advanced page as the only permitted concealment, each with a reasoned tooltip). Instant-apply; mirrors, never removes/relocates, existing menu-surface controls | S |
+| FR-13.2 | Theme consistency across the (exactly three) shipped modes — System default, Pastel Light, Pastel Dark: every surface renders legibly (text contrast ≥ 4.5:1, decorative ≥ 3:1 by relative-luminance) and coherently, with **zero hardcoded colors outside the theme module** (lint-level gate) and mode-independent behavior (tokens resolve by effective luminance, not mode name) | S |
+
+### 3.15 Operation Feedback & Delight
+| ID | Requirement | Priority |
+|---|---|---|
+| FR-14.1 | Every long-running operation shows honest progress: a determinate bar only when git reports a real fraction (clone/push/pull/fetch percentages, `Rebasing (n/m)`, LFS "N of M files", countable submodule steps); everything else gets an indeterminate spinner plus the real stage text — fake or estimated progress bars never appear | S |
+| FR-14.2 | A one-line live activity feed docked above the status bar, expandable to a bounded (~200-entry) scrollback of recent operations (start/finish/typed failure); in-memory only, keyboard-toggleable, never persists | S |
+| FR-14.3 | Rotating dry/niche-reference waiting lines plus expanded clean-state/empty-state quote banks and one-shot idle & milestone quips — garnish only (muted, secondary to the real status text), never on failure or data-loss surfaces, toggleable in settings (default on is a deliberate personality default, recorded), `tr()`-wrapped with translator freedom to re-localize puns | S |
 
 ---
 

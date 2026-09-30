@@ -5,11 +5,18 @@
 
 **Note on detail level:** This revision is written to be executable step-by-step, including concrete file paths, function/class signatures, database schemas, and config file skeletons — so each task can be implemented without needing to infer missing design decisions. Where a decision was previously implicit, it has been made explicit below.
 
+**Companion documents — this plan is only one of them; an executor who reads only this file will miss requirements it must honor:**
+- `srs.md` — requirements and priorities (FR-x.y with M/S/D), non-functional requirements, the open-decision log (§6.1) and decisions log (§7). Any step citing "FR-x.y" or "SRS §z" is referring here; treat those citations as part of the step's spec, not optional context.
+- `ui-planning.md` — authoritative UI specs: §6.x per-surface layouts and behavior, §7 file/component mapping, §8 UI build order, the Voice & Tone charter (§6.13). Any step citing "ui-planning §x.y" requires opening that section before writing the widget.
+- `v2-implementation-plan.md` — everything post-v1 (phases VP-1..VP-15). Never start it early; §5 Phase 8 below is only a stub pointing there.
+- `../ARCHITECTURE.md` (repo root) — the as-built description of what currently exists in code, updated alongside code changes. When this plan and the tree disagree, the tree wins and this plan gets reconciled (§0.5 rule 8; the completed `phase-*.md` files are immutable history).
+- Full mapping incl. when each file gets edited: §0.6 below.
+
 ---
 
 ## 0. How to Execute This Plan (read this first)
 
-This section exists so an implementer — including a less capable model — can execute the rest of this document mechanically, without having to make judgment calls this document should have made instead.
+This section exists so an implementer — including a less capable model — can execute the rest of this document mechanically, without having to make judgment calls this document should have made instead. **References like `§4.3`, `SRS §3.4`, or `ui-planning §6.11` are normative pointers into the companion documents listed above — open the referenced section in that file and treat it as part of the step's spec before writing any code.**
 
 ### 0.1 Non-negotiable rules
 1. **Follow phase order strictly.** Do not start Phase N+1 until Phase N's acceptance check has actually been run and has actually passed — not "should pass." If a check fails, stop and fix it before writing any code for the next phase.
@@ -220,6 +227,7 @@ wrench/
 │   │   │                            #   QThread/event-loop), used by every
 │   │   │                            #   UI call site that invokes a long-running core.engine function
 │   │   ├── sidebar/                # [DEPRECATED by Phase 1.5] replaced by repo dropdown in changes_tab
+│   │   ├── quotes.py               # Phase 4.6: clean-state quotes + waiting/success humor banks (§5 Phase 4.6, ui-planning §6.13)
 │   │   ├── tabs/                   # Phase 1.5: hybrid tab navigation shell (singletons + dynamic detail tabs)
 │   │   │   ├── __init__.py
 │   │   │   ├── tab_bar.py          # custom TabBar widget (vertical/horizontal, closable, dedup, +)
@@ -232,6 +240,7 @@ wrench/
 │   │   ├── widgets/                # Reusable UI widgets
 │   │   │   ├── __init__.py
 │   │   │   ├── branch_switcher.py  # branch indicator/switcher dropdown (FR-1.6, ui-planning §3.2b)
+│   │   │   ├── activity_log.py     # Phase 4.6: live one-line activity feed + expandable history dock (§6.13)
 │   │   │   └── avatar.py           # Phase 4.4: async avatar loader + disk cache (§5 Phase 4.4, ui-planning §6.12)
 │   │   ├── dialogs/                # Dedicated dialogs
 │   │   │   ├── __init__.py
@@ -244,6 +253,7 @@ wrench/
 │   │   │   ├── accounts_dialog.py  # Phase 4: forge accounts manager + device flow + TLS group
 │   │   │   ├── link_dialog.py      # Phase 4: repo↔account link flow + identity sync
 │   │   │   ├── push_recovery_dialogs.py # Phase 4: GH001/GH006/GH007/GH008/403 recovery dialogs
+│   │   │   ├── about_dialog.py     # Phase 4.6: About + license/notices + links (§5 Phase 4.6 step 5, ui-planning §6.14)
 │   │   │   ├── settings_dialog.py  # Phase 4.3: modular settings dialog (§5 Phase 4.3, ui-planning §6.11)
 │   │   │   ├── submodule_dialog.py # FR-6.2: add-submodule dialog (§5 Phase 5 step 3)
 │   │   │   └── discover_repos_dialog.py # FR-1.12: multi-repo discovery results (§5 Phase 4.5, ui-planning §6.10)
@@ -1512,7 +1522,7 @@ Each phase should be independently shippable/testable — don't let phases bleed
 ### Phase 1.5 — UI Shell Overhaul
 **Prerequisites:** Phase 1's acceptance check passed. The core engine, storage, watcher, and diff view all work. This phase restructures the UI *around* those existing components — it does not rewrite any core logic.
 
-**Design reference:** All layout, widget specs, interactions, and edge cases for this phase are defined in [`ui-planning.md`](file:///home/uzair/Projects/wrench/dev/planning/ui-planning.md). This section specifies only the **implementation steps and file-level changes** — for visual layouts, exact widget properties, and behavioral edge cases, cross-reference the corresponding `ui-planning.md` section cited in each step.
+**Design reference:** All layout, widget specs, interactions, and edge cases for this phase are defined in [`ui-planning.md`](ui-planning.md). This section specifies only the **implementation steps and file-level changes** — for visual layouts, exact widget properties, and behavioral edge cases, cross-reference the corresponding `ui-planning.md` section cited in each step.
 
 **Scope boundary:** This phase delivers the tab-system shell, the fully redesigned Changes tab, and a **skeleton History tab** (container + empty state + placeholder for the commit graph widget). The full commit graph rendering, lane-assignment algorithm, and search/filter implementation remain in Phase 2 — this phase creates the slot they plug into.
 
@@ -1979,24 +1989,6 @@ Each phase should be independently shippable/testable — don't let phases bleed
    - Every inventory row maps to exactly one page control or one exemption note — the settings page and the menu-surface controls stay mirrors via shared MainWindow setters; a page never writes a key/blob directly.
 5. Tests & **acceptance check**: per-page round-trips; menu↔dialog state agreement both directions (theme AND orientation AND auto-fetch); snapshot page spy-test on `restart_snapshot_timer`; the two test-gates from steps 1–2 green; dialog open with no repo → Snapshot page disabled-cleanly; app restart → persisted. **Manual acceptance (all mandatory):** the full three-theme matrix from step 2 recorded PASS on every row; the settings inventory table reproduced in `dev/planning/phase-4.3.md` with pages/exemptions; keyboard-only walkthrough of every page; and a retro-check — flip through every theme while the Accounts and Merge dialogs are open (the two most style-dense surfaces) and observe zero illegible text.
 
-**Executor guardrails (phase-specific §0.5 enforcement):**
-- READ FIRST: Step 0's settings inventory output; `storage/settings.py`'s actual API (§3 signatures have drifted before); `ui/snapshots_panel/__init__.py` (the only existing per-repo settings UI — its save path is reused, not duplicated).
-- DO NOT: remove/rename any existing menu toggle or key (settings MIRRORS existing controls — TODO item 3's "does not move anything that currently exists" is normative); write to `ui.session_state` from a settings page directly (use the extracted MainWindow setters); invent new settings keys not listed in step 2; build a search/filter box (deliberate cut — nine pages don't need one; adding it later is cheap); make it a modal that blocks the main window on open (plain `QDialog`, non-modal is allowed but modal is simpler — pick modal, note why: settings edits are short, focused tasks).
-- Per-step gates: 1) skeleton + inventory docstring reviewed; 2) each page's round-trip test green; 3) menu↔dialog sync test green; 4) `bin/wrench-ci-check` plus the keyboard walkthrough of every page.
-
-**Step 0 — settings inventory (the deliverable is a list, not code):** re-run Phase 4.2's `grep -rn "set_setting(\|get_setting(" src/wrench` and classify every key found into a module page below; ALSO enumerate non-key toggles (View ▸ Theme, View ▸ tab orientation, snapshot settings via `update_snapshot_settings`, the new auto-fetch action). Any toggle found in code but NOT reachable from a page in step 2 is a phase-blocking omission — record it in the completion notes or add it to a page.
-
-1. **Skeleton (`ui/dialogs/settings_dialog.py` [NEW — §3 tree + ui-planning §6.11 updated]):** `SettingsDialog(QDialog)` — left `QListWidget` of modules (icon optional, requires `setAccessibleName`), right `QStackedWidget` of pages; one `SettingsPage` base class (`title() -> str`, `build()`, `load()`, `save()`-free — **instant-apply**: every control writes on change, KDE-style, no Apply/OK split-brain surface). Escape closes; every control keyboard-reachable; every string `tr()`.
-2. **Module pages (initial, exhaustive per Step 0):**
-   - **Appearance** — theme radio (Auto / Pastel Light / Pastel Dark) through the same setter the View menu uses (`MainWindow._set_theme`); gravatar opt-in checkbox is NOT here (Phase 4.4 adds it to this page — same pattern, same key discipline).
-   - **Tabs** — orientation (Vertical/Horizontal) via `MainWindow._set_tab_orientation` (`extract from the existing menu action if needed — one shared setter, both callers`).
-   - **Repositories** — auto-fetch checkbox (Phase 4.2's key/writer); nothing else until later phases add keys.
-   - **Snapshots** — active-repo `SnapshotSettings` editor (four triggers + interval + `max_count` + `max_age_days` + untracked mode + caps) calling the existing `update_snapshot_settings` and the existing `restart_snapshot_timer()` slot after save (§5 Phase 2 step 6's wiring); a repo selector matching the Changes tab's current repo by default.
-   - **Forge** — summary text + a button opening the existing `AccountsDialog` (account management is NOT duplicated here).
-   - **Advanced** — anything Step 0 finds that fits nowhere else; empty page hidden.
-3. **Sync discipline:** View-menu actions and settings controls never write keys/blobs directly — both call the named MainWindow setter; on dialog `showEvent`, every page calls `load()` reflecting CURRENT live state (opening the dialog mid-session after a menu-side change must show the right state — test covers exactly this).
-4. Tests & **acceptance check**: per-page round-trip (set via dialog → key/value storage reflects → reload dialog → UI reflects); menu→dialog and dialog→menu sync for theme and orientation; snapshot page edits reach `update_snapshot_settings` and restart the timer (assert the slot called with a spy); opening with no repo loaded renders the Snapshots page disabled-with-explanation, not broken. **Manual QA:** every page reachable by keyboard only; toggling theme in the dialog while the View menu is open shows both in agreement; close/reopen dialog → state persisted; app restart → persisted.
-
 ### Phase 4.4 — Forge Avatars
 **Prerequisites:** Phase 4.2 + 4.3 passed (async list mechanics + the settings page that hosts this phase's one toggle). Delivers TODO item 4; new SRS row FR-5.14.
 
@@ -2063,8 +2055,44 @@ Each phase should be independently shippable/testable — don't let phases bleed
 3. UI — extend `_on_open_repo` and create `ui/dialogs/discover_repos_dialog.py` per ui-planning §6.10: after the folder pick, run the existing fast path unchanged; on `WrenchRepoNotFoundError` from `open_repo`, branch into discovery — background `discover_repos` per §4.8 (returned thread retained per its GC warning, Cancel wired to `cancel_event`), dialog shows a spinner plus a running "Found N repositories so far…" counter from `on_progress`. Outcomes per §6.10: N ≥ 1 → checkable list (all checked by default) → Accept applies step 2's semantics, refreshes the repo selector, and posts the status-bar summary ("Added N repositories (M already known)"); N = 0 → a plain message naming the searched depth, no dialog. All strings `tr()`-wrapped; icon-only controls carry accessible names.
 4. Tests & **acceptance check**: `tests/fixtures/git_repos.py` gains `make_repo_forest(tmp_path)` — top-level repos, a one-level container dir of repos, a depth-cap boundary case, a dot-directory repo (skipped), a symlink cycle (walk terminates), a chmod-000 directory (skipped), a repo with an initialized submodule in its worktree (submodule NOT discovered), and a `git worktree` with a `.git` file (discovered). Unit tests cover each walk rule, the `clear_missing` round-trip, and the registration-loop dedup/missing-restore semantics. UI test: the dialog over a monkeypatched `discover_repos` (populate → uncheck one → accept → assert the registry calls), plus an assertion that `_on_open_repo`'s is-a-repo fast path is unchanged. **Acceptance check**: `bin/wrench-ci-check` green; manual QA — File ▸ Open on a real multi-repo directory (e.g. `~/Projects`) finds every repo including nested one-level containers and worktrees, all appear in the Changes-tab selector and switch correctly, and re-opening the same parent is a clean no-op.
 
+### Phase 4.6 — Operation Feedback & Delight (progress, activity log, humor)
+**Prerequisites:** Phase 4.5's acceptance check passed (discovery suite green; its live counter is reused here). Delivers the AFK-request batch: honest progress bars everywhere they can be honest, a one-line live activity line with expandable history, and a rotating bank of dry/niche-humor waiting lines; extends the Changes-tab clean-state quotes. New SRS section §3.15 (FR-14.1–14.3); ui-planning §6.13.
+
+**Executor guardrails (phase-specific §0.5 enforcement):**
+- READ FIRST: §4.8 (worker machinery), §5 Phase 3 steps 3a/3b (`run_git_streaming` + `_parse_progress` — you EXTEND the parser table, never fork a second parser), ui-planning §6.9's existing progress mock + §6.13 (new; authoritative for the activity dock), `src/wrench/ui/recovery/busy_dialog.py` (the existing determinate/indeterminate bar — enhanced, not replaced), and the existing clean-state quote source (Step 0's grep finds it).
+- DO NOT — the honesty rules, all hard gates:
+  - **Never fake progress.** No ticks, no simulated creep, no "estimated" percentages. Bars are determinate only when git emits a real fraction; otherwise indeterminate spinner + rotating line. A fake bar is a worse lie than a spinner (users trust it).
+  - **Never put humor on failure/loss paths.** Error banners, push rejections, conflict warnings, data-loss dialogs stay plain and actionable. Delight is garnish on *waiting* and *success* only — a joke next to "your push was rejected" reads as mocking the user.
+  - **Never animate on the GUI thread**, never GIFs (text/emoji only), never exceed one muted humor line (the *real* stage text stays primary), and never ship the bank without the `ui.humor_lines` toggle (default on — recorded as deliberate; FR-13.1's total-config rule means it also gets the Appearance-page control).
+  - Quotes/jokes are data: one module (`ui/quotes.py`), `tr()`-wrapped, no string literals scattered in widgets. Jokes get translator freedom (a note says puns may be freely re-localized).
+- Per-step gates: 1) parser matrix tests green incl. no-match→None; 2) log buffer/dock tests green; 3) bank tests green; 4) `bin/wrench-ci-check` + manual QA list.
+
+**Step 0 — reconciliation (greps, record results):**
+   - `grep -rn "def _parse_progress\|Receiving objects\|Resolving" src/wrench/core/write_ops.py` — the parser table and its regexes.
+   - `grep -n "BusyOperationDialog" src/wrench/ui/recovery/busy_dialog.py` + its current progress/label API — the enhancement surface.
+   - `grep -rn "quote\|clean_title\|clean_quote" src/wrench/ui/tabs/changes_tab.py | head` — where the existing clean-state lines live (extend that source OF TRUTH by moving the strings to `ui/quotes.py`; callers re-point).
+   - `grep -n "QStatusBar\|statusBar\|showMessage" src/wrench/ui/main_window.py | head` — the dock's neighbor the new log line sits above.
+   - `grep -n "_set_auto_fetch\|Shared setter" src/wrench/ui/main_window.py | head -3` — the shared-setter pattern step 4's humor toggle mirrors.
+
+1. **Progress-type matrix + parser extension** (`core/write_ops.py::_parse_progress` and the call-sites). Classify every long-op surface by what it can honestly show; ship determinate only where a real numerator exists:
+   | Surface | Type | Source |
+   |---|---|---|
+   | Clone / Push / Pull / Fetch busy dialog | determinate | existing `"(stage): NN%"`/`\r`-fragments parse — verify, no change |
+   | Rebase / (future VP-1 cherry-pick/revert) | determinate-if-emitted | NEW regexes: `Rebasing \((\d+)/(\d+)\)` → rebase only; else indeterminate |
+   | LFS pull/push (Phase 5 wires calls; parser lands NOW) | determinate | NEW: `Git LFS: \((\d+) of (\d+) files?`|
+   | Submodule init/update (Phase 5 wires; countable) | countable "N of M" | NEW: per-submodule completion callback contract — record in the docstring so Phase 5 reads it from here |
+   | Discovery scan (Phase 4.5) | countable live line | existing "Found N repositories so far…" — unchanged |
+   | Backup bundle, repo open/switch (4.2), snapshot ops | indeterminate | spinner + rotating line; no bar |
+   The matrix itself is a **docstring comment block at the top of the parser** so the next long-op lands in the right row by reading it. New regex rows return `(percent, stage)` in the same tuple shape; unknown lines still return `None` — the existing noisy-git-chatter contract is untouched.
+2. **Activity log — one line now, history on demand.** New `ui/widgets/activity_log.py`: model `ActivityLog` (module singleton built on `collections.deque(maxlen=200)`, `post(text, level='info'|'ok'|'warn'|'error')`, emits through the §4.8 dispatcher so worker threads can post safely) and dock `ActivityLogBar` — a one-row strip docked immediately above the status bar showing the latest event (level-colored icon + single-line elided text + timestamp); a chevron/click or `Ctrl+`` expands an inline scrollback (fixed ~8-line height, monospace, timestamps, newest-at-bottom, hover pauses auto-scroll). `workers.py` instruments `run_in_background` to auto-post `started {op}` / `finished in {t}` / `failed: {typed exception class}` — one central hook, every existing op is logged free; domain events (snapshot taken, lock cleared, account linked, auto-fetch skipped) post from their existing call sites during their own phases' wiring; **history is in-memory only** — the durable record stays FR-9.2's rotating file (link in tooltip); session-restore does NOT persist the dock's expanded state. Theme: level colors are tokens per FR-13.2; contrast test matrix covers them.
+3. **`ui/quotes.py` + rotation + toggle.** Three banks as pure data (verbatim starter content in ui-planning §6.13 — transplant it exactly; it exists so nobody improvises tone under a deadline): `CLEAN_STATE_QUOTES` (fold in the Changes tab's existing lines from Step 0 and extend), `WAITING_LINES` (rotate every ~4 s while an indeterminate op exceeds ~8 s, one muted line UNDER the real stage text), and `SUCCESS_LINES` (one line in the activity log on clean finishes). Toggle `ui.humor_lines` (default `"true"` — deliberate personality default, recorded in the inventory rationale; the control lives on the Appearance page per §6.11). When off: zero rotation, zero timer wakeups, banks unused (a test asserts no timer fires when disabled). Changes-tab clean state reads from `CLEAN_STATE_QUOTES` — same behavior, bigger, better-sourced bank.
+3a. **Extras & event lines (same banks module, same charter):** §6.13 now also carries `EMPTY_REPO_LINES` (zero-repo state), `EMPTY_PR_LINES` / `EMPTY_ISSUES_LINES` (forge empty states), `IDLE_LINES` (one-shot quip after 30 min of inactivity with a dirty tree — single-shot timer reset by input/watcher events, disarmed until activity resumes, posts to the activity dock only), and `MILESTONE_LINES` keyed one-shot toasts (fire-once-ever per key via `app_settings` `ui.milestones_seen` JSON list; hooks at the existing success call sites: `create_pull_request` completion → `first_pr_created`, `take_snapshot` count → `snapshot_100th`, push-immediately-after-recovered-failure → `push_after_recovery`). All humor-toggle-gated; all post through the activity dock — never dialogs, never toasts floating over content; §6.14's `ABOUT_WISDOM` bank also lives in this module.
+4. **Integration pass:** BusyOperationDialog gains the second muted humor line in its indeterminate variant (determinate variant: line space is occupied by the real stage text — humor yields); the three push-recovery dialogs and all error banners stay plain (rule 2 — re-read it before merging); the discovery dialog's counter line is left alone (countable, already honest).
+5. **About dialog (`ui/dialogs/about_dialog.py` [NEW — §3 tree, FR-9.3, ui-planning §6.14])** — Help ▸ About. Standard shape, personality inside: app name + real version (read via `importlib.metadata.version("wrench")`, never hardcoded), one-line pitch, a rotating wisdom line from `ABOUT_WISDOM` (ui/quotes.py), a links row (project GitHub, File-an-issue per FR-9.1, documentation) via `QDesktopServices.openUrl`, and a License & third-party notices pane (scrollable: bundled LICENSE text + attribution for Qt/PySide6, pygit2/libgit2, httpx, watchdog, secretstorage, platformdirs — the licensing-compliance NFR makes this pane a **gate, not garnish**), Credits line, an About Qt button, Escape closes, full keyboard + `tr()`. Personality is loudest here — the one surface where flavor text is the content.
+6. **Tests & acceptance check:** parser rows (Rebasing n/m, LFS N-of-M, noise→None for plain chatter, regression: existing stage-percent rows unchanged from Phase 3's pinned cases); dock: buffer cap at 200 evictions, expand/collapse, timer-free-when-collapsed; banks: non-empty, each line ≤ 120 chars, used through `tr()`; toggle-off = no humor visible AND no rotation timer active. **Manual QA (each a checklist row):** big clone shows real percentages; a rebase hitting `Rebasing (3/10)` shows "3/10", and one not emitting it shows spinner+line and **no bar**; a 20-second pull rotates lines naturally with the real stage text still primary; `offline` fetch lands in the dock history as one quiet line; humor off via Appearance flips everything immediately (shared-setter sync); clean Changes tab shows varied lines across 10 refreshes; `Ctrl+`` works and the dock never steals focus.
+
 ### Phase 5 — LFS & Submodules
-**Prerequisites:** Phase 4.5's acceptance check passed (discovery suite green; manual multi-repo QA done).
+**Prerequisites:** Phase 4.6's acceptance check passed (progress parser already knows LFS lines; the activity log exists).
 
 **Executor guardrails (phase-specific §0.5 enforcement):**
 - READ FIRST: §4.1's Phase-5 surface block (fixed signatures), §4.1.A (`LfsUnavailableError`), §4.2 (`run_git` env/timeout conventions — every LFS/submodule subprocess goes through it, never a raw `subprocess` call), §4.8 (the four long ops are background-only), ui-planning §6.3 (badge/diff rendering contract).
@@ -2553,6 +2581,14 @@ Every row below is detailed in full where cited — this table exists so none of
 | Settings | Menu toggle and settings page writing different keys = split-brain preferences | §5 Phase 4.3 steps 2–3 — one shared setter per toggle; dialog mirrors live state on show |
 | Avatars | Gravatar sends MD5-hashed author emails to a third party | §5 Phase 4.4 step 4 — opt-in toggle, default OFF, privacy tooltip; forge-API avatars involve no third party |
 | Avatars | Slow/rate-limited image fetches blocking or erroring list rendering | §5 Phase 4.4 step 3 — initials-first swap-in, in-flight dedup, silent failure to initials |
+| Styling | Inline `setStyleSheet` on a container detaches its children from later palette changes (the Phase 3 isolation bug class) | §5 Phase 4.3 steps 1–2 — tokens + existing propagation/guards retained; no one-off literals |
+| Styling | A color picked for one mode is illegible in another (System/native never sees the pastel palette) | §5 Phase 4.3 step 2 — luminance-keyed tokens, palette-role conversion, WCAG contrast test, three-theme manual matrix |
+| Styling | Hardcoded hex literals silently drift back after the cleanup | §5 Phase 4.3 step 1 — `test_no_hardcoded_colors` gate fails the suite |
+| Settings | A new toggle ships without a settings home, or hides without reason | §5 Phase 4.3 step 0/step 4 — exhaustive inventory contract; Advanced page is the only concealment, and it needs a reason tooltip |
+| Progress UX | A determinate bar on work with no countable numerator is a lie users trust | §5 Phase 4.6 step 1 — progress-type matrix; indeterminate + rotating line only |
+| Delight | Humor next to a failure/data-loss message reads as mocking the user | §5 Phase 4.6 — garnish-only rule: waiting/success surfaces only; error dialogs stay plain |
+| Activity log | An unbounded scrollback creeps memory over long sessions | §5 Phase 4.6 step 2 — `deque(maxlen=200)`; the durable record is FR-9.2's file, not the dock |
+| Humor banks | Jokes must be toggleable and translatable, never hardcoded across widgets | §5 Phase 4.6 step 3 — `ui.quotes` banks + `ui.humor_lines` (default on, deliberate) + `tr()` |
 | Packaging | Flatpak build sandbox has no network access — plain `pip install` in a build step fails | §6.1 — `flatpak-pip-generator`, regenerated whenever dependencies change, never hand-edited |
 | Packaging | The Flatpak runtime does not promise the `git`/`git-lfs`/`ssh` binaries every write op shells out to | §5 Phase 6 step 1 — empirical probe first, then manifest modules for whatever's absent; contents never assumed |
 | Packaging | Flathub distribution isn't something CI can automate end-to-end | §7 stage 7 — initial listing is a one-time manual PR + human review; only later updates auto-build |
@@ -2717,12 +2753,15 @@ Flattened, in strict execution order, across every phase — the literal path th
 - [ ] 4.2.3 auto-fetch on open/switch (`repo.auto_fetch_on_open`, default on) — once per event, quiet failure, existing refresh on success; Repository-menu toggle via shared `_set_auto_fetch` setter
 - [ ] 4.2.4 **CHECK**: lazy/restore/switch/auto-fetch suites green; manual QA — spinner on switch, no stale renders, fetch provably ran (ref mtime), toggle respected
 
-**Phase 4.3 — Modular Settings Dialog** *(prerequisites: 4.2.4 checked)*
-- [ ] 4.3.1 settings inventory recorded (Step 0 grep output) + `ui/dialogs/settings_dialog.py` skeleton with `SettingsPage` base and instant-apply
-- [ ] 4.3.2 module pages: Appearance / Tabs / Repositories / Snapshots (active-repo `update_snapshot_settings` + `restart_snapshot_timer()`) / Forge (opens AccountsDialog); shared setters only, no direct key writes from pages
-- [ ] 4.3.3 **CHECK**: per-page round-trip + menu↔dialog sync tests; keyboard-only walkthrough of every page; state survives restart
+**Phase 4.3 — Theming Consistency & Modular Settings Dialog** *(prerequisites: 4.2.4 checked)*
+- [ ] 4.3.1 Two inventories recorded in the completion notes: toggle inventory (settings keys + checkable menu actions + snapshot settings table fields, each classified with exemption rationale) and style inventory (per-file hardcoded-hex sweep)
+- [ ] 4.3.2 `theme.py` token expansion + extraction sweep — zero hex literals outside `theme.py` (gate test); palette-role conversion for System-mode-tracking widgets; luminance-keyed tokens for semantic colors; recursion guards untouched
+- [ ] 4.3.3 Contrast test (≥4.5 text / ≥3.0 decorative, WCAG-relative-luminance rule from §5 Phase 4.3 step 2) registered per token pair + per-mode smoke instantiation test + manual three-theme matrix all-PASS
+- [ ] 4.3.4 `ui/dialogs/settings_dialog.py` skeleton: `SettingsPage` base, left module list + `QStackedWidget`, instant-apply, `showEvent` re-load
+- [ ] 4.3.5 Module pages covering EVERY inventory row: Appearance (3-mode radio + live token preview strip) / Tabs / Repositories (auto-fetch) / Snapshots (active-repo editor + `restart_snapshot_timer`) / Forge (opens AccountsDialog) / Editor & Diff only-if-inventory-finds-items / Advanced with per-knob reason tooltips — shared setters, zero direct key writes
+- [ ] 4.3.6 **CHECK**: round-trip + menu↔dialog sync tests; both test gates green; keyboard-only page walkthrough; theme-flip retro-check with Accounts + Merge dialogs open; `phase-4.3.md` reproduces both inventories
 
-**Phase 4.4 — Forge Avatars** *(prerequisites: 4.3.3 checked)*
+**Phase 4.4 — Forge Avatars** *(prerequisites: 4.3.6 checked)*
 - [ ] 4.4.1 avatar fields pinned from fixtures/docs; `author_avatar_url` mapped in all four adapters; zero pre-existing constructor call sites broken
 - [ ] 4.4.2 `core/paths.py::cache_dir()` + `ui/widgets/avatar.py` AvatarLoader — initials-first, sha256 disk cache (7-day TTL), in-flight dedup, silent failure, GUI-thread decode, 24/40/64 buckets
 - [ ] 4.4.3 integrations: PR/issue rows + detail headers, commit-box account button (`get_avatar_url()` optional-method pattern + `account.{id}.avatar_url` persisted at link time), history detail panel author row via gravatar behind default-OFF `ui.avatars_gravatar` with privacy tooltip
@@ -2734,7 +2773,14 @@ Flattened, in strict execution order, across every phase — the literal path th
 - [ ] 4.5.3 `ui/dialogs/discover_repos_dialog.py` + `_on_open_repo` branch on `WrenchRepoNotFoundError` per ui-planning §6.10 — background scan with live count, checkbox results, idempotent accept, selector refresh, `tr()`/a11y
 - [ ] 4.5.4 **CHECK**: `make_repo_forest` unit suite green (symlink cycle, chmod-000, submodule-skip, `.git`-file worktree); manual QA — open a real multi-repo dir, all repos switchable, re-run is a no-op
 
-**Phase 5 — LFS & Submodules** *(prerequisites: 4.5.4 checked)*
+**Phase 4.6 — Operation Feedback & Delight** *(prerequisites: 4.5.4 checked)*
+- [ ] 4.6.1 `_parse_progress` extension + progress-type matrix (determinate = real fraction only; rebase `Rebasing (n/m)`, LFS `N of M files`, submodule countables specced for Phase 5; everything else indeterminate)
+- [ ] 4.6.2 `ui/widgets/activity_log.py` — `deque(maxlen=200)` buffer + one-line dock + expandable history (`Ctrl+``), workers.py auto-post hook, no persistence
+- [ ] 4.6.3 `ui/quotes.py` banks transplanted verbatim from ui-planning §6.13 (clean-state incl. existing lines, waiting, success, empty-repo/PR/issues, idle, milestone, ABOUT_WISDOM) + 4 s rotation after 8 s + idle/milestone one-shot machinery (`ui.milestones_seen`, single-shot idle timer) + `ui.humor_lines` toggle wired to the Appearance page; errors stay plain
+- [ ] 4.6.4 `ui/dialogs/about_dialog.py` — real version via `importlib.metadata`, links (GitHub/issues/license), License & third-party notices pane, About Qt, `ABOUT_WISDOM` rotation, keyboard-complete
+- [ ] 4.6.5 **CHECK**: parser matrix + dock + banks tests green; manual QA — real % on clone, Rebasing n/m shown when emitted, fake-bar-free indeterminate path, rotation cadence, toggle-off = zero humor, varied clean-state lines, About opens/links/version correct
+
+**Phase 5 — LFS & Submodules** *(prerequisites: 4.6.5 checked)*
 - [ ] 5.1 `core/lfs.py` — cached cwd-independent `lfs_available()` probe; `_require_lfs` → `LfsUnavailableError`; batched `lfs_files` via `check-attr -z`; `is_lfs_pointer`/`parse_lfs_pointer`; track/pull/push via `run_git` with network timeouts; per-repo `lfs install --local` on open (never global — Flatpak HOME)
 - [ ] 5.2 `core/submodules.py` — list/status via pygit2 (uninitialized never raises); init/update/add via `run_git`; `file://` transport confirmation dialog + per-invocation `-c protocol.file.allow=always`; LFS filters propagated into initialized submodules; credential-gap documented (§8.1)
 - [ ] 5.3 UI per ui-planning §6.3 — Changes-tab badges (batched, once per refresh), pointer-aware diff rendering, `ui/dialogs/submodule_dialog.py`, Repository ▸ Git LFS menu with git-lfs-missing degraded state; all ops via `run_in_background`; `tr()` + `setAccessibleName` throughout

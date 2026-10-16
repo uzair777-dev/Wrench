@@ -257,7 +257,7 @@ class AddAccountDialog(QDialog):
         layout.addWidget(title)
 
         subtitle = QLabel("How would you like to set up your account?", page)
-        subtitle.setStyleSheet("color: palette(mid); font-size: 13px;")
+        subtitle.setStyleSheet("color: palette(placeholder-text); font-size: 13px;")
         layout.addWidget(subtitle)
 
         card_style = (
@@ -375,7 +375,9 @@ class AddAccountDialog(QDialog):
             "and GitHub Actions workflows.",
             self._assisted_form_widget,
         )
-        full_desc.setStyleSheet("color: palette(mid); font-size: 11px; margin-left: 20px;")
+        full_desc.setStyleSheet(
+            "color: palette(placeholder-text); font-size: 11px; margin-left: 20px;"
+        )
         scope_layout.addWidget(full_desc)
 
         sec_note = QLabel(
@@ -397,7 +399,9 @@ class AddAccountDialog(QDialog):
             "Only access public repositories. Private repos will not be visible.",
             self._assisted_form_widget,
         )
-        public_desc.setStyleSheet("color: palette(mid); font-size: 11px; margin-left: 20px;")
+        public_desc.setStyleSheet(
+            "color: palette(placeholder-text); font-size: 11px; margin-left: 20px;"
+        )
         scope_layout.addWidget(public_desc)
 
         public_warn = QLabel(
@@ -411,7 +415,9 @@ class AddAccountDialog(QDialog):
         self.advanced_scopes_btn = QToolButton(scope_group)
         self.advanced_scopes_btn.setText("▶ Advanced Scopes")
         self.advanced_scopes_btn.setStyleSheet(
-            "border: none; color: palette(mid); font-size: 11px; padding: 4px 0px;"
+            "QToolButton { border: none; color: palette(placeholder-text); "
+            "font-size: 11px; padding: 4px 0px; } "
+            "QToolButton:hover { color: palette(window-text); }"
         )
         self.advanced_scopes_btn.setCheckable(True)
         scope_layout.addWidget(self.advanced_scopes_btn)
@@ -514,7 +520,7 @@ class AddAccountDialog(QDialog):
         wait_layout.addWidget(self.waiting_status_label)
 
         self.countdown_label = QLabel("Code expires in --:--", self._assisted_waiting_widget)
-        self.countdown_label.setStyleSheet("color: palette(mid); font-size: 11px;")
+        self.countdown_label.setStyleSheet("color: palette(placeholder-text); font-size: 11px;")
         wait_layout.addWidget(self.countdown_label)
 
         self.waiting_progress_bar = QProgressBar(self._assisted_waiting_widget)

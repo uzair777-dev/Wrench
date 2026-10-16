@@ -19,6 +19,7 @@ from PySide6.QtGui import QColor, QPainter
 from PySide6.QtWidgets import (
     QButtonGroup,
     QCheckBox,
+    QComboBox,
     QDialog,
     QFormLayout,
     QGroupBox,
@@ -36,6 +37,8 @@ from PySide6.QtWidgets import (
 
 from wrench.storage import settings
 from wrench.ui.theme import (
+    COMMIT_STAT_COLORS,
+    FORGE_BADGE_COLORS,
     GRAPH_LANES,
     is_dark_theme,
 )
@@ -124,7 +127,7 @@ class AppearancePage(SettingsPage):
 
 
 class TokenPreviewStrip(QWidget):
-    """Paints a live sample of graph lane colors."""
+    """Paints a live sample of graph lane colors, diff indicators, and forge badges."""
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -135,17 +138,64 @@ class TokenPreviewStrip(QWidget):
         painter.setRenderHint(QPainter.Antialiasing)
         is_dark = is_dark_theme(self.palette())
         lanes = GRAPH_LANES["dark" if is_dark else "light"]
+        mode = "dark" if is_dark else "light"
 
         chip_size = 20
-        spacing = 8
+        spacing = 6
         x = 4
         y = (self.height() - chip_size) // 2
 
-        for hex_color in lanes[:8]:
+        # 1. Representative Graph Lane Chips (4 lanes)
+        for hex_color in lanes[:4]:
             painter.setBrush(QColor(hex_color))
             painter.setPen(Qt.NoPen)
             painter.drawRoundedRect(x, y, chip_size, chip_size, 4, 4)
             x += chip_size + spacing
+
+        # Subtle divider
+        x += 2
+        div_col = self.palette().color(self.palette().ColorRole.Mid)
+        painter.setPen(div_col)
+        painter.drawLine(x, y + 2, x, y + chip_size - 2)
+        x += 8
+
+        # 2. Diff Indicators (+ addition and - deletion)
+        diff_colors = COMMIT_STAT_COLORS[mode]
+        for symbol, bg_hex in [("+", diff_colors["add"]), ("-", diff_colors["del"])]:
+            painter.setBrush(QColor(bg_hex))
+            painter.setPen(Qt.NoPen)
+            painter.drawRoundedRect(x, y, chip_size, chip_size, 4, 4)
+
+            painter.setPen(self.palette().highlightedText().color())
+            font = painter.font()
+            font.setBold(True)
+            font.setPixelSize(12)
+            painter.setFont(font)
+            painter.drawText(x, y, chip_size, chip_size, Qt.AlignCenter, symbol)
+            x += chip_size + spacing
+
+        # Subtle divider
+        x += 2
+        painter.setPen(div_col)
+        painter.drawLine(x, y + 2, x, y + chip_size - 2)
+        x += 8
+
+        # 3. Forge Status Badges (Open, Merged, Closed)
+        badges = FORGE_BADGE_COLORS[mode]
+        badge_font = painter.font()
+        badge_font.setBold(True)
+        badge_font.setPixelSize(10)
+        painter.setFont(badge_font)
+
+        for label, state in [("Open", "open"), ("Merged", "merged"), ("Closed", "closed")]:
+            fg_hex, bg_hex = badges[state]
+            badge_w = 46 if state == "merged" else 38
+            painter.setBrush(QColor(bg_hex))
+            painter.setPen(Qt.NoPen)
+            painter.drawRoundedRect(x, y, badge_w, chip_size, chip_size // 2, chip_size // 2)
+            painter.setPen(QColor(fg_hex))
+            painter.drawText(x, y, badge_w, chip_size, Qt.AlignCenter, label)
+            x += badge_w + spacing
 
 
 class TabsPage(SettingsPage):
@@ -271,6 +321,32 @@ class SnapshotsPage(SettingsPage):
         form_layout.addRow(self.tr("Maximum Age:"), self.spin_max_age)
 
         controls_layout.addWidget(form_group)
+
+        # Untracked Files
+        untracked_group = QGroupBox(self.tr("Untracked Files"), self.controls_widget)
+        untracked_layout = QFormLayout(untracked_group)
+
+        self.combo_untracked_mode = QComboBox(untracked_group)
+        self.combo_untracked_mode.addItem(self.tr("Tracked files only (Ignore untracked)"), "none")
+        self.combo_untracked_mode.addItem(
+            self.tr("Capped (Capture with file & total limits)"), "capped"
+        )
+        self.combo_untracked_mode.addItem(
+            self.tr("Unlimited (Capture all untracked files)"), "unlimited"
+        )
+        untracked_layout.addRow(self.tr("Capture Mode:"), self.combo_untracked_mode)
+
+        self.spin_per_file_cap = QSpinBox(untracked_group)
+        self.spin_per_file_cap.setRange(1, 100)
+        self.spin_per_file_cap.setSuffix(" MB")
+        untracked_layout.addRow(self.tr("Per-file Limit:"), self.spin_per_file_cap)
+
+        self.spin_total_cap = QSpinBox(untracked_group)
+        self.spin_total_cap.setRange(5, 500)
+        self.spin_total_cap.setSuffix(" MB")
+        untracked_layout.addRow(self.tr("Total Limit:"), self.spin_total_cap)
+
+        controls_layout.addWidget(untracked_group)
         layout.addWidget(self.controls_widget)
 
         # Connect instant-apply changes
@@ -280,11 +356,21 @@ class SnapshotsPage(SettingsPage):
         self.spin_timer_min.valueChanged.connect(self._save_settings)
         self.spin_max_count.valueChanged.connect(self._save_settings)
         self.spin_max_age.valueChanged.connect(self._save_settings)
+        self.combo_untracked_mode.currentIndexChanged.connect(self._on_untracked_mode_changed)
+        self.spin_per_file_cap.valueChanged.connect(self._save_settings)
+        self.spin_total_cap.valueChanged.connect(self._save_settings)
 
         layout.addStretch()
 
     def _get_active_repo(self):
         return getattr(self.main_window, "_current_repo", None)
+
+    def _on_untracked_mode_changed(self) -> None:
+        mode = self.combo_untracked_mode.currentData()
+        is_capped = mode == "capped"
+        self.spin_per_file_cap.setEnabled(is_capped)
+        self.spin_total_cap.setEnabled(is_capped)
+        self._save_settings()
 
     def load(self) -> None:
         repo = self._get_active_repo()
@@ -313,6 +399,16 @@ class SnapshotsPage(SettingsPage):
             self.spin_timer_min.setValue(cfg.timer_interval_minutes)
             self.spin_max_count.setValue(cfg.max_count)
             self.spin_max_age.setValue(cfg.max_age_days or 0)
+
+            mode_idx = self.combo_untracked_mode.findData(cfg.untracked_capture_mode)
+            if mode_idx >= 0:
+                self.combo_untracked_mode.setCurrentIndex(mode_idx)
+            self.spin_per_file_cap.setValue(cfg.untracked_per_file_cap_mb)
+            self.spin_total_cap.setValue(cfg.untracked_total_cap_mb)
+            is_capped = cfg.untracked_capture_mode == "capped"
+            self.spin_per_file_cap.setEnabled(is_capped)
+            self.spin_total_cap.setEnabled(is_capped)
+
             self._block_all(False)
         except Exception as exc:
             logger.error("Failed to load snapshot settings: %s", exc)
@@ -324,6 +420,9 @@ class SnapshotsPage(SettingsPage):
         self.spin_timer_min.blockSignals(block)
         self.spin_max_count.blockSignals(block)
         self.spin_max_age.blockSignals(block)
+        self.combo_untracked_mode.blockSignals(block)
+        self.spin_per_file_cap.blockSignals(block)
+        self.spin_total_cap.blockSignals(block)
 
     def _save_settings(self) -> None:
         repo = self._get_active_repo()
@@ -332,7 +431,7 @@ class SnapshotsPage(SettingsPage):
         try:
             from wrench.core import snapshots
 
-            cfg = snapshots.get_snapshot_settings(repo, conn=self.main_window._conn)
+            untracked_mode = self.combo_untracked_mode.currentData() or "capped"
             settings_obj = snapshots.SnapshotSettings(
                 trigger_on_commit=self.chk_on_commit.isChecked(),
                 trigger_on_timer=self.chk_on_timer.isChecked(),
@@ -340,9 +439,9 @@ class SnapshotsPage(SettingsPage):
                 trigger_before_risky_op=self.chk_on_risky.isChecked(),
                 max_count=self.spin_max_count.value(),
                 max_age_days=self.spin_max_age.value() if self.spin_max_age.value() > 0 else None,
-                untracked_capture_mode=cfg.untracked_capture_mode,
-                untracked_per_file_cap_mb=cfg.untracked_per_file_cap_mb,
-                untracked_total_cap_mb=cfg.untracked_total_cap_mb,
+                untracked_capture_mode=untracked_mode,
+                untracked_per_file_cap_mb=self.spin_per_file_cap.value(),
+                untracked_total_cap_mb=self.spin_total_cap.value(),
             )
             snapshots.update_snapshot_settings(repo, settings_obj, conn=self.main_window._conn)
             self.main_window.restart_snapshot_timer()

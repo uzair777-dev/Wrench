@@ -44,8 +44,8 @@ def is_dark_theme(widget_or_palette: QWidget | QPalette | None = None) -> bool:
 # --- Secondary / Accent Colors (Catppuccin Velvet Pastel) ---
 
 SECONDARY_TEXT = {
-    "light": "#7c7f93",  # Subtext0 — muted slate for secondary labels
-    "dark": "#9399b2",  # Overlay2 — soft lavender-gray for secondary labels
+    "light": "#5c5f77",  # Subtext1 — high-contrast slate (5.5:1 against window)
+    "dark": "#a6adc8",  # Subtext0 — soft lavender-gray (7.9:1 against window)
 }
 
 ACCENT_COLORS = {
@@ -80,7 +80,9 @@ def create_pastel_light_palette() -> QPalette:
     pal.setColor(QPalette.Link, QColor("#1e66f5"))  # Sapphire
     pal.setColor(QPalette.Highlight, QColor("#1e66f5"))  # Sapphire blue
     pal.setColor(QPalette.HighlightedText, QColor("#ffffff"))
-    pal.setColor(QPalette.PlaceholderText, QColor("#9ca0b0"))
+    pal.setColor(QPalette.PlaceholderText, QColor(SECONDARY_TEXT["light"]))
+    pal.setColor(QPalette.Mid, QColor("#ccd0da"))  # Surface0 — subtle card/bevel borders
+    pal.setColor(QPalette.Midlight, QColor("#bcc0cc"))  # Surface1
     return pal
 
 
@@ -101,7 +103,9 @@ def create_pastel_dark_palette() -> QPalette:
     pal.setColor(QPalette.Link, QColor("#89b4fa"))  # Pastel sky
     pal.setColor(QPalette.Highlight, QColor("#89b4fa"))  # Pastel sky blue
     pal.setColor(QPalette.HighlightedText, QColor("#11111b"))
-    pal.setColor(QPalette.PlaceholderText, QColor("#6c7086"))
+    pal.setColor(QPalette.PlaceholderText, QColor(SECONDARY_TEXT["dark"]))
+    pal.setColor(QPalette.Mid, QColor("#45475a"))  # Surface1 — subtle card/bevel borders
+    pal.setColor(QPalette.Midlight, QColor("#585b70"))  # Surface2
     return pal
 
 
@@ -339,10 +343,10 @@ FORGE_BADGE_COLORS = {
 }
 
 CI_STATUS_CONFIG = {
-    "success": ("✔", "#40a02b", "#a6e3a1", "CI: Success — all checks passed"),
+    "success": ("✔", "#216e39", "#a6e3a1", "CI: Success — all checks passed"),
     "failure": ("✖", "#d20f39", "#f38ba8", "CI: Failure — checks failed"),
-    "pending": ("●", "#1e66f5", "#89b4fa", "CI: Pending — checks in progress"),
-    "unknown": ("○", "#7c7f93", "#9399b2", "CI: No checks reported / unknown"),
+    "pending": ("●", "#1153d6", "#89b4fa", "CI: Pending — checks in progress"),
+    "unknown": ("○", "#5c5f77", "#a6adc8", "CI: No checks reported / unknown"),
 }
 
 REMOTE_BADGE_COLORS = {
@@ -392,7 +396,7 @@ def get_info_popover_style(is_dark: bool) -> str:
 # --- Merge Tool & Action Colors ---
 
 MERGE_MODE_COLORS = {
-    "light": {"rebase": "#df8e1d", "merge": "#1e66f5"},
+    "light": {"rebase": "#8c4400", "merge": "#1153d6"},
     "dark": {"rebase": "#fab387", "merge": "#89b4fa"},
 }
 

@@ -1,7 +1,7 @@
 # Phase 4.3 Summary: Theming Consistency & Modular Settings Dialog
 
-**Status:** Completed  
-**Associated SRS Requirements:** FR-13.1, FR-13.2, NFR Usability, NFR Accessibility, NFR Maintainability  
+**Status:** Completed
+**Associated SRS Requirements:** FR-13.1, FR-13.2, NFR Usability, NFR Accessibility, NFR Maintainability
 **Associated Planning Documents:** [`implementation-plan.md`](file:///home/uzair/Projects/wrench/dev/planning/implementation-plan.md), [`srs.md`](file:///home/uzair/Projects/wrench/dev/planning/srs.md), [`ui-planning.md`](file:///home/uzair/Projects/wrench/dev/planning/ui-planning.md)  
 
 ---
@@ -29,10 +29,10 @@ Phase 4.3 achieved comprehensive theming consistency and delivered a modular, ac
 4. **Modular Settings Dialog (FR-13.1, `src/wrench/ui/dialogs/settings_dialog.py`)**:
    - Implemented `SettingsDialog(QDialog)` with two-pane layout: a category list on the left and a `QStackedWidget` on the right.
    - Created 6 modular settings pages inheriting from `SettingsPage`:
-     - **AppearancePage**: Theme mode selector (Auto / Pastel Light / Pastel Dark) and live `TokenPreviewStrip` rendering sample graph lane chips.
+     - **AppearancePage**: Theme mode selector (Auto / Pastel Light / Pastel Dark) and live `TokenPreviewStrip` rendering sample graph lane chips, diff indicators (`+` addition, `-` deletion), and forge status badges (`Open`, `Merged`, `Closed`).
      - **TabsPage**: Tab bar placement radio group (Vertical left sidebar vs. Horizontal top bar).
      - **RepositoriesPage**: Automation controls (auto-fetch on open/switch).
-     - **SnapshotsPage**: Active repository snapshot configuration (on commit, on timer, on risky ops, timer interval, retention count, and max age) with immediate timer refresh via `restart_snapshot_timer()`.
+     - **SnapshotsPage**: Active repository snapshot configuration (on commit, on timer, on risky ops, timer interval, retention count, max age, and untracked files capture mode with per-file and total size caps) with immediate timer refresh via `restart_snapshot_timer()`.
      - **ForgePage**: Accounts count summary and quick launcher for `AccountsDialog`.
      - **AdvancedPage**: Operational overrides, including "Reset Declined Forge Link Prompts" with clarifying tooltip.
    - Instant-apply UX: changes take effect immediately without requiring OK/Apply button clicks.
@@ -78,7 +78,7 @@ All 141 hardcoded hex literals across 18 UI files were extracted and replaced:
 | `src/wrench/ui/tabs/tab_bar.py` | 2 | `palette(highlight)` and `palette(window-text)` |
 | `src/wrench/ui/recovery/busy_dialog.py` | 3 | `palette(bright-text)` and `palette(window-text)` |
 | `src/wrench/ui/recovery/recovery_dialog.py` | 4 | `palette(bright-text)` and `palette(window-text)` |
-| `src/wrench/ui/dialogs/accounts_dialog.py` | 54 | `palette(window-text)`, `palette(bright-text)`, and `palette(highlight)` |
+| `src/wrench/ui/dialogs/accounts_dialog.py` | 54 | `palette(window-text)`, `palette(bright-text)`, `palette(highlight)`, and `palette(placeholder-text)` (for legible secondary descriptions & subtitles in dark mode) |
 | `src/wrench/ui/dialogs/push_recovery_dialogs.py` | 3 | `palette(bright-text)` |
 | `src/wrench/ui/forge_panel/create_pr_dialog.py` | 2 | `palette(bright-text)` |
 | `src/wrench/ui/forge_panel/review_dialog.py` | 2 | `palette(bright-text)` |
@@ -96,6 +96,9 @@ All 141 hardcoded hex literals across 18 UI files were extracted and replaced:
   - `test_banner_tokens_contrast`: Text vs Background $\ge 4.5:1$ across all 4 banner kinds (`info`, `warning`, `error`, `success`) in both light and dark modes. **PASS**.
   - `test_forge_badge_tokens_contrast`: Badge text vs background $\ge 4.5:1$ and badge background vs container $\ge 3.0:1$ across all badge types in both light and dark modes. **PASS**.
   - `test_graph_lane_tokens_contrast`: All 8 graph lanes vs background $\ge 3.0:1$ in both light and dark modes. **PASS**.
+  - `test_placeholder_and_secondary_text_contrast`: PlaceholderText and SECONDARY_TEXT vs Canvas/Base $\ge 4.5:1$ in both light and dark modes. **PASS**.
+  - `test_merge_mode_tokens_contrast`: Rebase and Merge tokens $\ge 4.5:1$ in both light and dark modes. **PASS**.
+  - `test_ci_status_tokens_contrast`: CI status tokens (`success`, `pending`, `unknown`, `failed`, `neutral`) $\ge 4.5:1$ in both light and dark modes. **PASS**.
 - `tests/unit/ui/test_theme_switching.py`:
   - All 8 theme switching and palette propagation unit tests **PASS**.
 - `tests/ui/test_settings_dialog.py`:
@@ -104,12 +107,14 @@ All 141 hardcoded hex literals across 18 UI files were extracted and replaced:
   - `test_tabs_page_switches_orientation`: Vertical/Horizontal placement radio live updates `tab_container` and persists `"ui.tab_orientation"`. **PASS**.
   - `test_repositories_page_toggles_auto_fetch`: Live updates `MainWindow._set_auto_fetch` and persists `"repo.auto_fetch_on_open"`. **PASS**.
   - `test_snapshots_page_no_repo_state`: Disables controls and shows status label when no repository is open. **PASS**.
-  - `test_snapshots_page_with_active_repo`: Loads active repo snapshot settings, allows updating triggers/intervals, and restarts snapshot timer. **PASS**.
+  - `test_snapshots_page_with_active_repo`: Loads active repo snapshot settings, allows updating triggers/intervals, untracked capture mode & caps, and restarts snapshot timer. **PASS**.
   - `test_forge_page_and_advanced_page`: Displays accounts count, resets declined link prompts to `'[]'` via Advanced page. **PASS**.
   - `test_main_window_preferences_action_exists`: Preferences action exists in Edit menu with `Ctrl+,` shortcut. **PASS**.
+- `tests/ui/test_accounts_dialog.py`:
+  - `TestAccountsDialogThemeLegibility`: Asserts no `color: palette(mid)` on dialog labels; asserts `palette(placeholder-text)` applied to chooser subtitle and assisted setup descriptions for dark mode readability. **PASS**.
 
 ### Full Test Suite & CI Check
 - `./bin/wrench-ci-check`:
   - `ruff` lint check: **Passed (0 warnings)**.
   - `black --check`: **Passed (160 files checked, 0 reformats needed)**.
-  - `pytest tests/`: **471 passed** in 23.60s.
+  - `pytest tests/`: **475 passed** in 25.26s.

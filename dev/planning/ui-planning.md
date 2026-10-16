@@ -1,1364 +1,393 @@
-# UI Planning — Wrench
-
-**Status:** Draft  
-**Purpose:** Detailed UI specification for Wrench's desktop interface. Written to be executable by a lower-tier model — every layout, widget, interaction, and edge case is spelled out explicitly.
-
-**Companion documents — this spec is only one of them; sections here point outward and are pointed at:**
-- `srs.md` — the source of every `(SRS FR-x.y)` tag in this document's section headings; priorities (M/S/D) and the NFRs that bind this UI live there.
-- `implementation-plan.md` — the phases that build these surfaces (§5; `Phase X` / `Phase X.Y` names in this document mean it, and its §12 checklist owns execution order). Surfaces here are created/verified by those steps.
-- `v2-implementation-plan.md` — anything the SRS marks **D (v2)**; never start it early.
-- `../ARCHITECTURE.md` (repo root) — the as-built UI description once phases land; on disagreement, the code wins and the plans get reconciled.
-References by section number (`§x.y`) between these documents are normative links: open the referenced section rather than working from the one-line summary.
-
----
-
-## 0. Reading Guide
-
-This document describes the UI **from the outermost container inward**:
-1. §1 — Window Chrome (menu bar, title bar)
-2. §2 — Tab System (the primary navigation layer)
-3. §3 — Changes Tab (staging, commit, diff)
-4. §4 — History Tab (branch graph, commit details)
-5. §5 — Cross-Cutting Concerns (theme, keyboard, a11y, status bar, localization)
-6. §6 — Secondary UI Surfaces (stash, clone, LFS/submodules, snapshots, identity, 3-way merge tool, reflog recovery, remotes, backup/restore)
-7. §7 — File/Component Mapping
-8. §8 — Implementation Order
-
-Each section includes: **layout**, **widget specs**, **interactions**, **edge cases**, and **visual notes**.
-
-> [!IMPORTANT]
-> This replaces the existing Phase 1 MVP UI layout (`MainWindow` with `QSplitter` holding sidebar + staging + diff). The current `RepoSidebar`, `DiffView`, and `DiffWidget` components can be reused internally, but the outer shell and layout structure are redesigned.
-
----
-
-## 1. Window Chrome
-
-### 1.1 Layout
-
-```
-┌──────────────────────────────────────────────────────────────┐
-│  [Menu Bar]  File  Edit  View  Help                          │
-├──────────────────────────────────────────────────────────────┤
-│                                                              │
-│               Tab System + Tab Content                       │
-│              (see §2, §3, §4)                                │
-│                                                              │
-└──────────────────────────────────────────────────────────────┘
-```
-
-- The menu bar is a **standard `QMenuBar`** — native OS menu bar, not a custom widget. PySide6 handles platform integration automatically.
-- Window title: `"Wrench"` (static, does not change per repo/tab).
-- Default window size: `1200 × 800` (resizable, minimum `900 × 600`).
-
-### 1.2 Menu Structure
-
-#### File
-| Item | Shortcut | Action |
-|---|---|---|
-| New Repository… | `Ctrl+N` | Opens a dialog to `git init` a new repo at a chosen directory |
-| Open Repository… | `Ctrl+O` | Opens a file picker to add an existing repo to the registry |
-| Clone Repository… | `Ctrl+Shift+C` | Opens a clone dialog (URL + destination path) (§6.2) |
-| --- | | *(separator)* |
-| Close Repository | `Ctrl+W` | Removes the current repo from the active view (does not delete files) |
-| --- | | *(separator)* |
-| Backup Repository… | — | Creates a full repository backup to an external path/USB/NAS (§6.9) |
-| Restore from Backup… | — | Restores a repository from an external backup (§6.9) |
-| Snapshots… | — | Opens the Snapshot Browser panel (§6.4) for the current repo |
-| --- | | *(separator)* |
-| Preferences… | `Ctrl+,` | Opens settings/preferences dialog (placeholder for now) |
-| --- | | *(separator)* |
-| Quit | `Ctrl+Q` | Closes the application |
-
-#### Edit
-| Item | Shortcut | Action |
-|---|---|---|
-| Undo | `Ctrl+Z` | Standard text undo (commit message / description fields) |
-| Redo | `Ctrl+Shift+Z` | Standard text redo |
-| --- | | *(separator)* |
-| Cut | `Ctrl+X` | Standard cut |
-| Copy | `Ctrl+C` | Standard copy |
-| Paste | `Ctrl+V` | Standard paste |
-| Select All | `Ctrl+A` | Standard select all |
-| --- | | *(separator)* |
-| Stash Changes… | `Ctrl+Shift+S` | Creates a stash (optionally named) from working tree changes (§6.1) |
-| Pop Stash | `Ctrl+Shift+P` | Pops the most recent stash (apply + drop) |
-| Manage Stashes… | — | Opens the Stash Manager dialog (§6.1) |
-| --- | | *(separator)* |
-| Manage Remotes… | — | Opens the Remotes configuration dialog (§6.8) |
-| Reflog Recovery… | — | Opens the Reflog history & restore dialog (§6.7) |
-| Git Identity… | — | Opens the git identity override dialog for the current repo (§6.5) |
-
-#### View
-| Item | Shortcut | Action |
-|---|---|---|
-| Toggle Tab Orientation | `Ctrl+Shift+T` | Switches between vertical (side) and horizontal (top) tab bar |
-| --- | | *(separator)* |
-| Zoom In | `Ctrl+=` | Increases UI font/scale (placeholder) |
-| Zoom Out | `Ctrl+-` | Decreases UI font/scale (placeholder) |
-| Reset Zoom | `Ctrl+0` | Resets to default scale (placeholder) |
-
-#### Help
-| Item | Shortcut | Action |
-|---|---|---|
-| About Wrench | — | Shows version, license (AGPL-3.0), and credits dialog |
-| Documentation | — | Opens online docs in system browser (placeholder URL) |
-| Report a Bug… | — | Opens issue tracker in system browser (placeholder URL) |
-
-> [!NOTE]
-> Menu items marked "placeholder" should be wired to a no-op or stub dialog showing "Coming soon" for now. The menu structure exists so items can be filled in incrementally without restructuring.
-
-### 1.3 Window-Level Edge Cases
-
-| Case | Behavior |
-|---|---|
-| **Quit with unsaved commit message** | If the commit message or description field in the Changes tab contains text, show a confirmation dialog: "You have an unsaved commit message. Quit anyway?" with "Quit" and "Cancel" buttons. Do not silently discard typed text |
-| **Quit during background operation** | If a push/pull/fetch/clone is in progress (tracked via `workers.py`), show: "An operation is in progress. Quitting may leave your repository in an inconsistent state. Quit anyway?" with "Quit" and "Cancel" |
-| **Window geometry & GUI state persistence** | Save window position, size, state (maximized/normal), splitter positions, open tab order/pin states, active repository, and per-repo file selections/commit drafts to `app_settings` (`ui.session_state`). Restored on next launch. Uses a 1000ms coalesced debounce timer for continuous auto-saving plus immediate flush on exit to survive unexpected termination. If saved geometry is off-screen (monitor unplugged), fall back to default centered position |
-
----
-
-## 2. Tab System
-
-### 2.1 Concept
-
-The tab system is the **primary navigation layer** inside the window, directly below the menu bar. It works like **browser tabs** — can be displayed **vertically on the left side** (default, GitKraken-style) or **horizontally on top** (toggled via View → Toggle Tab Orientation).
-
-**Tab model: Fully Dynamic with Right-Click Pinning**
-
-Tabs fall into two categories:
-
-| Category | Examples | Behavior |
-|---|---|---|
-| **Category tabs** (singleton) | Changes, History, PR List, Issues List | One instance per repo/type. Opening one that is already open switches to it. Can be pinned/unpinned via right-click. Closable when unpinned and re-openable from the `+` menu. |
-| **Detail tabs** (dynamic) | A specific PR (#42), a specific Issue (#17), file blame | Opened by clicking an item inside a category tab. Closable and pinnable. Multiple detail tabs can coexist. |
-
-**Right-Click Context Menu & Pinning**:
-- Right-clicking any tab opens a context menu: `Pin Tab` / `Unpin Tab`, `Close Tab` (disabled if pinned), `Close Other Tabs`, `Close Tabs to the Right / Below`.
-- Pinned tabs display a `📌` badge prefix, hide the `×` close button, and are protected from accidental closure.
-- Tab pinning status, open tab list, tab order, and active tab index are continuously persisted to `app_settings` via `ui.session_state`.
-
-**Per-repo deduplication rule**: A detail tab is uniquely identified by `(tab_type, repo_path, entity_id)`. For example, `("pr_detail", "/home/user/my-repo", "42")`. If the user tries to open a tab that matches an already-open identity triple, the existing tab is focused instead of opening a duplicate. This prevents opening the same PR/Issue twice for the same repo, while still allowing the same PR number from different repos.
-
-### 2.2 Layout — Vertical Mode (Default)
-
-```
-┌─────────────────────────────────────────────────────────┐
-│  Menu Bar                                               │
-├──────┬──────────────────────────────────────────────────┤
-│      │                                                  │
-│  C   │                                                  │
-│  H   │         Active Tab Content                       │
-│  PR  │         (fills remaining space)                  │
-│  #42 │                                                  │
-│      │                                                  │
-│  [+] │                                                  │
-│      │                                                  │
-├──────┴──────────────────────────────────────────────────┤
-```
-
-- `C` = Changes (pinned), `H` = History, `PR` = Pull Requests list, `#42` = PR detail tab
-- The tab bar is a **narrow vertical strip** on the left edge (width: ~48px icon-only, or ~140px with labels, user preference TBD).
-- Each tab shows an **icon** and optionally a **short label** below/beside it.
-- The `[+]` button is at the **bottom** of the vertical tab bar (trailing edge).
-- Active tab is visually highlighted (background color change + left accent border).
-- Category tabs appear first (pinned order), followed by dynamic detail tabs in the order they were opened.
-
-### 2.3 Layout — Horizontal Mode
-
-```
-┌─────────────────────────────────────────────────────────┐
-│  Menu Bar                                               │
-├─────────────────────────────────────────────────────────┤
-│  [Changes] [History] [PR] [PR #42] [Issue #17]  [+]     │
-├─────────────────────────────────────────────────────────┤
-│                                                          │
-│              Active Tab Content                          │
-│              (fills remaining space)                     │
-│                                                          │
-└─────────────────────────────────────────────────────────┘
-```
-
-- Tabs are laid out left-to-right with the `[+]` button at the **right end** (trailing edge).
-- Active tab is visually highlighted (bottom accent border + background).
-
-### 2.4 Tab Bar Widget Spec
-
-| Property | Detail |
-|---|---|
-| Widget | Custom `QWidget` subclass (`TabBar`) — **not** `QTabWidget` (need full control over orientation flipping, styling, and the add/close buttons) |
-| Orientation | `Qt.Vertical` (default) or `Qt.Horizontal`, stored in user preferences |
-| Toggle | `View → Toggle Tab Orientation` menu action, or a small toggle icon in the tab bar itself |
-| Tab items | Each is a clickable widget with: icon, label text, optional close button (`×`) on hover |
-| Reordering | Tabs are **drag-and-drop reorderable** via mouse dragging. Pinned tabs remain grouped at the top/left and can be reordered among themselves; unpinned tabs can be reordered among unpinned tabs. A visual insertion indicator displays the target drop position. Reordering updates order, retains active focus, and automatically persists to `ui.session_state`. |
-| Section Dividers | The tab strip has a distinct 1px subtle divider line separating it from the main content area (`border-right` in vertical mode, `border-bottom` in horizontal mode). In ChangesTab, the `QSplitter` handle has a 1px border with hover highlight. |
-| Closable | All tabs show a close `×` on hover, except pinned tabs which hide the `×` button and display `📌` |
-| Keyboard | `Ctrl+1/2/3/…` switches to tab by position |
-| Tab label | Category tabs show their type name ("Changes", "History"). Detail tabs show entity info: "PR #42 — Fix login bug" (type + ID + truncated title) |
-
-### 2.5 Default Tabs
-
-On first launch, the tab bar contains:
-1. **Changes** (default pinned, can be unpinned/closed and re-opened from `+`)
-2. **History**
-
-Other category tabs (PR List, Issues List) are added via the `[+]` button and are forge-dependent — they only appear in the `[+]` menu when a forge account is linked to the current repo.
-
-Detail tabs are never in the `[+]` menu — they're opened contextually from within category tabs (clicking an item in a list).
-
-### 2.6 The `[+]` Button Menu
-
-When clicked, shows a dropdown with available **category** tab types:
-
-| Tab Type | Condition to Appear | Icon |
-|---|---|---|
-| History | Always (if not already open) | `git-branch` / branch icon |
-| Pull Requests | Only when a forge account is linked to the current repo | `git-pull-request` icon |
-| Issues | Only when a forge account is linked to the current repo | `circle-dot` / issue icon |
-
-> [!NOTE]
-> Duplicate **category** tabs of the same type are **not allowed**. If "History" is already open, it does not appear in the `[+]` menu. Clicking `[+]` when all possible category tabs are already open shows "All tabs are open" as a disabled item.
-> 
-> **Detail tabs** are not opened via `[+]` — they're opened by clicking items in category tabs (e.g., clicking a PR in the PR list). Detail tabs follow the per-repo dedup rule: if the same `(type, repo, entity_id)` is already open, focus it instead of opening a duplicate.
-
-### 2.7 Detail Tab Lifecycle
-
-| Trigger | Opens Detail Tab? | Tab Label |
-|---|---|---|
-| Click a PR in the PR List tab | Yes | `"PR #42 — Fix login bug"` |
-| Click an issue in the Issues List tab | Yes | `"Issue #17 — Dashboard crash"` |
-| Click a commit in the History graph | **No** — uses the existing slide-in detail panel within the History tab (§4.5). Commits are viewed in-context, not in separate tabs | N/A |
-| Double-click a file in Changes tab | **No (v1)** — the diff view is inline. Opening files in tabs is deferred | N/A |
-
-> [!TIP]
-> The detail tab model is extensible — future features like file blame, commit detail tabs, or merge conflict resolution can open as detail tabs without changing the tab system architecture.
-
-### 2.8 Tab System Edge Cases
-
-| Case | Behavior |
-|---|---|
-| **Session & Tab persistence across restarts/crashes** | The set of open tabs (category and detail), their order, pin states, active tab index, active repository, and per-repo selections/drafts are saved continuously (1000ms debounce interval) to `app_settings` (`ui.session_state`) and restored on next launch. If a saved tab type is no longer available (e.g., PR tab was open but forge account has since been unlinked), silently skip it. If all tabs were closed before exit, fall back to opening the default `Changes` tab pinned so the application is never blank. |
-| **Repo switch updates all tabs** | When the user switches repos via the Changes tab dropdown, **all open tabs refresh** to show the new repo's data. The History tab reloads its graph, the PR/Issues tabs (if open) re-fetch from the new repo's linked forge account. If the new repo has no forge link, forge-dependent tabs show an inline message: "Connect a forge account to view pull requests" rather than closing the tab. **Detail tabs from the previous repo are NOT auto-closed** — they remain open but show stale data with a subtle banner: "This tab shows data from {old_repo_name}. Switch to that repo to refresh." |
-| **Tab focus on repo switch** | The currently active tab stays active after a repo switch. Do not auto-switch to the Changes tab |
-| **Dedup: same entity, same repo** | If user clicks PR #42 and a tab for `(pr_detail, current_repo, 42)` already exists, focus that tab. Don't open a second one |
-| **Dedup: same entity, different repo** | Allowed — PR #42 from repo A and PR #42 from repo B are distinct tabs |
-| **Many open tabs (10+)** | Tab bar becomes scrollable. In vertical mode, a scroll indicator (small arrows or fade) appears. In horizontal mode, tabs compress and a scroll arrow appears at the edges. Overflow tabs accessible via a dropdown "▾" at the trailing edge |
-| **Closing the last detail tab** | Focus returns to the category tab that spawned it (e.g., close PR #42 → focus the PR List tab). If the parent category tab is also closed, focus the Changes tab |
-
----
-
-## 3. Changes Tab
-
-This is the **staging and commit workspace**. By default it starts pinned at launch, but can be unpinned, closed, and re-opened from the `+` menu. It shows the working copy status, file staging, commit controls, and the diff view. Layout inspired by **GitHub Desktop**.
-
-### 3.1 Overall Layout
-
-```
-┌──────────────────────────────────┬──────────────────────────────────┐
-│         LEFT COLUMN              │         RIGHT COLUMN             │
-│         (width: ~35%)            │         (width: ~65%)            │
-│                                  │                                  │
-│  ┌────────────────────────────┐  │                                  │
-│  │  Current Repo Dropdown     │  │                                  │
-│  ├────────────────────────────┤  │                                  │
-│  │  🌿 main  ▾               │  │                                  │
-│  └────────────────────────────┘  │        Diff View                 │
-│                                  │        of selected file          │
-│  ┌────────────────────────────┐  │                                  │
-│  │  [☑ Select All]  42 files  │  │        OR                       │
-│  │  ☑ src/main.py             │  │                                  │
-│  │  ☑ README.md               │  │        Empty State:             │
-│  │  ☐ .gitignore              │  │        "No changes" (bold)       │
-│  │  ...                       │  │        + motivating quote        │
-│  └────────────────────────────┘  │                                  │
-│                                  │                                  │
-│  ┌────────────────────────────┐  │                                  │
-│  │ [👤] [Commit message     ] │  │                                  │
-│  │      [Description...     ] │  │                                  │
-│  │ [☐ Amend] [Commit to main] │  │                                  │
-│  └────────────────────────────┘  │                                  │
-│                                  │                                  │
-└──────────────────────────────────┴──────────────────────────────────┘
-```
-
-The two columns are separated by a **`QSplitter`** (horizontal) so the user can drag to resize.
-
-### 3.2 Left Column — Top: Repository Selector
-
-| Property | Detail |
-|---|---|
-| Widget | Custom styled `QComboBox` — flush/borderless design, blends with the background theme |
-| Content | Lists all repositories from the `repo_registry` (display name or basename of path) |
-| Current | Shows the currently active repo name, highlighted |
-| On change | Switching the dropdown triggers `_open_repo_path()` — loads the selected repo, restarts watcher, refreshes status |
-| Style | No visible border in resting state. Subtle hover highlight. Dropdown arrow is minimal/integrated. Should feel like a native part of the panel, not a floating widget. The dropdown blends with the surrounding panel background color |
-
-> [!TIP]
-> The `RepoSidebar` from Phase 1 is replaced by this dropdown. The sidebar widget can be removed or repurposed. All repo-switching now goes through the dropdown at the top of the Changes tab.
-
-#### Repository Selector Edge Cases
-
-| Case | Behavior |
-|---|---|
-| **Zero repos registered** | Dropdown shows placeholder text: "No repositories". The file list area shows an empty state: "Open or clone a repository to get started" in bold, centered, with two action buttons below: "Open Repository…" and "Clone Repository…" that trigger the same actions as the File menu items |
-| **No repo selected on launch** | On first-ever launch (no repos in registry), show the zero-repos state above. On subsequent launches, auto-select the most recently opened repo (`last_opened_at DESC`) |
-| **Missing/relocated repo selected** | If a repo is marked `is_missing` in the registry, show it in the dropdown with a ⚠️ warning icon and strikethrough or muted text. Selecting it shows a dialog: "Repository not found at {path}. Relocate or remove?" with "Locate…" (opens file picker), "Remove" (removes from registry), and "Cancel" buttons. The Locate option calls `repo_registry.relocate_repo()` |
-| **Repo added/removed externally** | The dropdown refreshes its list from `repo_registry` whenever: (a) the Changes tab becomes visible, (b) a File → Open/Clone/New action completes, (c) a repo is removed via File → Close Repository |
-
-### 3.2b Left Column — Branch Indicator / Switcher
-
-Directly below the repo dropdown, a **branch indicator row** shows the current branch and provides quick branch switching.
-
-| Property | Detail |
-|---|---|
-| Widget | Custom widget: `QPushButton` styled as a flat label with a branch icon (`🌿`) and the current branch name, plus a dropdown arrow (`▾`) |
-| Display | Shows: `🌿 main ▾` (icon + branch name + dropdown indicator). Flush/borderless style matching the repo dropdown above it |
-| Click | Opens a **filterable branch picker dropdown** — a popup with a `QLineEdit` search box at the top and a list of all local branches below, sorted alphabetically. Remote tracking branches are shown in a separate group below locals, with muted text. Typing in the search box filters the list in real-time (case-insensitive substring match) |
-| Switch | Selecting a branch calls `engine.switch_branch(name)`. If the working tree has uncommitted changes, show a confirmation: "You have uncommitted changes. Stash and switch, or cancel?" with "Stash & Switch", "Switch Anyway" (discards), and "Cancel" buttons |
-| Right-click | Context menu on the branch indicator: "Create New Branch…", "Rename Branch…", "Delete Branch…" (with confirmation). These call the corresponding `engine` functions |
-| Detached HEAD | Shows `🔗 HEAD detached at {short_sha}` in orange/warning color. Right-click offers "Create Branch Here…" |
-
-> [!NOTE]
-> This widget provides the primary UI surface for SRS FR-1.6 (Branch create/switch/rename/delete). The History tab's graph context menu (§4.8) offers the same operations on arbitrary commits, but this widget makes them accessible without leaving the Changes tab.
-
-### 3.3 Left Column — Middle: Changed Files List
-
-This is a **single unified list** of all changed files (staged + unstaged + untracked combined). It replaces the Phase 1 split "Staged Changes" / "Unstaged Changes" two-list design.
-
-#### Behavior
-
-| Property | Detail |
-|---|---|
-| Widget | `QListWidget` or custom `QTreeView` with checkboxes |
-| Default state | **All files are checked (selected for commit) by default** when changes are detected |
-| Checkbox | Each file row has a checkbox on the left. Checked = will be staged before commit. Unchecked = excluded |
-| Select All | A **single checkbox** at the top of the list. Uses **tri-state** (`Qt.PartiallyChecked`): fully checked when all files are checked, unchecked when none are, **indeterminate (dash/minus icon)** when some are checked and some aren't. Clicking it when indeterminate or unchecked → checks all. Clicking it when fully checked → unchecks all |
-| File display | Show the file path relative to repo root. Prefix or color-code by change type: modified (M), added (A), deleted (D), renamed (R), untracked (?) |
-| Sorting | Group by: staged first (if any are already staged), then unstaged, then untracked. Within each group, alphabetical by path |
-| Click on file row | Selects the file and shows its diff in the right column. Does NOT toggle the checkbox — only clicking the checkbox toggles it |
-| Selected highlight | The currently-selected file (whose diff is shown) gets a visual selection highlight (background color). This is independent of the checkbox state |
-
-#### Right-Click Context Menu (File List)
-
-Right-clicking a file row shows a context menu:
-
-| Item | Action |
-|---|---|
-| Stage File | Immediately stages the file via `engine.stage_file()` (independent of checkbox state) |
-| Unstage File | Immediately unstages the file via `engine.unstage_file()` |
-| Discard Changes | Restores the file to its last committed state (`git checkout -- {path}`). **Shows a confirmation dialog first**: "Discard all changes to {filename}? This cannot be undone." |
-| --- | *(separator)* |
-| Open in File Manager | Opens the file's parent directory in the system file manager via `QDesktopServices.openUrl()` |
-| Copy Relative Path | Copies the file's repo-relative path to the clipboard |
-| Copy Absolute Path | Copies the file's absolute filesystem path to the clipboard |
-
-#### Staging Logic
-
-The checkbox model is a **"commit selection" model**, not direct staging:
-- When the user clicks **"Commit"**, all **checked** files are staged (`git add`) and then committed in one operation.
-- Files that are **unchecked** remain unstaged after the commit.
-- This matches GitHub Desktop's model: the user thinks in terms of "which files do I want in this commit?" not "stage then commit."
-
-> [!IMPORTANT]
-> Behind the scenes, the commit flow is: (1) unstage everything, (2) stage only checked files, (3) commit, (4) refresh. This ensures the checkbox state is the source of truth, not the git index. The existing `engine.stage_file()` and `engine.unstage_file()` functions handle the actual git operations.
-
-### 3.4 Left Column — Bottom: Commit Section
-
-Layout (top to bottom):
-
-```
-┌────────────────────────────────────────┐
-│ [👤 icon]  [Commit message...       ]  │
-│            [Description...           ] │
-│            [     Commit to main     ]  │
-└────────────────────────────────────────┘
-```
-
-#### Account Icon
-
-| Property | Detail |
-|---|---|
-| Widget | `QPushButton` with icon, square, to the left of the commit message |
-| Size | ~32×32px |
-| Icon | Shows the avatar/icon of the currently linked forge account for this repo. If no forge account is linked, show a generic user silhouette icon |
-| Hover | Tooltip showing: account username, email, forge provider name (e.g., "uzair — GitHub") |
-| Click | Opens a small popup/dropdown menu with: (1) list of logged-in forge accounts (radio-select to switch), (2) separator, (3) "Add Account…" option that opens the forge account setup flow |
-
-#### Commit Message Field
-
-| Property | Detail |
-|---|---|
-| Widget | `QLineEdit` (single line) |
-| Placeholder | `"Commit message"` (gray placeholder text) |
-| Max length | Soft limit at 72 characters (visual indicator like a subtle color change past 72 chars, not a hard block) |
-| Position | To the right of the account icon, top row |
-
-#### Description Field
-
-| Property | Detail |
-|---|---|
-| Widget | `QTextEdit` (multi-line, resizable) |
-| Placeholder | `"Description"` (gray placeholder text) |
-| Height | Default 3–4 lines, user can drag to resize vertically |
-| Position | Below the commit message, full width of the commit section |
-
-> [!NOTE]
-> The commit message maps to the first line of the git commit message. The description maps to the body (separated by a blank line). If description is empty, the commit has only a subject line. This matches the git convention of `subject\n\nbody`.
-
-#### Commit Button
-
-| Property | Detail |
-|---|---|
-| Widget | `QPushButton` |
-| Label | `"Commit to {branch_name}"` — dynamically shows the current branch name (e.g., "Commit to main"). When amend mode is active, label changes to `"Amend commit on {branch_name}"` |
-| Position | Below the description field, full width |
-| Enabled | Only enabled when: (1) commit message is non-empty, AND (2) at least one file is checked |
-| Disabled state | Grayed out with tooltip explaining why it's disabled ("Enter a commit message" or "Select files to commit") |
-
-#### Amend Commit Toggle
-
-| Property | Detail |
-|---|---|
-| Widget | `QCheckBox` labeled "Amend" |
-| Position | To the left of the commit button, on the same row (button shrinks slightly to make room) |
-| Behavior | When checked: (1) the commit button label changes to "Amend commit on {branch}", (2) the commit message and description fields are **pre-filled** with the most recent commit's message and body, (3) the file list shows the changes from the last commit *combined* with any new working-tree changes, (4) committing calls `engine.commit(msg, amend=True)` |
-| Guard | If the repo has zero commits (unborn branch), this checkbox is hidden/disabled — there's nothing to amend |
-| Warning | On first check per session, show a subtle inline warning beneath the checkbox: "This will modify the most recent commit" (not a blocking dialog — amending is a normal workflow, not a dangerous one) |
-
-> [!NOTE]
-> Unchecking "Amend" restores the commit message/description to whatever the user had typed before amend was enabled (not cleared). The pre-amend text is stashed in a local variable, not discarded.
-
-### 3.5 Right Column — Diff View
-
-| Property | Detail |
-|---|---|
-| Widget | Reuse existing `DiffView` / `DiffWidget` from Phase 1 (`src/wrench/ui/diff_view/`) |
-| Trigger | Updates when a file is selected (clicked) in the left column's file list |
-| Content | Shows the unified diff for the selected file (same as current implementation — syntax-highlighted, line numbers, hunk headers) |
-| Hunk staging | Existing hunk-level and line-level staging buttons remain functional within the diff view |
-| Binary files | If the selected file is binary (`Diff.is_binary`), show a centered message: "Binary file changed" with the file size. Do not attempt to render diff content. Hunk/line staging controls are hidden; only whole-file staging is available |
-
-#### Empty State (No Changes)
-
-When there are **no changed files at all** (clean working tree):
-
-```
-┌──────────────────────────────────────┐
-│                                      │
-│                                      │
-│           No changes                 │  ← Bold, large font, centered
-│                                      │
-│   "The best code is the code you     │  ← Regular font, muted color,
-│    don't have to debug."             │    centered, italic
-│                                      │
-│                                      │
-└──────────────────────────────────────┘
-```
-
-| Property | Detail |
-|---|---|
-| "No changes" | Bold, ~18pt font, centered horizontally and vertically in the right column |
-| Quote | Random motivating/programming quote from a hardcoded list of ~20 quotes. Changes each time the empty state is shown. Regular weight, italic, muted/secondary text color |
-| Behavior | This state is shown when: (1) the file list is empty (no changes), OR (2) no file is selected in the list but changes exist — in case (2), show "Select a file to view changes" instead of the quote |
-
-#### Quote Pool (hardcoded)
-
-```
-"The best code is the code you don't have to debug."
-"First, solve the problem. Then, write the code." — John Johnson
-"Clean code always looks like it was written by someone who cares." — Robert C. Martin
-"Simplicity is the soul of efficiency." — Austin Freeman
-"Talk is cheap. Show me the code." — Linus Torvalds
-"Any fool can write code that a computer can understand. Good programmers write code that humans can understand." — Martin Fowler
-"Code is like humor. When you have to explain it, it's bad." — Cory House
-"The only way to go fast, is to go well." — Robert C. Martin
-"Programs must be written for people to read, and only incidentally for machines to execute." — Harold Abelson
-"Make it work, make it right, make it fast." — Kent Beck
-"Perfection is achieved, not when there is nothing more to add, but when there is nothing left to take away." — Antoine de Saint-Exupéry
-"The most important property of a program is whether it accomplishes the intention of its user." — C.A.R. Hoare
-"Before software can be reusable it first has to be usable." — Ralph Johnson
-"It works on my machine." — Every developer ever
-"git push --force and pray." — Anonymous
-"There are only two hard things in Computer Science: cache invalidation and naming things." — Phil Karlton
-"It compiles; ship it." — Anonymous
-"Debugging is twice as hard as writing the code in the first place." — Brian Kernighan
-"A ship in harbor is safe, but that is not what ships are built for." — John A. Shedd
-"Your code is your craft. Commit with pride."
-```
-
-### 3.6 Changes Tab Edge Cases
-
-| Case | Behavior |
-|---|---|
-| **Dirty commit fields on repo switch** | If the user has typed a commit message or description and switches repos via the dropdown, **save the draft per-repo** in memory (a dict keyed by repo path). When switching back to that repo, restore the draft. Drafts are lost on app quit (not persisted to disk — they're ephemeral scratch, not worth the complexity of DB storage) |
-| **File list refresh during typing** | The file list refreshes on every watcher event (filesystem change). Refreshing must **preserve**: (1) the currently selected file highlight, (2) all checkbox states. If the selected file disappears (was committed or discarded externally), clear the diff view and show "Select a file to view changes" |
-| **Very long file paths** | File paths in the list are truncated with `…` from the left if they overflow the column width (e.g., `…/deeply/nested/file.py`), showing the filename and closest parent. Full path is visible in a tooltip on hover |
-| **Large number of changed files (100+)** | No pagination — show all files in a scrollable list. The `QListWidget` handles this natively. Consider adding a count badge next to the select-all checkbox: "☑ 42 files" |
-| **Detached HEAD state** | Commit button label changes to "Commit on detached HEAD" with an orange/warning tint. A small info banner appears above the commit section: "You are in detached HEAD state. Consider creating a branch before committing." |
-| **Unborn branch (zero commits)** | Commit button label: "Create initial commit". Amend checkbox is hidden. Everything else works normally |
-| **Merge conflict state** | If `RepoStatus.has_conflicts` is true, show a persistent banner at the top of the Changes tab: "Merge in progress — resolve conflicts and commit to complete" with a link/button to the merge tool. Conflicted files are highlighted in red in the file list with a `⚠ C` prefix |
-
----
-
-## 4. History Tab
-
-The History tab shows a **GitKraken-style visual branch graph** — a scrollable, interactive visualization of the repository's commit history with branch lines, merge nodes, and commit metadata.
-
-### 4.1 Overall Layout
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                                                                 │
-│  ● ─── Commit message preview (HEAD)              2 min ago     │
-│  │                                                              │
-│  ● ─── Fix typo in README                         1 hour ago    │
-│  │ \                                                            │
-│  │  ● ── Add feature X (feature/x)                3 hours ago   │
-│  │  │                                                           │
-│  │  ● ── WIP: feature X progress                  5 hours ago   │
-│  │ /                                                            │
-│  ● ─── Merge branch 'feature/x'                   6 hours ago   │
-│  │                                                              │
-│  ● ─── Initial commit                             2 days ago    │
-│                                                                 │
-│                    (scrollable ↕)                                │
-└─────────────────────────────────────────────────────────────────┘
-```
-
-### 4.2 Graph Rendering
-
-| Property | Detail |
-|---|---|
-| Widget | Custom `QWidget` subclass (`CommitGraphWidget`) with a `QPainter`-based render pipeline — **not** a `QGraphicsScene` (too heavy for this use case). Alternatively, a `QAbstractScrollArea` subclass for efficient scroll handling of large histories |
-| Direction | Vertical, top-to-bottom. **Newest commits at the top**, oldest at the bottom |
-| Scrolling | The widget is scrollable vertically. Uses **virtual scrolling / lazy loading** — only renders visible commits + a buffer. Loads more commits as the user scrolls down |
-| Row height | Fixed per commit row (~36–40px). Each row contains: the graph rail(s), commit dot, commit message preview, timestamp |
-| Branch rails | Colored vertical lines (rails) representing branches. Each branch gets a **distinct color** from a palette. Rails shift left/right to show branching and merging |
-| Commit nodes | Solid circles (`●`) on the rail. Merge commits have a slightly larger dot or a double-ring style |
-| Branch labels | Branch name labels (e.g., `main`, `feature/x`, `HEAD`) appear as **rounded pill badges** next to the commit they point to. `HEAD` gets a special color (e.g., green) |
-| Tag labels | Tag names appear as pill badges with a different style (e.g., outlined instead of filled) |
-
-### 4.3 Commit Row Content
-
-Each row displays (left to right):
-
-```
-[Graph rails + dot]  [Commit message (truncated)]  [Author avatar]  [Relative time]
-```
-
-| Element | Detail |
-|---|---|
-| Graph area | Fixed-width area (~80–150px depending on max branch depth) showing the rail lines and commit dot |
-| Commit message | Single-line preview, truncated with `…` if too long. Uses the **subject line** (first line of commit message) |
-| Author | Small avatar circle or initials badge (~20px). If gravatar/forge avatar is available, use it; otherwise show initials |
-| Timestamp | Relative time ("2 min ago", "3 hours ago", "2 days ago"). On hover, show absolute timestamp in tooltip |
-
-### 4.4 Hover Interaction — Tooltip Preview
-
-When the user **hovers** over a commit row, a **tooltip-style popup** appears near the cursor showing:
-
-```
-┌─────────────────────────────────────┐
-│  Fix typo in README                 │  ← Subject (bold)
-│                                     │
-│  Fixed a typo in the installation   │  ← Description body (if any)
-│  section of README.md               │
-│                                     │
-│  ── Files Changed ──                │
-│  M  src/main.py        +12  -3      │  ← change type, path, insertions, deletions
-│  A  docs/guide.md      +45  -0      │
-│  D  old_config.yaml     +0  -18     │
-│                                     │
-│  Author: uzair                      │
-│  SHA: a1b2c3d4                      │
-│  Date: 2025-08-26 18:30:00          │
-└─────────────────────────────────────┘
-```
-
-| Property | Detail |
-|---|---|
-| Widget | `QToolTip` or a custom lightweight popup `QWidget` with `Qt.ToolTip` window flag |
-| Delay | Standard tooltip delay (~500ms hover before appearing) |
-| Content | Subject line (bold), description body (if exists), file changes overview with diff stats (+/-), author, short SHA, absolute date |
-| Diff stats | Per-file: change type indicator (M/A/D/R), file path, `+N` insertions (green), `-N` deletions (red) |
-| Dismiss | Disappears when cursor moves off the commit row |
-
-### 4.5 Click Interaction — Slide-In Detail Panel
-
-When the user **clicks** on a commit row, a **slide-in panel** appears from the right side, showing the full commit details and diff.
-
-#### Layout
-
-```
-┌────────────────────────────────────┬───────────────────────────────┐
-│                                    │                               │
-│     Commit Graph                   │    Commit Detail Panel        │
-│     (compressed but still          │    (slide-in from right)      │
-│      visible and interactive)      │                               │
-│                                    │    [×] Close                  │
-│                                    │                               │
-│                                    │    SHA: a1b2c3d4e5f6...       │
-│                                    │    Author: uzair              │
-│                                    │    Date: 2025-08-26 18:30     │
-│                                    │                               │
-│                                    │    ── Commit Message ──       │
-│                                    │    Fix typo in README         │
-│                                    │                               │
-│                                    │    Fixed a typo in the...     │
-│                                    │                               │
-│                                    │    ── Files Changed (3) ──    │
-│                                    │    ▸ src/main.py  +12 -3      │
-│                                    │    ▸ docs/guide.md +45 -0     │
-│                                    │    ▸ old_config.yaml +0 -18   │
-│                                    │                               │
-│                                    │    ── Diff ──                 │
-│                                    │    (full diff of selected     │
-│                                    │     file, or first file)      │
-│                                    │                               │
-└────────────────────────────────────┴───────────────────────────────┘
-```
-
-| Property | Detail |
-|---|---|
-| Widget | `QWidget` inside a `QSplitter` with the graph — OR an animated `QWidget` that slides in with a `QPropertyAnimation` on its width |
-| Width | ~40–50% of the tab content area. The graph compresses to ~50–60% but remains visible and interactive |
-| Animation | Slides in from the right edge with a smooth ~200ms ease-out animation |
-| Close | `×` button in the top-right corner of the panel, OR clicking the same commit row again, OR pressing `Escape` |
-| Header | Full SHA (copyable on click), author name + email, absolute date + relative time |
-| Commit message | Full subject + full description body |
-| Files list | Collapsible/expandable list of changed files. Each shows: change type, path, `+N -M` stats. Clicking a file shows its diff below |
-| Diff view | Reuses the same `DiffView`/`DiffWidget` component from the Changes tab. Shows the diff for the selected file in the files list. If no file is selected, shows the diff for the first file |
-| Scroll | The detail panel is independently scrollable |
-
-### 4.6 Search & Filter Bar
-
-A search/filter bar sits at the **top** of the History tab, above the graph:
-
-```
-┌─────────────────────────────────────────────────────────────────────────────────┐
-│  [🔍 Search commits...]  [Author ▾]  [Path / File ▾]  [Date range ▾]  [× Clear]  │
-├─────────────────────────────────────────────────────────────────────────────────┤
-│  (graph below)                                                                  │
-```
-
-| Element | Detail |
-|---|---|
-| Search box | `QLineEdit` with placeholder "Search commits…". Filters commit messages by case-insensitive substring match. Debounced (300ms single-shot `QTimer`) — does not search on every keystroke |
-| Author filter | Dropdown/chip showing commit authors in this repo. Selecting one filters the graph to only that author's commits |
-| Path / File filter | Dropdown/searchable picker to filter commits that modified a specific file or folder path (satisfies SRS FR-2.3) |
-| Date range | A date-range picker popup (From / To dates). Filters commits to the selected range |
-| Clear | A small `×` button inside the search box (or "Clear filters" button) to reset all filters to default |
-| Results | Filtering does **not** remove non-matching commits from the graph — it **highlights matching commits** and dims/fades non-matching ones, preserving the visual branch structure. If the user wants to jump to the next match, `Enter` / `F3` scrolls to the next highlighted commit |
-
-> [!NOTE]
-> The search/filter maps directly to the `LogFilter` dataclass in `core/read_ops.py`. The filter is composed into a single `LogFilter(author=..., message_substring=..., path=..., date_from=..., date_to=...)` and passed to `engine.get_log()`.
-
-### 4.7 Graph Layout Algorithm
-
-The commit graph needs a layout algorithm to position rails and determine branching/merging visuals. High-level approach:
-
-1. **Topological sort**: Walk commits from `HEAD` using `pygit2`'s `repo.walk()` with `GIT_SORT_TOPOLOGICAL | GIT_SORT_TIME`.
-2. **Lane assignment**: Each active branch occupies a "lane" (column). When a commit has two parents (merge), the secondary parent's lane merges in. When a commit is a fork point, a new lane spawns.
-3. **Color assignment**: Each lane gets a color from a rotating palette. Colors persist for the lifetime of the lane.
-4. **Rendering**: For each visible row, draw:
-   - Vertical rail lines for all active lanes
-   - The commit dot on its assigned lane
-   - Diagonal/curved merge lines connecting parent lanes
-   - Branch/tag label badges
-
-> [!IMPORTANT]
-> The graph rendering is the most complex widget in the app. It should be implemented as a standalone, self-contained widget (`CommitGraphWidget`) with a clear API: `set_repo(repo_handle)`, `refresh()`, and signals for `commit_hovered(sha)`, `commit_clicked(sha)`. Keep the layout algorithm in a separate pure-Python module (`ui/commit_graph/layout.py`) testable without Qt.
-
-### 4.8 Performance Considerations
-
-| Concern | Strategy |
-|---|---|
-| Large repos (10k+ commits) | Virtual scrolling — only compute layout and render for visible rows + 50-row buffer above/below |
-| Initial load | Load first 200 commits eagerly. Load more in batches of 100 as user scrolls |
-| Scroll performance | Cache painted rows as pixmaps. Only repaint on resize or data change |
-| Graph computation | Run the lane assignment algorithm in a background thread, emit results to UI thread |
-
-### 4.9 Graph Interactions — Right-Click Context Menu
-
-Right-clicking a **commit row** shows:
-
-| Item | Action |
-|---|---|
-| Copy SHA | Copies the full SHA to clipboard |
-| Copy Commit Message | Copies the subject line to clipboard |
-| Cherry-pick this commit | Calls `engine.cherry_pick(sha)`. Shows a confirmation first: "Cherry-pick commit {short_sha} onto {current_branch}?" |
-| Revert this commit | Calls `engine.revert(sha)`. Creates a new commit that inverts the changes of the selected commit (with confirmation dialog) |
-| Rebase current branch onto here | Calls `engine.rebase(onto=sha)` (SRS FR-3.3) — rebases `{current_branch}` onto the selected commit |
-| Reset {current_branch} to here… | Opens a sub-menu: **Soft** (keep changes staged), **Mixed** (keep changes unstaged), **Hard** (discard all working tree changes — shows prominent red warning dialog) |
-| --- | *(separator)* |
-| Create branch here… | Opens a dialog to create a new branch pointing at this commit |
-| Create tag here… | Opens a dialog to create a lightweight or annotated tag at this commit |
-
-Right-clicking a **branch label badge** shows:
-
-| Item | Action |
-|---|---|
-| Switch to this branch | Calls `engine.switch_branch(name)` |
-| Merge into {current_branch} | Calls `engine.merge(name)` (merges clicked branch into active branch) |
-| Rebase {current_branch} onto this branch | Calls `engine.rebase(upstream=name)` (SRS FR-3.3) |
-| Fast-forward {current_branch} to this branch | Fast-forwards active branch if it is directly behind the clicked branch |
-| --- | *(separator)* |
-| Rename branch… | Opens an inline rename dialog |
-| Delete branch | Calls `engine.delete_branch(name)` with confirmation |
-| Push to remote / Pull from remote | If a remote tracking branch exists, triggers push/pull for this branch |
-
-Right-clicking a **tag label badge** shows:
-
-| Item | Action |
-|---|---|
-| Copy tag name | Copies the tag name to clipboard |
-| Push tag to remote | Pushes the tag to the default remote |
-| Delete tag | Deletes the tag locally with confirmation dialog |
-
-### 4.10 Empty State (No Commits)
-
-When the repository has zero commits (unborn branch):
-
-```
-┌──────────────────────────────────────┐
-│                                      │
-│          No history yet              │  ← Bold, large, centered
-│                                      │
-│    Make your first commit to see     │  ← Muted text
-│    the branch graph here.            │
-│                                      │
-└──────────────────────────────────────┘
-```
-
-### 4.11 History Tab Edge Cases
-
-| Case | Behavior |
-|---|---|
-| **No repo selected** | Show the same zero-repos empty state as the Changes tab: "Open or clone a repository to get started" |
-| **Clicking a different commit while detail panel is open** | The panel **updates in place** with the new commit's data — no close-and-reopen animation. Only the initial open and final close are animated |
-| **Clicking the same commit that's already shown** | Closes the detail panel (toggle behavior) |
-| **Scrolling while detail panel is open** | The panel stays open and pinned. The graph scrolls behind it. The highlighted commit row remains visually marked even if it scrolls out of the visible area |
-| **Selecting a file in the detail panel's file list** | Updates the diff view within the panel. Does **not** affect the Changes tab's diff view — these are independent instances |
-| **Very wide graphs (many branches)** | The graph area width is dynamic. If more than ~8 active lanes exist, the graph area expands horizontally and a horizontal scrollbar appears. The commit message column shrinks proportionally but never below ~200px |
-| **Octopus merges (3+ parents)** | Treat as a regular merge for visual purposes — show connections to all parent lanes. The commit dot uses the same enlarged/double-ring style as a 2-parent merge |
-
----
-
-## 5. Cross-Cutting Concerns
-
-### 5.1 Theme / Styling
-
-- All custom widgets must respect the application's `QPalette` and not hardcode colors (so dark/light themes work).
-- The tab bar, repo dropdown, and commit section should feel **integrated and cohesive** — no visual breaks between them. Use subtle separators (1px lines, `QPalette.Mid` color), not heavy borders.
-- The branch graph rails should use a curated color palette that works on both light and dark backgrounds:
-
-```python
-GRAPH_COLORS = [
-    "#4C9EEB",  # blue
-    "#E55B5B",  # red
-    "#50C878",  # green
-    "#F5A623",  # orange
-    "#9B59B6",  # purple
-    "#1ABC9C",  # teal
-    "#E67E22",  # amber
-    "#3498DB",  # light blue
-    "#E74C3C",  # crimson
-    "#2ECC71",  # emerald
-]
-```
-
-### 5.2 Keyboard Navigation
-
-| Context | Shortcut | Action |
-|---|---|---|
-| Global | `Ctrl+1`, `Ctrl+2`, ... | Switch to tab by position |
-| Global | `Ctrl+T` | Open the `[+]` tab menu |
-| Changes tab | `↑` / `↓` | Navigate file list |
-| Changes tab | `Space` | Toggle checkbox on focused file |
-| Changes tab | `Ctrl+Enter` | Commit (if message is non-empty and files are checked) |
-| History tab | `↑` / `↓` | Navigate commits |
-| History tab | `Enter` | Open detail panel for focused commit |
-| History tab | `Escape` | Close detail panel |
-
-### 5.3 Status Bar
-
-Retain the `QStatusBar` from Phase 1. It shows contextual info:
-- After repo switch: `"Opened repository: {name}"`
-- After commit: `"Committed {short_sha}"`
-- During background operations: `"Fetching…"` / `"Pushing…"`
-- Idle: Shows current branch name and ahead/behind count if tracking upstream
-
-### 5.4 Accessibility (SRS §4 NFR)
-
-All UI surfaces must satisfy the SRS accessibility NFR. This section specifies the concrete requirements for each widget area.
-
-| Requirement | Detail |
-|---|---|
-| **Keyboard navigation** | Every interactive element must be reachable via `Tab` / `Shift+Tab`. Focus order follows visual top-to-bottom, left-to-right order within each tab. Enter/Escape behavior must be consistent: `Enter` activates focused button/item, `Escape` closes dialogs/popups/panels |
-| **Screen-reader labels** | All icon-only buttons (`QPushButton` with icon and no visible text) must have an `accessibleName` set: the account icon → "Forge account", the `+` tab button → "Add new tab", the `×` close buttons → "Close tab", the branch dropdown → "Switch branch: {current_branch}" |
-| **Accessible descriptions** | The commit button shows dynamic text ("Commit to main") which is already accessible. When disabled, set `accessibleDescription` to explain why ("Enter a commit message" or "Select files to commit") |
-| **File list** | Each file row's accessible name must include the change type and full path: "Modified src/main.py, checked" / "Added README.md, unchecked". The select-all checkbox → "Select all files, 3 of 5 selected" |
-| **Graph widget** | The commit graph is a custom-painted `QWidget` which is inherently inaccessible to screen readers. Provide a parallel `QTreeView`-based accessible fallback (same data, no visual graph lines) that can be toggled via View menu or auto-activated when a screen reader is detected (`QAccessible::isActive()`) |
-| **Tooltips** | All tooltips must also be available as `accessibleDescription` — screen readers can't read tooltips that only appear on hover |
-| **Verification** | Before v1 ships: complete a keyboard-only walkthrough of every M-priority flow (add repo, stage files, commit, switch branch, navigate history, open PR) with no mouse. Document any gaps |
-
-> [!IMPORTANT]
-> The commit graph accessible fallback is the highest-effort a11y item. It should be implemented alongside the graph widget in Phase 2, not deferred to polish.
-
-### 5.5 Localization Readiness (SRS §4 NFR)
-
-All user-facing strings must be wrapped in `self.tr()` (PySide6's Qt Linguist integration) from day one. This includes:
-- Menu item labels
-- Button text
-- Placeholder text in input fields
-- Dialog titles and messages
-- Status bar messages
-- Empty state text (including the programming quotes — they're user-facing even if decorative)
-- Tooltip text
-
-English-only ships in v1, but wrapping now means translation can be done post-v1 without touching every file.
-
-> [!NOTE]
-> Do NOT use `tr()` for: log messages (they're developer-facing), internal identifiers, or test assertions.
-
----
-
-## 6. Secondary UI Surfaces
-
-These features are required by the SRS but don't have a dedicated tab. They're accessed via menus, popups, or embedded sections within existing tabs.
-
-### 6.1 Stash Panel (SRS FR-1.7)
-
-The stash feature provides create/apply/drop operations with named stashes.
-
-#### Access Points
-- **Menu**: Edit → Stash Changes (`Ctrl+Shift+S`), Edit → Pop Stash (`Ctrl+Shift+P`)
-- **Changes tab**: When the branch switcher detects uncommitted changes during a switch, the "Stash & Switch" button triggers a stash-then-switch sequence
-
-#### Stash Manager Popup
-
-Triggered via Edit → Manage Stashes…
-
-```
-┌───────────────────────────────────────┐
-│  Stashes                    [×]       │
-├───────────────────────────────────────┤
-│  stash@{0}: WIP on main        2h ago│
-│  stash@{1}: fix: login bug     1d ago│
-│  stash@{2}: experiment          3d ago│
-├───────────────────────────────────────┤
-│  [Apply]  [Pop]  [Drop]              │
-└───────────────────────────────────────┘
-```
-
-| Property | Detail |
-|---|---|
-| Widget | `QDialog` (modal) |
-| Stash list | `QListWidget` showing all stashes. Each row: stash ref, message (or auto-generated "WIP on {branch}"), relative time |
-| Apply | Applies the selected stash without removing it (`engine.stash_apply(index)`) |
-| Pop | Applies and removes the selected stash (`engine.stash_pop(index)`) |
-| Drop | Removes the selected stash without applying (`engine.stash_drop(index)`) with confirmation: "Drop stash '{message}'? This cannot be undone." |
-| Create | Not in this dialog — stash creation is via the menu shortcut or the branch-switch dialog |
-| Named stashes | When creating via menu (Ctrl+Shift+S), show a small inline dialog: "Stash message (optional):" with a text field. If left empty, use git's default message |
-
-### 6.2 Clone Dialog (SRS FR-4.1)
-
-Triggered via File → Clone Repository… (`Ctrl+Shift+C`).
-
-```
-┌───────────────────────────────────────┐
-│  Clone Repository               [×]  │
-├───────────────────────────────────────┤
-│  URL:                                 │
-│  [https://github.com/user/repo.git ]  │
-│                                       │
-│  Destination:                         │
-│  [/home/user/Projects/repo ] [Browse] │
-│                                       │
-│  ☐ Clone recursively (init submodules)│
-│                                       │
-│  [     Clone     ]                    │
-│                                       │
-│  ▓▓▓▓▓▓▓▓░░░░░░░░░ 45% — Receiving…  │
-└───────────────────────────────────────┘
-```
-
-| Property | Detail |
-|---|---|
-| Widget | `QDialog` (modal) |
-| URL field | `QLineEdit`, placeholder "Repository URL (HTTPS or SSH)". Auto-detects SSH vs HTTPS format |
-| Destination | `QLineEdit` + "Browse…" button (opens XDG Desktop Portal folder picker). Default: `~/Projects/{repo_name}` derived from URL. If the directory already exists and is non-empty, show a warning icon |
-| Recursive | `QCheckBox` — if checked, calls `engine.clone(url, dest, recursive=True)` to init submodules |
-| Progress | `QProgressBar` + status text below the clone button. Progress is parsed from git's clone output (objects received, deltas resolved). Button changes to "Cancel" during clone |
-| On success | Add the cloned repo to `repo_registry`, select it in the Changes tab dropdown, close the dialog |
-| Error handling | Show inline error text (red) below the URL field for: invalid URL format, network errors, auth failures (suggest checking credentials) |
-
-### 6.3 LFS & Submodule Indicators (SRS FR-6.1, FR-6.2)
-
-> [!NOTE]
-> Full LFS and submodule management UI is deferred to Phase 5 (implementation-plan.md). This section specifies the **indicators and basic operations** that should be present in v1's Changes tab.
-
-#### LFS in the Changes Tab
-
-| Element | Behavior |
-|---|---|
-| File list indicator | Files tracked by LFS show a small "LFS" badge or icon next to their path. This is informational only — the file is still staged/committed normally |
-| Diff view | LFS-tracked files that changed show: "LFS tracked file (pointer changed)" instead of a content diff. Display the old and new pointer OIDs side by side |
-
-#### Submodule in the Changes Tab
-
-| Element | Behavior |
-|---|---|
-| File list indicator | Submodule entries in the changed files list show a "📦" icon or "submodule" badge. Change type shows the commit the submodule moved to |
-| Diff view | Submodule changes show: "Submodule {name} updated: {old_sha} → {new_sha}" with a link to the submodule's commit if forge is linked |
-
-### 6.4 Snapshot Browser (SRS FR-10.6)
-
-> [!NOTE]
-> The snapshot system's storage and triggers are implemented in Phase 1 (core) and Phase 2 (trigger wiring). This section specifies the **browse/restore UI panel** referenced in Phase 2 step 6 of implementation-plan.md as `ui/snapshots_panel/`.
-
-#### Access Points
-- **Menu**: File → Snapshots… or Edit → Browse Snapshots
-- **History tab**: A small "Snapshots" button/link in the toolbar area (near the search bar) opens the panel
-
-#### Snapshot Panel
-
-```
-┌───────────────────────────────────────┐
-│  Snapshots for {repo_name}     [×]    │
-├───────────────────────────────────────┤
-│  ★ "Before refactor"    manual  2h ago│
-│    Auto (on commit)     auto    4h ago│
-│    Auto (on commit)     auto    1d ago│
-│    Auto (timer)         auto    1d ago│
-│    Pre-merge snapshot   auto    2d ago│
-├───────────────────────────────────────┤
-│  [Restore]  [Delete]                  │
-│                                       │
-│  ⚠ Restoring will replace your       │
-│    working tree and index.            │
-└───────────────────────────────────────┘
-```
-
-| Property | Detail |
-|---|---|
-| Widget | `QDockWidget` or `QDialog` (modal). Slide-in panel from the right or a dialog — TBD based on usage frequency |
-| Snapshot list | Scrollable list showing: icon (★ for manual, ● for auto), label or trigger type, trigger source (commit/timer/pre-merge/manual), relative timestamp. Manual snapshots are visually distinct (bold, star icon) |
-| Restore | Restores working tree + index to the selected snapshot's state. **Does not rewrite branch history** (no force-push risk). Shows a confirmation dialog: "Restore to snapshot from {timestamp}? Your current working tree changes will be replaced." |
-| Delete | Deletes the selected snapshot with confirmation. Manual snapshots warn additionally: "This is a manually-named snapshot. Are you sure?" |
-| Empty state | "No snapshots yet. Snapshots are created automatically on commit, on a timer, and before risky operations." |
-
-### 6.5 Git Identity Override (SRS FR-1.5, FR-7.1)
-
-The account icon (§3.4) handles **forge** accounts. Git **commit identity** (user.name, user.email) is separate.
-
-| Element | Location | Behavior |
-|---|---|---|
-| Identity display | Status bar or tooltip on the account icon | Shows "Committing as: {user.name} <{user.email}>" — reads from the repo's git config, falling back to global |
-| Override | Accessible via right-click on the account icon → "Change Git Identity…" or via Edit → Git Identity… | Opens a small dialog with name + email fields. Saves to the repo's local `.git/config` (`engine.set_identity(name, email)`) |
-| First-use check | On repo open, if `user.name` or `user.email` is unset (neither repo-local nor global), show a non-blocking info banner at the top of the Changes tab: "Git identity not configured. Set your name and email before committing." with a "Configure…" link |
-
-### 6.6 3-Way Merge Tool (SRS FR-3.2)
-
-When a merge or rebase encounters conflicts (`RepoStatus.has_conflicts` is true), clicking the "Resolve Conflicts" button or double-clicking a conflicted file (`⚠ C`) opens the **3-Way Merge Tool**. It is a full-featured visual resolution interface.
-
-#### Layout (3-Pane Top + Result Bottom)
-
-```
-┌──────────────────────────────────────────────────────────────────────────────┐
-│  Conflict 2 of 5: src/engine.py           [◀ Prev Conflict] [Next Conflict ▶]│
-├──────────────────────┬───────────────────────┬───────────────────────────────┤
-│  OURS (Current)      │  BASE (Common Ances.) │  THEIRS (Incoming)            │
-│  [Accept Current]    │                       │  [Accept Incoming]            │
-├──────────────────────┼───────────────────────┼───────────────────────────────┤
-│  def calculate():    │  def calculate():     │  def calculate():             │
-│      return x * 2    │      return x         │      return x * 10            │
-│                      │                       │                               │
-├──────────────────────┴───────────────────────┴───────────────────────────────┤
-│  RESULT (Editable)   [Accept Both (Ours ➔ Theirs)]   [Accept Both (Theirs ➔ Ours)]│
-├──────────────────────────────────────────────────────────────────────────────┤
-│  def calculate():                                                            │
-│      return x * 2                                                            │
-│                                                                              │
-├──────────────────────────────────────────────────────────────────────────────┤
-│  [Abort Merge]                                 [Mark Resolved & Next ➔]      │
-└──────────────────────────────────────────────────────────────────────────────┘
-```
-
-| Property | Detail |
-|---|---|
-| Window/Widget | `QDialog` (maximized/modal) or a dedicated full-screen overlay in the main window |
-| Top Splitter | 3 side-by-side synchronized diff panes: **Ours** (local branch changes), **Base** (common ancestor commit), **Theirs** (incoming branch changes). Panes scroll synchronously to keep conflicting lines aligned |
-| Bottom Pane | **Result Editor** (`QPlainTextEdit` with syntax highlighting and line numbers). Pre-populated with resolution choice; directly editable by the user for manual edits |
-| Conflict Navigation | Toolbar shows "Conflict N of Total" for the current file, with `◀ Prev Conflict` and `Next Conflict ▶` buttons to jump between conflict blocks |
-| Resolution Actions | 1. **Accept Current (Ours)**: Replaces conflict block with Ours<br>2. **Accept Incoming (Theirs)**: Replaces conflict block with Theirs<br>3. **Accept Both (Ours ➔ Theirs)**: Inserts both blocks in order<br>4. **Accept Both (Theirs ➔ Ours)**: Inserts both blocks in reverse order<br>5. **Manual Edit**: User edits the Result pane directly |
-| File Resolution | Once all conflicts in the file are resolved, clicking **"Mark Resolved & Next"** writes the file to disk, stages it via `engine.stage_file()`, and advances to the next conflicted file |
-| Abort Merge | **"Abort Merge"** button with confirmation dialog calls `engine.merge_abort()`, restoring the working copy to pre-merge state |
-
-### 6.7 Reflog Recovery Dialog (SRS FR-1.10)
-
-Accessible via **Edit → Reflog Recovery…** or from the History tab toolbar. Provides the standard safety net for recovering from lost commits, bad rebases, or accidental branch resets.
-
-```
-┌──────────────────────────────────────────────────────────────────────────────┐
-│  Reflog Recovery for {repo_name}                                        [×]  │
-├──────────────────────────────────────────────────────────────────────────────┤
-│  Reflog entry                                             Date               │
-├──────────────────────────────────────────────────────────────────────────────┤
-│  HEAD@{0}  commit: Fix database migration index           10 mins ago        │
-│  HEAD@{1}  checkout: moving from feature/login to main    1 hour ago         │
-│  HEAD@{2}  rebase -i (finish): returning to refs/heads/...2 hours ago        │
-│  HEAD@{3}  commit: WIP on auth backend                    5 hours ago        │
-│  HEAD@{4}  reset: moving to HEAD~1                        1 day ago          │
-├──────────────────────────────────────────────────────────────────────────────┤
-│  SHA: 7a8b9c0d  •  Author: Uzair <uzair@example.com>                         │
-│  [View Diff Preview]                                                         │
-├──────────────────────────────────────────────────────────────────────────────┤
-│  ⚠ Restoring will reset current HEAD to the selected state (git reset --hard)│
-│  [Cancel]                                        [Restore Current Branch ➔]  │
-└──────────────────────────────────────────────────────────────────────────────┘
-```
-
-| Property | Detail |
-|---|---|
-| Widget | `QDialog` (modal, `800×600`) |
-| Entry List | `QTreeView` / `QListWidget` showing pygit2 `repo.head.log()` entries in reverse chronological order (newest first). Columns: Selector (`HEAD@{N}`), Action / Message, Relative Timestamp |
-| Selection Preview | Selecting a row shows the commit metadata (SHA, author, full message) and an expandable inline diff preview |
-| Restore Action | **"Restore Current Branch"** button triggers `engine.restore_to_ref(sha)`. Shows a prominent confirmation dialog: *"This will reset {current_branch} to {sha} and discard any uncommitted working tree changes (`git reset --hard`). Are you sure?"* |
-| Guard | Disabled if `RepoStatus.has_conflicts` is true (must resolve or abort conflict first) |
-
-### 6.8 Remote Management Dialog (SRS FR-4.4)
-
-Accessible via **Edit → Manage Remotes…** or repository settings.
-
-```
-┌──────────────────────────────────────────────────────────────────────────────┐
-│  Manage Remotes — {repo_name}                                           [×]  │
-├─────────────────────────┬────────────────────────────────────────────────────┤
-│  Remotes:               │  Remote Details:                                   │
-│  ┌───────────────────┐  │  Name:      [origin                 ]              │
-│  │ ★ origin          │  │  Fetch URL: [git@github.com:uzair/repo.git       ] │
-│  │   upstream        │  │  Push URL:  [git@github.com:uzair/repo.git       ] │
-│  │                   │  │  [✓] Same as Fetch URL                             │
-│  └───────────────────┘  │                                                    │
-│  [+ Add]  [- Remove]    │  [Test Connection] [Fetch Prune]                   │
-├─────────────────────────┴────────────────────────────────────────────────────┤
-│  [Close]                                                 [Save Changes]      │
-└──────────────────────────────────────────────────────────────────────────────┘
-```
-
-| Property | Detail |
-|---|---|
-| Widget | `QDialog` (modal) |
-| Remotes List | Left pane listing all configured remotes (`origin`, `upstream`, etc.) with default/starred indicator |
-| Remote Details | Right pane editing `name`, `fetch_url`, `push_url` (with auto-sync toggle) |
-| Actions | 1. **Add Remote**: Input name + URL, validates URL format<br>2. **Remove Remote**: Prompts confirmation before removing<br>3. **Test Connection**: Runs background check against the remote via `workers.py`<br>4. **Fetch & Prune**: Fetches remote refs and prunes deleted tracking branches |
-
-### 6.9 On-Demand Backup & Restore Dialog (SRS FR-8.1–8.4)
-
-Accessible via **File → Backup Repository…** and **File → Restore from Backup…**. Provides manual, point-in-time disaster-recovery snapshots to external storage (USB drives, mounted NAS shares, or separate disks).
-
-```
-┌──────────────────────────────────────────────────────────────────────────────┐
-│  Backup Repository                                                      [×]  │
-├──────────────────────────────────────────────────────────────────────────────┤
-│  Source Repository:                                                          │
-│  /home/uzair/Projects/wrench (Branch: main, 142 commits)                     │
-│                                                                              │
-│  Destination Backup Folder (USB / NAS / Disk):                               │
-│  [/run/media/uzair/USB_BACKUP/wrench_backups          ] [Browse Portal...]   │
-│                                                                              │
-│  Backup Options:                                                             │
-│  [✓] Include uncommitted working tree changes (as stash bundle)              │
-│  [✓] Compress archive (.tar.gz)                                              │
-│                                                                              │
-│  [     Create Backup Now     ]                                               │
-│  ▓▓▓▓▓▓▓▓▓▓▓▓▓▓░░░░ 70% — Creating bundle...                                 │
-└──────────────────────────────────────────────────────────────────────────────┘
-```
-
-| Property | Detail |
-|---|---|
-| Widget | `QDialog` (modal) |
-| Destination | Uses XDG Desktop Portal file picker (folder select mode) to securely access removable drives/NAS paths under Flatpak sandbox |
-| Execution | Generates a full git bundle (`git bundle create`) + optional untracked changes archive via `workers.run_in_background` with live progress bar |
-| Restore Flow | **File → Restore from Backup…** opens a restore wizard: selects backup file/folder, validates bundle integrity, and unpacks to a chosen target folder with automatic registration in `repo_registry` |
-
-### 6.10 Repository Discovery Dialog (SRS FR-1.12)
-
-Reached from **File → Open** (or the Changes tab's Open action) when the picked directory is **not** itself a git repository — the not-a-repo dead end becomes a branch into discovery. The scan runs in the background (implementation-plan §4.8) with cooperative cancellation. The is-a-repo fast path is unchanged.
-
-```
-┌────────── Discover Repositories ─────────────[x]─┐
-│ Scanning /home/uzair/Projects…                   │
-│ ◌ Found 4 repositories so far…                   │
-│                                    [ Cancel ]    │
-└──────────────────────────────────────────────────┘
-
-┌────────── Discover Repositories ─────────────[x]─┐
-│ Found 6 git repositories under ~/Projects.       │
-│  ☑ website        ☑ wrench        ☑ dotfiles     │
-│  ☑ api-server     ☑ notes         ☑ sandbox      │
-│                    [ Add Selected ]  [ Cancel ]  │
-└──────────────────────────────────────────────────┘
-```
-
-| Property | Detail |
-|---|---|
-| Widget | `QDialog` (modal) |
-| Scan | `engine.discover_repos(root)` via `run_in_background`; spinner + live found-count via `on_progress`; Cancel sets `cancel_event` |
-| Results list | Checkable rows — label = path relative to the picked root, tooltip = absolute resolved path; all checked by default; Space toggles, full keyboard operation |
-| Accept | Registers each checked path (dedup by resolved path: already-known skipped silently, registered-but-missing restored via `clear_missing`, new → `add_repo`), then refreshes the Changes-tab repo selector |
-| Empty result | No dialog — plain message: "No git repositories found under `<path>` (searched 3 levels deep)". Offering `git init` here is out of scope |
-| Completion | Status-bar summary: "Added N repositories (M already known)" |
-| Non-goal | Bare repositories are never discovered (no `.git` marker) — implementation-plan §5 Phase 4.5 step 1 |
-
-All strings `tr()`-wrapped; Enter/Esc contract matches the other modal dialogs.
-
-### 6.11 Application Settings Dialog (SRS FR-13.1)
-
-Opened from **Edit → Preferences…**. One unified modal dialog hosting every user-facing toggle, organized as per-module pages (this section satisfies the "unify everything" and "separate page per module" requirements simultaneously — one dialog, many pages).
-
-```
-┌────────── Settings ────────────────────────────[x]─┐
-│ ▸ Appearance    │  Theme:  (•) Auto  ( ) Pastel Light │
-│   Tabs          │          ( ) Pastel Dark             │
-│   Repositories  │  ☑ Match system …                    │
-│   Snapshots     │                                      │
-│   Forge         │   (instant-apply — no OK/Apply)      │
-│   Advanced      │                                      │
-└──────────────────────────────────────────────────────┘
-```
-
-| Property | Detail |
-|---|---|
-| Widget | `QDialog` (modal), Escape closes; no size/state persistence (KISS) |
-| Structure | left `QListWidget` module switcher (each row `setAccessibleName`d) → right `QStackedWidget` of `SettingsPage` subclasses (`title()`/`build()`/`load()`; instant-apply — controls write on change, no Apply button) |
-| Sync contract | pages and View/Repository menu actions share ONE MainWindow setter per toggle (e.g. `_set_theme`, `_set_tab_orientation`, `_set_auto_fetch`); pages never write `app_settings` directly; `showEvent` re-runs every page's `load()` |
-| v1 module set | Appearance (theme; Phase 4.4 adds the gravatar opt-in here), Tabs (orientation), Repositories (auto-fetch on open), Snapshots (active-repo trigger/retention editor via `update_snapshot_settings` + `restart_snapshot_timer()`), Forge (summary + button opening AccountsDialog), Advanced (overflow; hidden when empty) |
-| Hard rule | mirrors existing toggles and MOVES nothing (menu items all keep working); any toggle found in code but unreachable in the dialog is a phase-blocking omission — **Advanced is the only permitted concealment**, and only with a "why it's advanced" tooltip |
-| Theme modes | exactly three — System / Pastel Light / Pastel Dark — rendered as the Appearance-page radio + a live token preview strip; token/luminance/mode-resolution rules live in implementation-plan §5 Phase 4.3 |
-| Coverage rule | **total configurability** — no assumed preferences: every user-adjustable option reachable on a page; exemptions need a written rationale in the phase's completion notes |
-
-### 6.12 Avatars (SRS FR-5.14)
-
-Avatar rendering rules app-wide: **initials tile first, fetched image swaps in later**; failure anywhere (offline, 404, 429, corrupt bytes) stays initials forever — silently. No avatar fetch ever runs on the GUI thread or blocks a list render; repeated URLs in one refresh are one HTTP request (in-flight dedup); disk cache `avatars/sha256(url).png`, 7-day TTL; sizes 24/40/64 px buckets.
-
-| Surface | Avatar source |
-|---|---|
-| PR/Issue list rows + detail headers | adapter payload `author_avatar_url` (GitHub `user.avatar_url`, GitLab `author.avatar_url`, Forgejo `user.avatar_url`, Bitbucket `author.links.avatar.href`) |
-| Commit-box account button | linked account's avatar, persisted as `account.{id}.avatar_url` at link time |
-| History detail panel author row | Gravatar (`md5(lower(email))`, `?d=identicon`) — **opt-in only**, `ui.avatars_gravatar` default OFF; settings tooltip discloses that enabling it sends hashed emails to gravatar.com |
-| Commit-graph rows | **deliberately none** — density/perf cut for v1, documented so nobody adds it casually |
-
-A11y: avatar controls expose `accessibleName` = the person's display name/username, never "image".
-
-### 6.13 Activity Log, Progress & Personality (SRS FR-14.1–14.3)
-
-**Voice & tone charter (applies to every personality surface, everywhere in the app):** dry, warm, competent, self-aware — Wrench jokes *with* the user, never *at* them. The rules are absolute: (1) humor is garnish — it never carries information, and no user-facing fact may depend on reading a joke; (2) waiting/success/empty-state surfaces only — errors, conflicts, destructive confirmations, auth failures, and anything financial/legal stay plain and actionable; (3) one line, muted, secondary to real status text; (4) niche references are seasoning for those who get them and harmless noise for those who don't — never gate comprehension on the reference; (5) screen readers get semantic `accessibleName`s — the joke is visual, the a11y name stays factual; (6) the `ui.humor_lines` toggle disables everything below instantly; (7) translators may localize or substitute jokes freely.
-
-**The activity dock** (Phase 4.6; `ui/widgets/activity_log.py`): a one-line strip docked immediately above the status bar — latest event as `icon + elided text + timestamp`; click or `Ctrl+`` expands an inline ~8-line monospace scrollback (newest at bottom; hover pauses auto-scroll; Copy on the context menu). In-memory only (`deque(maxlen=200)`); expanded/collapsed is session-transient, never persisted. Level colors come from theme tokens (FR-13.2) and are covered by the contrast test.
-
-```
-│ ⏱ 14:02  Receiving objects: 47% (9,204/19,550) — pull origin main        [▸] │
-└ (expanded) ─────────────────────────────────────────────────────────────┐
-│ 14:00  started pull origin/main                                          │
-│ 14:00  counted objects                                                   │
-│ 14:02  receiving objects 47%                                             │
-│ 14:02  it's not stuck — it's doing its best                              │
-└──────────────────────────────────────────────────────────────────────────┘
-```
-
-**Progress policy (authoritative):** determinate bars only where git emits a real numerator (clone/push/pull/fetch %; `Rebasing (n/m)`; LFS "N of M files"; countable submodule steps). Everywhere else: indeterminate spinner + real stage text + optional waiting line. **Estimated/faked progress is banned.** Determinate variants show the real stage text in the primary line — a waiting line may appear *under* it, muted, never replacing it.
-
-**Humor rules (hard):** waiting/success surfaces only — never on errors, rejections, conflicts, data-loss, or anything the user did wrong. One muted line max. One fixed cadence (appears after ~8 s, rotates ~4 s). Toggleable via the Appearance page (`ui.humor_lines`, default on, deliberate). All strings `tr()`-wrapped; translators are free to substitute a locally-known joke rather than translate the reference.
-
-**Banks (`ui/quotes.py` — transplant verbatim; extend tone-matched later):**
-
-```
-CLEAN_STATE_QUOTES = [
-    tr("Clean tree. A rare and beautiful biome."),
-    tr("Nothing to commit. Working as intended — allegedly."),
-    tr("Zero changes. Even the watcher is calm."),
-    tr("The working tree is clean. So say we all."),
-    tr("No changes. The cake, today, is real."),
-    tr("Clean. Shiny. Not a thing in the wire."),
-    tr("git status: this is fine. (Genuinely, this time.)"),
-    tr("A clean tree on a Friday. Freeze it in amber."),
-    tr("Nothing staged. Nothing feared. Winter is not coming."),
-    tr("It's a UNIX system — and it's tidy."),
-]
-
-EMPTY_REPO_LINES = [   # zero repos registered at all
-    tr("Once upon a time, a developer opened a git client…"),
-    tr("No repositories yet. The canvas is blank and the DAG is unborn."),
-    tr("Nothing here. Somewhere, an `init` is waiting."),
-    tr("Empty. The graph of your future commits has no edges — yet."),
-]
-
-EMPTY_PR_LINES = [
-    tr("No open PRs. Enjoy the silence."),
-    tr("Zero pull requests. The timeline is unmeddled-with."),
-    tr("Nothing to review. The reviewers rest."),
-]
-
-EMPTY_ISSUES_LINES = [
-    tr("No issues. Suspicious."),
-    tr("Zero issues. The void is well-behaved today."),
-    tr("Nothing broken reported. (The tracker doubts this too.)"),
-]
-
-WAITING_LINES = [
-    tr("Reticulating splines…"),
-    tr("Do not panic if it looks stuck."),
-    tr("It's not stuck — it's doing its best."),
-    tr("Hold on to your butts."),
-    tr("I'm givin' her all she's got, Captain!"),
-    tr("Wibbly-wobbly, objecty-wojecty…"),
-    tr("Counting objects. The objects remember everything."),
-    tr("As you wish."),
-    tr("Negotiating with the server. Witness me."),
-    tr("Compressing objects — the luggage folds itself."),
-    tr("One does not simply walk this DAG."),
-    tr("Resolving deltas. The deltas never asked for this."),
-    tr("It is dangerous to go alone — wait for the packfile."),
-]
-
-SUCCESS_LINES = [
-    tr("Done. It works on my machine and yours."),
-    tr("Nailed it. Nobody saw anything."),
-    tr("Shipped* (*locally)."),
-    tr("Checkpoint secured. The timeline is preserved."),
-    tr("Flawless. Add it to the ballad."),
-    tr("Redeemed."),            # only ever after a recovered-from failure
-    tr("Merged. The timeline holds."),
-    tr("Stashed. Into the drawer it goes."),
-]
-
-IDLE_LINES = [           # one-shot quip; see the idle rule below
-    tr("Still here. The snapshots kept watch."),
-    tr("Idle detected. Your uncommitted changes are being admired from a distance."),
-    tr("Thirty quiet minutes. The working tree meditates."),
-]
-
-MILESTONE_LINES = {    # one-shot toasts, fire-once-ever — see milestone rule below
-    "first_pr_created": tr("Your first PR from here. Frame it."),
-    "snapshot_100th":   tr("Snapshot 100. Paranoia: validated."),
-    "push_after_recovery": tr("Redeemed."),
-]
-```
-
-**Idle & milestone rules (behavior, not garnish):** the idle quip fires once per stretch of inactivity — a single-shot 30-minute timer reset by any user input or watcher event, posts one `IDLE_LINES` entry to the activity dock only if a dirty tree exists, then disarms until activity resumes. Milestones fire **once, ever, per key** — fired keys persist in `app_settings` key `ui.milestones_seen` (JSON list) so restarts don't re-celebrate; detection hooks live at the existing success call sites (`create_pull_request` completion for `first_pr_created`, `take_snapshot` count check for `snapshot_100th`, push-after-resumed-failure for `push_after_recovery`). Both are humor-toggle-gated like everything else here; both post through the activity dock, never as dialogs or toasts-over-content.
-
-### 6.14 About Dialog (SRS FR-9.3)
-
-Help ▸ About. The one surface where personality is the content itself; everything legal still gets top billing.
-
-```
-┌────────────── About Wrench ──────────────[x]─┐
-│         🔧  Wrench  v1.0.0                    │
-│   "A native Git client for people who read   │
-│    the log before they blame the merge."      │
-│                                              │
-│  [GitHub] [Report a bug] [License & Notices] │
-│                                              │
-│  AGPL-3.0-or-later · Built with Qt/pygit2    │
-│  © the Wrench contributors                   │
-│                        [ About Qt ] [ Close ] │
-└──────────────────────────────────────────────┘
-```
-
-| Property | Detail |
-|---|---|
-| Widget | `QDialog`, modal, Escape closes |
-| Version | `importlib.metadata.version("wrench")` — never a hardcoded string |
-| Links | QPushButton row → `QDesktopServices.openUrl`: GitHub repo, prefilled "Report a bug" (FR-9.1), docs |
-| License pane | Scrollable read-only text: bundled AGPL-3.0 LICENSE + third-party notices for Qt/PySide6 (LGPL), pygit2/libgit2, httpx, watchdog, secretstorage, platformdirs — the licensing NFR's in-app discharge point |
-| Personality | one rotating line from `ABOUT_WISDOM` (ui/quotes.py) under the pitch; obeys `ui.humor_lines`; §6.13's charter applies |
-| Extra | "About Qt" standard button; full keyboard focus chain; all strings `tr()` |
-
-`ABOUT_WISDOM` (lives in `ui/quotes.py` with the other banks; transplant verbatim):
-
-```
-ABOUT_WISDOM = [
-    tr("Forty-two commits deep and still finding truth."),
-    tr("Powered by Qt, pygit2, and an unwise amount of `git reflog`."),
-    tr("Reads your DAG. Judges nothing."),
-    tr("All checkpoints accounted for."),
-    tr("Never force-push on a Friday. (You're safe — lease is on.)"),
-]
-```
-
----
-
-## 7. File/Component Mapping
-
-Summary of new and modified files for implementation:
-
-| File | Status | Purpose |
-|---|---|---|
-| `src/wrench/ui/main_window.py` | **REWRITE** | New layout: menu bar + tab system + tab content + dialog triggers |
-| `src/wrench/ui/tabs/tab_bar.py` | **NEW** | Custom tab bar widget (vertical/horizontal, add/close/reorder, hybrid model) |
-| `src/wrench/ui/tabs/changes_tab.py` | **NEW** | Changes tab: repo selector, branch switcher, file list, commit section, diff view |
-| `src/wrench/ui/tabs/history_tab.py` | **NEW** | History tab: graph widget + search bar + detail panel container |
-| `src/wrench/ui/tabs/pr_list_tab.py` | **NEW** | PR/MR list tab: category tab listing PRs for the current repo's forge |
-| `src/wrench/ui/tabs/issue_list_tab.py` | **NEW** | Issues list tab: category tab listing issues for the current repo's forge |
-| `src/wrench/ui/tabs/pr_detail_tab.py` | **NEW** | PR detail tab: dynamic tab showing a single PR's details (opened from PR list) |
-| `src/wrench/ui/tabs/issue_detail_tab.py` | **NEW** | Issue detail tab: dynamic tab showing a single issue's details (opened from issues list) |
-| `src/wrench/ui/commit_graph/graph_widget.py` | **NEW/REWRITE** | Visual commit graph with `QPainter` rendering + accessible tree fallback |
-| `src/wrench/ui/commit_graph/layout.py` | **NEW** | Pure-Python lane assignment algorithm (testable without Qt) |
-| `src/wrench/ui/commit_graph/detail_panel.py` | **NEW** | Slide-in commit detail panel |
-| `src/wrench/ui/merge_tool/merge_dialog.py` | **NEW** | Visual 3-way merge conflict resolution tool (§6.6, FR-3.2) |
-| `src/wrench/ui/dialogs/clone_dialog.py` | **NEW** | Clone Repository dialog (§6.2, FR-4.1) |
-| `src/wrench/ui/dialogs/stash_dialog.py` | **NEW** | Stash Manager dialog (§6.1, FR-1.7) |
-| `src/wrench/ui/dialogs/reflog_dialog.py` | **NEW** | Reflog History & Recovery dialog (§6.7, FR-1.10) |
-| `src/wrench/ui/dialogs/remotes_dialog.py` | **NEW** | Remotes Configuration dialog (§6.8, FR-4.4) |
-| `src/wrench/ui/dialogs/backup_dialog.py` | **NEW** | Backup & Restore dialogs (§6.9, FR-8.1–8.4) |
-| `src/wrench/ui/dialogs/identity_dialog.py` | **NEW** | Git Identity override dialog (§6.5, FR-1.5) |
-| `src/wrench/ui/dialogs/discover_repos_dialog.py` | **NEW** | Repository Discovery dialog (§6.10, FR-1.12) |
-| `src/wrench/ui/dialogs/settings_dialog.py` | **NEW** | Modular Settings dialog (§6.11, FR-13.1) |
-| `src/wrench/ui/widgets/avatar.py` | **NEW** | Async avatar loader + disk cache (§6.12, FR-5.14) |
-| `src/wrench/ui/widgets/activity_log.py` | **NEW** | Activity feed widget + bounded history buffer (§6.13, FR-14.2) |
-| `src/wrench/ui/quotes.py` | **NEW** | Quote/humor banks as translatable data (§6.13, FR-14.3) |
-| `src/wrench/ui/dialogs/about_dialog.py` | **NEW** | About dialog with license/notices + links (§6.14, FR-9.3) |
-| `src/wrench/ui/snapshots_panel/__init__.py` | **NEW** | Snapshot browse/restore panel (§6.4, FR-10.6) |
-| `src/wrench/ui/widgets/branch_switcher.py` | **NEW** | Branch indicator/switcher widget (§3.2b, FR-1.6) |
-| `src/wrench/ui/diff_view/diff_widget.py` | **KEEP** | Reused as-is in Changes tab, History detail panel, and PR detail tab |
-| `src/wrench/ui/sidebar/` | **DEPRECATE** | Replaced by repo dropdown in Changes tab. Remove in Phase 1.5 |
-| `src/wrench/ui/workers.py` | **KEEP** | Background thread infrastructure unchanged |
-
----
-
-## 8. Implementation Order
-
-> [!IMPORTANT]
-> Each step must be completed and visually verified before moving to the next. Do not skip ahead.
->
-> Cross-reference convention: `Phase X` / `Phase X.Y` names refer to `implementation-plan.md` §5 (execution order lives in its §12); `FR-x.y` refers to `srs.md` §3; `§Y.Z` without a document prefix refers to sections of this document.
-
-1. **Menu bar + window chrome** — Wire up `QMenuBar` with all items from §1.2. Wire quit guards and geometry persistence.
-2. **Tab bar widget** — Build the `TabBar` with vertical/horizontal toggle, add button, close button, reordering, and hybrid model support (category singletons + dynamic detail tabs + per-repo dedup).
-3. **Changes tab — left column** — Repo dropdown, branch switcher widget (`🌿 main ▾`), unified file list with checkboxes, tri-state select-all toggle.
-4. **Changes tab — commit section** — Account icon, commit message, description, amend toggle, commit button with branch name.
-5. **Changes tab — right column** — Integrate existing `DiffView`. Implement empty state with motivating quotes and binary file handling.
-6. **Changes tab — wiring** — Connect file list selection → diff view. Connect commit button → staging + commit flow. Connect repo dropdown → repo switching. Connect branch switcher → branch operations.
-7. **Stash dialog** — Implement the Stash Manager (§6.1). Wire to Edit menu shortcuts.
-8. **Clone dialog** — Implement the Clone dialog (§6.2). Wire to File → Clone with progress bar.
-9. **Reflog recovery dialog** — Implement the Reflog dialog (§6.7). Wire to Edit → Reflog Recovery.
-10. **Identity dialog** — Implement git identity override (§6.5). Wire first-use check on repo open.
-11. **History tab — graph layout algorithm** — Implement `layout.py` with lane assignment. Unit test without Qt.
-12. **History tab — graph rendering** — Implement `CommitGraphWidget` with `QPainter`. Virtual scrolling. Accessible tree fallback.
-13. **History tab — hover tooltip** — Implement commit hover preview.
-14. **History tab — click detail panel** — Implement slide-in panel with animation, diff view, close behavior.
-15. **History tab — search/filter bar** — Implement debounced message search, author filter, date range, and path filter.
-16. **3-Way Merge Tool** — Implement the 3-pane + result conflict resolution dialog (§6.6). Wire to conflict banner and rebase/merge conflict states.
-17. **Snapshot panel** — Implement browse/restore UI (§6.4). Wire to menu.
-18. **Remotes & Backup dialogs** — Implement Remotes Manager (§6.8) and Backup/Restore dialogs (§6.9).
-19. **Polish** — Keyboard shortcuts, theme consistency, status bar updates, accessibility audit, localization check (`tr()`), edge cases.
-20. **Forge panel tabs** (Phase 4) — PR/Issue list + detail tabs (§0's dedup keys), badges/CI widgets, create-PR dialog, submit-review dialog, accounts manager + link flow dialogs.
-21. **Repository Discovery dialog** (§6.10, Phase 4.5) — background scan with live counter, checkable results list, idempotent accept.
-22. **Application Settings dialog** (§6.11, Phase 4.3) — module list + stacked pages, instant-apply, shared MainWindow setters; add the Avatars opt-in to Appearance when Phase 4.4 lands.
-23. **Avatars** (§6.12, Phase 4.4) — initials-first swap-in loader in PR/issue rows, detail headers, commit-box account button; gravatar path behind its opt-in toggle.
-24. **Operation feedback & delight** (§6.13, Phase 4.6) — progress-type matrix in the git-progress parser, activity dock above the status bar, waiting/success line rotation + clean-state quote bank behind the `ui.humor_lines` toggle.
-25. **About dialog** (§6.14, Phase 4.6) — version/links/license-and-notices pane, About Qt, rotating wisdom line.
+# UI Planning — Wrench (`dev/planning/ui-planning.md`)
 
+**Version:** 0.6 (v2 Complete UI/UX Specification: Virtualized Diff Engine, Multi-Hosting Mirror DAG, 2-Tier Help & Zero-Shortcut Security) **Status:** Authoritative UI Specification for v1 and v2 (`VP-0`–`VP-23`) **Purpose:** Detailed UI and UX specification for [Wrench](https://github.com/uzair777-dev/Wrench)'s native Linux desktop interface. Written to be deterministically executable by a lower-tier coding model — every layout, widget hierarchy, signal connection, keyboard shortcut, zero-impact disable gate, and performance optimization is spelled out explicitly so the model never improvises.
 
+**Companion Documents:**
+
+- [`srs.md`](https://github.com/uzair777-dev/Wrench/blob/master/dev/planning/srs.md) — source of every `(SRS FR-x.y)` and `(NFR-z)` tag; priorities (`M`/`S`/`D`) and setting keys live there.  
+- [`implementation-plan.md`](https://github.com/uzair777-dev/Wrench/blob/master/dev/planning/implementation-plan.md) — v1 phases building baseline surfaces (§5; §12 owns v1 execution order).  
+- [`v2-implementation-plan.md`](https://github.com/uzair777-dev/Wrench/blob/master/dev/planning/v2-implementation-plan.md) — v2 phases (`VP-0`..`VP-23`). Every phase in `v2-implementation-plan.md` links back to an exact `§x.y` section in this file.  
+- [`../ARCHITECTURE.md`](https://github.com/uzair777-dev/Wrench/blob/master/ARCHITECTURE.md) — as-built 3-tier architecture (`UI -> core.engine / forge.registry / storage.settings_registry -> backends`).
+
+## 0\. Reading Guide & Mandatory Rules for Coding Models
+
+This document is organized from the outermost window container inward:
+
+1. **§1 — Window Chrome** (Title bar, Menu bar, Global Status Bar, Global Action Undo Toast, Focus/Zen Mode, Quick-Settings Pin Popover)  
+2. **§2 — Tab System** (Hybrid singleton/detail tabs, Lazy Tab Instantiation, Worktree/Submodule tabs)  
+3. **§3 — Changes Tab** (3-column staging/commit/diff layout, Diff Minimap, Sticky Function Headers, CLI Dry-Run Preview, Hook Drawer, Skip-Worktree Panel)  
+4. **§4 — History Tab** (Search/Pickaxe filters, Virtualized `CommitGraphWidget`, Hover X-Ray Cards, Signature Badges, Bisect Overlay, Slide-In Detail Panel)  
+5. **§5 — Cross-Cutting Concerns & Mandatory UI Optimizations** (Themes, Shortcuts, `Ctrl+K` Command Palette, a11y, i18n, and **6 Non-Negotiable UI Optimization Patterns**)  
+6. **§6 — Secondary UI Surfaces (`§6.1`–`§6.24`)** (Detailed widget specs for every dialog, panel, and v2 surface, including the **Modular Settings Center in `§6.11`** with Lazy Page Loading, 150ms Debounced Auto-Save, and Delta-Only Settings Undo/Redo)  
+7. **§7 — Complete File/Component Mapping** (Exact file paths under `src/wrench/ui/`)  
+8. **§8 — Sequential UI Implementation Order** (v1 Steps 1–25 \+ v2 Steps 26–49 mapped 1-to-1 to `VP-0`..`VP-23`)
+
+### Mandatory UI Rules for Lower-Tier Models (DO NOT VIOLATE)
+
+1. **Zero Direct Backend Imports in `src/wrench/ui/**`:** UI files MUST NEVER import `pygit2`, `subprocess`, `sqlite3`, or `httpx`. Always call `self.engine`, `self.forge_registry`, or `self.settings`.  
+2. **Every UI Element Obeys `SettingsRegistry` Live Signals:** Every optional surface, toolbar button, badge, gutter, or tab MUST subscribe to `self.settings.setting_changed.connect(self._on_setting_changed)` and call `self.setVisible(self.settings.get_bool("<key>", self.repo_path))` so turning a feature off in Settings (`Ctrl+,`) hides it immediately without leaving blank gaps or requiring an app restart.  
+3. **Contextual Gear (`⚙`) Jump-to-Setting Button:** Every panel header and dialog title bar MUST include a compact `16x16` `QToolButton("⚙")` with tooltip `"Configure <Feature> in Settings..."` that calls `MainWindow.open_settings_at_category("<Category Name>", highlight_key="<key>")`.  
+4. **Apply All §5.5 Optimizations:** Never instantiate hidden tabs or unselected Settings pages eagerly; always use lazy factory instantiation, debounced auto-save, bounded ring buffers, and worker generation tokens as specified in §5.5.
+
+## 1\. Window Chrome (`SRS FR-1.1`, `FR-8.8`–`8.11`, `FR-12.1`)
+
+### 1.1 Title Bar & Window Frame
+
+- Native OS window frame (`QMainWindow`) with dynamic title:  
+  - Normal repo: `Wrench — {repo_name} ({branch_name})`  
+  - Linked worktree (`VP-3`): `Wrench — {repo_name} [worktree: {worktree_folder}] ({branch_name})`  
+  - Active sequencer/bisect state (`VP-1`, `VP-2`, `VP-19`): `Wrench — {repo_name} ({branch_name} | REBASING 2/5)`  
+- Persists window geometry (`size`, `pos`, `isMaximized`, splitter ratios) in `SettingsRegistry` via a `250ms` debounced `resizeEvent`/`moveEvent` timer so dragging window edges never hammers SQLite.
+
+### 1.2 Menu Bar (`QMenuBar`)
+
+Eight top-level menus, where every v2 action dynamically hides if its feature toggle in `SettingsRegistry` is `False`:
+
+- **File:** `Open Repository... (Ctrl+O)`, `Clone Repository... (Ctrl+Shift+O)`, `Discover Repositories...`, `Workspace Sessions ▸` (`Save Current Session...`, `Manage Sessions...`, recent sessions list — gated by `workspace.named_sessions.enabled`), `Quick Settings Popover (Ctrl+Shift+,)`, `Settings... (Ctrl+,)`, `Quit (Ctrl+Q)`.  
+- **Edit:** `Undo Last Git Action (Ctrl+Z)` (wired to `core/snapshots.py` / `UndoManager`), `Undo Last Setting Change (Ctrl+Alt+Z)`, `Command Palette... (Ctrl+K)`, `Find in Diff (Ctrl+F)`, `Search Commits (Ctrl+Shift+F)`.  
+- **View:** `Focus / Zen Mode (F11)` (collapses left columns/sidebars to maximize diff/merge area — gated by `ui.zen_mode.enabled`), `Toggle Tab Orientation (Vertical/Horizontal)`, `Toggle Split/Unified Diff (Ctrl+D)`, `Toggle Activity Dock (Ctrl+\`)`,` Zoom In (Ctrl+=)`,` Zoom Out (Ctrl+-)`,` Reset Zoom (Ctrl+0)`,` Refresh (F5)\`.  
+- **Repository:** `Fetch (Ctrl+Shift+T)`, `Pull (Ctrl+Shift+P)`, `Push (Ctrl+P)`, `Remotes...`, `Sparse-Checkout Directories...` (`VP-16`, gated by `monorepo.sparse_checkout_ui.enabled`), `Git Maintenance ▸` (`Run Maintenance Now`, `Write Commit-Graph`), `Export Patch Series (format-patch)...` & `Apply Patch Mailbox (git am)...` (`VP-23`, gated by `patches.ui.enabled`), `Safety Snapshots & Backups...`.  
+- **Branch:** `New Branch... (Ctrl+B)`, `New Stacked Branch on Top...` (`VP-20`, gated by `stacks.enabled`), `Switch Branch...`, `Merge into Current Branch...`, `Rebase Current Branch...`, `Interactive Rebase...` (`VP-2`, gated by `rebase.interactive_ui.enabled`), `Restack Branch Chain (--update-refs)` (`VP-20`, gated by `stacks.enabled`), `Start Git Bisect...` (`VP-19`, gated by `bisect.ui.enabled`).  
+- **Stash:** `Stash All Changes (Ctrl+S)`, `Stash Staged Only (--staged)` (`VP-22`), `Stash Unstaged Only (--keep-index)` (`VP-22`), `Pop Latest Stash`, `Stash Manager...`.  
+- **Tools:** `3-Way Merge Tool...`, `Worktrees Manager...` (`VP-3`, gated by `worktrees.enabled`), `Submodules Manager...` (`VP-4`, gated by `submodules.enabled`), `LFS Locks & Patterns...` (`VP-12`, gated by `lfs.enabled`), `Reflog Time-Travel Inspector...` (`VP-11`, gated by `reflog.inspector_ui.enabled`), `Account & SSH Routing Rules...` (`VP-8`), `Custom Actions...` (`VP-23`, gated by `custom_actions.enabled`).  
+- **Help:** `Keyboard Shortcuts Reference (Ctrl+?)`, `Documentation`, `Report an Issue`, `About Wrench`.
+
+### 1.3 Global Status Bar (`SRS FR-1.1`, `FR-14.2`)
+
+- **Left Zone:** Current background operation spinner \+ witty/informative progress text (`ui.humor_lines` toggleable; when `False`, displays strictly clinical Git command strings like `Running git fetch origin...`).  
+- **Center Zone:** Ahead/Behind pill (`↑2 ↓1`), active sequencer/bisect badge (`[BISECTING: ~3 steps left]`), and active Sparse-Checkout indicator (`[Sparse: 4 dirs]`).  
+- **Right Zone:**  
+  - **Quick-Settings Pin Button (`★ Quick Toggles`):** Opens a lightweight floating `QMenu`/`QFrame` listing any settings the user has starred/pinned in `SettingsDialog` (`§6.11`) for 1-click toggling without opening the full Preferences dialog.  
+  - **Activity Log Toggle (`>_ Log`)**, **Theme Toggle (`☀/☾`)**, and **Memory/Watcher Badge** (optional diagnostic indicator gated by `ui.show_perf_badge`: shows `.git-only watch mode` when monorepo fallback is active).
+
+### 1.4 Non-Intrusive Action & Undo Toast Banner (`src/wrench/ui/widgets/undo_toast.py`)
+
+- **Purpose:** Gives users immediate confidence that any mutation can be undone with 1 click.  
+- **Behavior:** Whenever a mutating operation completes (`Commit`, `Amend`, `Reset`, `Rebase`, `Cherry-Pick`, `Stash Push/Drop`, `Discard Hunk`), a floating pill toast appears centered `16px` above the Global Status Bar for `8000ms` (configurable via `ui.undo_toast.duration_ms`, or disabled completely via `ui.undo_toast.enabled`):  
+  - Text: `"Committed 4f9a2b1 ('Fix parser edge case')"` \+ Button: **`[Undo (Ctrl+Z)]`** \+ Button: **`[Show CLI]`** \+ Dismiss `✕`.  
+  - Clicking **`[Undo]`** invokes `engine.undo_last_action(repo_path)` (restoring the pre-op safety snapshot from `core/snapshots.py` or running `git reset --soft HEAD~1` if the last action was a commit).  
+- **Optimization Reminder for Models:** Reuse a single `UndoToastWidget` instance attached to `MainWindow` and reset its `QTimer` on new events; NEVER allocate and leak new `QWidget` toast instances per Git operation.
+
+## 2\. Tab System (`SRS FR-1.1`, `FR-1.13`, `FR-1.15`)
+
+### 2.1 Hybrid Tab Model & Multi-Worktree Tabs
+
+- **Category Singletons per Repository/Worktree:** `Changes`, `History`, `Pull Requests` (hidden if `forge.enabled == False`), `Issues` (`VP-7`, hidden if `forge.issues_tab.enabled == False` or `forge.enabled == False`).  
+- **Dynamic Detail Tabs:** Individual PR detail (`PR #42`), Issue detail (`Issue #19`), Blame/Line-History viewer (`Blame: engine.py`), or Snapshot comparison. Strictly de-duplicated by `(repo_path, tab_type, entity_id)`.  
+- **Worktree Tab Binding (`VP-3`):** Opening a linked worktree opens a top-level workspace tab badged with `[WT: {branch}]` and a full-path hover tooltip (`[GitHub Desktop Issues](https://github.com/desktop/desktop/issues)`).
+
+### 2.2 Mandatory Optimization: Lazy Tab Instantiation (`QStackedWidget` Factory Pattern)
+
+- **Rule for Lower-Tier Models:** When opening a repository in `MainWindow`, instantiate **ONLY** the initially visible tab (`ChangesTab`). Wrap `HistoryTab`, `PRListTab`, and `IssuesTab` in a `LazyTabContainer(factory_callable)` inside `QStackedWidget` so their widgets, models, and background queries are constructed **only on the first `currentChanged` signal selecting that tab**. This cuts initial repository-open latency by \>60% and saves \~45MB of idle Qt widget allocations.
+
+## 3\. Changes Tab (`SRS FR-2.1`–`2.8`, `FR-10.5`–`10.6`)
+
+### 3.1 Layout Overview (3-Column Splitter with Zen Mode Support)
+
+- **Left Column (`240px`–`320px`):** Repo/Worktree Dropdown, Branch Switcher (`🌿 main ▾`), Stash Split-Button (`VP-22`), Collapsible Sidebar Panels (`Worktrees` `VP-3`, `Submodules` `VP-4`, `Stacked Branches` `VP-20`), Unified Staged/Unstaged File List, and Collapsible `Locally Ignored (--skip-worktree)` Panel (`VP-22`) at the bottom.  
+- **Center Column (`280px`–`360px`):** Account/Identity Selector Pill (`VP-8`), Template Selector (`VP-5`), Commit Summary (`QLineEdit` with live character counter badge against `commit.subject_max_length_guide`, turning amber above `50` chars), Commit Description (`QPlainTextEdit` with `#` `IssueCompleter` `VP-7`), `CoAuthorInputWidget` (`VP-5`), Options Row (`Amend` checkbox, `Sign Commit (-S)` checkbox `VP-18`, `Bypass Hooks (--no-verify)` checkbox `VP-17`), `Commit` Split-Button, and Collapsible `HookOutputDrawer` (`VP-17`).  
+- **Right Column (Flexible Stretch):** Enhanced `DiffWidget` (`src/wrench/ui/diff_view/diff_widget.py`). Pressing `F11` (`Focus / Zen Mode`) animates Left and Center columns to `width = 0` so `DiffWidget` fills 100% of the window width.
+
+### 3.2 New UI/UX Features in `DiffWidget` (`src/wrench/ui/diff_view/diff_widget.py`)
+
+Every sub-feature below has its own toggle in `SettingsRegistry` (`Diff & Merge` category):
+
+1. **Unified vs. Side-by-Side Split Diff Toggle (`Ctrl+D`, `diff.view_mode`: `"unified"` / `"split"`):**  
+   - Toolbar segmented button switching instantly between single-column unified diff and dual-pane synchronized-scroll side-by-side diff ([Lazygit \#155](https://github.com/jesseduffield/lazygit/issues/155)).  
+2. **Interactive Diff Minimap Scrubber (`diff.minimap.enabled`, default `True`):**  
+   - A `12px`\-wide vertical canvas strip docked beside the vertical scrollbar painting proportional green ticks for additions, red ticks for deletions, blue ticks for moved blocks (`--color-moved`), and purple ticks for inline PR comments (`VP-6`). Clicking or dragging on the minimap scrolls directly to that hunk.  
+3. **Sticky File & Function Context Header (`diff.sticky_function_header.enabled`, default `True`):**  
+   - A `24px`\-tall pinned banner at the top of the diff viewport displaying the current file path and the enclosing function/class signature extracted from the hunk header (`@@ -120,7 +120,9 @@ def calculate_graph_lanes(commits):`) so users scrolling through large hunks never lose context.  
+4. **Hold `Alt+W` to Peek Whitespace Changes (`diff.whitespace_peek_shortcut.enabled`, default `True`):**  
+   - Holding `Alt+W` temporarily renders visible whitespace markers (`·` for space, `→` for tab, `↵` for CRLF) and includes whitespace-only changes without mutating the persistent `diff.ignore_whitespace_mode` setting.  
+5. **Right-Click Context Menu Actions on Selected Diff Lines:**  
+   - `Stage Selected Lines (s)` / `Unstage Selected Lines (u)` (`FR-2.1`)  
+   - `Discard Selected Lines` (guarded by confirmation \+ safety snapshot; addresses [Sublime Merge \#814](https://github.com/sublimehq/sublime_merge/issues/814))  
+   - `Amend Selected Hunk/Lines into Earlier Commit...` (`VP-20`, `FR-3.8`; addresses [GitButler \#2513](https://github.com/gitbutlerapp/gitbutler/issues/2513))  
+   - `Move Selected Hunk to Stacked Branch...` (`VP-20`)  
+   - `View Line History (git log -L)...` (`VP-21`, `FR-9.5`; addresses [Sublime Merge Forum \#39746](https://forum.sublimetext.com/t/feature-request-line-history/39746))  
+   - `Open File Blame at Line...` (`VP-21`, `FR-9.4`; addresses [git-cola \#953](https://github.com/git-cola/git-cola/issues/953))
+
+### 3.3 Deep Diff Viewer Architecture & Virtualization Pipeline (`SRS FR-8.14`, `OPT-8` — MANDATORY)
+
+To guarantee `< 3ms` file-switch latency and locked `60fps` scrolling even on 50,000-line diffs, coding models MUST implement the **4-Stage Virtualized Diff Rendering Pipeline** inside `src/wrench/ui/diff_view/diff_widget.py`:
+
+1. **Stage 1 — Zero-Copy Byte-Offset Patch Indexer (`PatchByteIndex`):**  
+   - Instead of splitting a massive patch string into 50,000 Python `str` objects and inserting them into a heavy `QTextDocument` (`QPlainTextEdit`), store the raw UTF-8 `bytes` buffer once and build two flat `array('I')` C-arrays: `line_start_offsets` and `line_flags` (`bit 0-1`: context/add/del/hunk\_header/folded\_divider, `bit 2`: moved\_block, `bit 3`: has\_pr\_comment).  
+   - Indexing 50,000 diff lines takes `< 3ms` and `< 800 KB` of RAM.  
+2. **Stage 2 — Virtualized `DiffLineModel(QAbstractListModel)` \+ `QListView(uniformItemSizes=True)`:**  
+   - Render diff rows using a `QListView` with `setUniformItemSizes(True)` and a custom `DiffRowDelegate(QStyledItemDelegate)` (or a `QAbstractScrollArea` viewport painter) that decodes UTF-8 slices `raw_bytes[start:end]` **only for the \~45 rows currently visible in the viewport**.  
+   - In Side-by-Side Split mode (`Ctrl+D`), use a dual-column virtualized row model (`LeftLineSlice`, `RightLineSlice`) sharing a single vertical scrollbar so left and right panes never desynchronize by even 1 pixel.  
+3. **Stage 3 — Viewport-Scoped Intra-Line & Syntax LRU Cache (`maxsize=512`):**  
+   - Compute `difflib.SequenceMatcher` intra-line character/word spans and syntax-highlight token spans **lazily inside `DiffRowDelegate.paint()`** only for rows in `[first_visible_row - 20 : last_visible_row + 20]`, and memoize the resulting `(bg_spans, fg_tokens)` tuple in an in-memory `functools.lru_cache(maxsize=512)` keyed by `(file_oid_pair, row_index, width_px, theme_id)`.  
+   - Automatically skip `SequenceMatcher` on any single hunk exceeding `diff.max_intraline_hunk_lines` (`500` lines).  
+4. **Stage 4 — Collapsible Unchanged Context Dividers & `35ms` File-Switch Coalescing:**  
+   - Collapse unchanged regions between hunks into a single interactive divider row (`[↕ Expand 20 unchanged lines above/below — def parse_tokens():]`), expanding slices in-place in `DiffLineModel` without re-running `pygit2` diff generation.  
+   - Route `ChangesTab` and `HistoryTab` file-selection changes through a `35ms` single-shot coalescing `QTimer` (`diff.coalesce_switch_ms = 35`) with an incrementing `request_id` (`OPT-6`) so holding the Down arrow key across 100 files never queues redundant diff workers.  
+   - **Binary & Large-File Guard:** If a file diff exceeds `performance.max_diff_file_size_kb` (`2048 KB`), render a lightweight placeholder card (`"Diff is 4.8 MB — [Load Virtualized Diff Anyway] [Open in External Diff Tool]"`).
+
+## 4\. History Tab (`SRS FR-3.1`–`3.8`, `FR-9.1`–`9.5`)
+
+### 4.1 Layout Overview
+
+- **Top Bar:** Search & Filter Bar (`QLineEdit` with `200ms` debounce) \+ expandable filter chips (`Author`, `File Path`, `Date Range`, `Pickaxe Code Search -S/-G` `VP-11`) \+ `Reflog Time-Travel` button (`VP-11`) \+ `⚙` Settings shortcut.  
+- **Optional Top Banner Slot:** Dynamically mounts `BisectBannerWidget` (`VP-19`) when bisect is active, or `SequencerBannerWidget` (`VP-1`/`VP-2`) when cherry-pick/revert/rebase is paused on a conflict.  
+- **Center Area:** `CommitGraphWidget` (`src/wrench/ui/commit_graph/graph_widget.py`).  
+- **Right Slide-In Panel:** `CommitDetailPanel` (`src/wrench/ui/commit_graph/detail_panel.py`).
+
+### 4.2 New UI/UX Features in `CommitGraphWidget`
+
+1. **Hover "X-Ray" Commit & Branch Preview Card (`graph.hover_xray_card.enabled`, default `True`):**  
+   - Hovering over a commit node or branch pill for `400ms` (`QTimer` single-shot) displays a themed popup card showing: Full commit SHA (with 1-click Copy button), Author avatar \+ email, Relative \+ ISO timestamp, Diffstat summary bar (`5 files changed, +142 / -38`), GPG/SSH Signature status & fingerprint (`VP-18`), and linked PR/CI status badge.  
+2. **Signature Verification Pill Badges (`VP-18`, `signing.verify_badges_in_graph.enabled`):**  
+   - Draws compact `[✓ Verified]`, `[? Unverified]`, or `[✕ Bad Sig]` badges on commit rows using cached `QPixmap` glyphs.  
+3. **Interactive Bisect Visual Overlay (`VP-19`, `bisect.ui.enabled`):**  
+   - Dims commits outside the active `(good, bad)` DAG range to `35%` opacity, highlights candidate commits with a pulsing accent ring, and renders `[GOOD]`, `[BAD]`, and `[SKIP]` pills.  
+4. **Stacked Branch Connectors (`VP-20`, `stacks.enabled`):**  
+   - Renders stacked branch pills in a connected vertical bracket `[stack: auth-v2 1/3 -> 2/3 -> 3/3]` so stack hierarchy is immediately visible on the graph.  
+5. **Combined Multi-Hosting Mirror DAG & Sync/Drift Pills (`VP-25`, `SRS FR-3.10`, `FR-4.6`):**  
+   - **Unified Multi-Remote Graph Walk:** When `mirrors.unified_history.enabled` is `True`, `CommitGraphWidget` displays the combined commit DAG across all configured hosting mirrors (`origin` on GitHub, `gitlab` on GitLab, `codeberg` on Forgejo/Codeberg, `bitbucket` on Bitbucket, `sf` on SourceForge) so commits pushed to any mirror appear in one unified topological timeline.  
+   - **Synced Mirror Group Pill Collapsing (`mirrors.collapse_identical_ref_pills`):** When multiple mirror remotes point to the exact same commit OID for a branch (e.g. `origin/main`, `gitlab/main`, and `codeberg/main` are all at `a1b2c3d`), `CommitGraphWidget` collapses them into a single compact pill: **`[🌐 main · GH · GL · CB ✓]`** instead of 3 separate cluttering pills.  
+   - **Mirror Drift & Divergence Warning Badges (`mirrors.show_drift_warnings`):** When a mirror lags behind or diverges from the primary remote on the same branch name (e.g. `gitlab/main` is 4 commits behind `origin/main`), renders a distinct amber pill **`[⚠ GL/main ↓4]`** on the lagging commit node with a right-click context menu action **`Sync Mirror 'gitlab/main' Now`** (`git push gitlab origin/main:refs/heads/main`) and **`Push to All Mirrors`**.  
+   - **Cross-Hosting CI & PR Aggregation (`mirrors.aggregate_cross_forge_ci`):** Displays combined per-forge CI status icons (`[GH ✓ | GL ✕]`) on commit rows and lists all mirror PRs/MRs and pipeline links inside the `400ms` Hover X-Ray Card.
+
+### 4.3 Mandatory Optimizations for `CommitGraphWidget` (`100,000+` Commits at 60fps)
+
+- **Strict Viewport Clipping (`paintEvent`):** In `CommitGraphWidget.paintEvent(event)`, compute `first_row = verticalScrollBar().value() // row_height` and `last_row = first_row + (viewport().height() // row_height) + 2`. Iterate and paint **ONLY** `commits[first_row:last_row]`. Never loop over all loaded commits during a paint event.  
+- **`QPixmapCache` for Badges & Avatars:** Pre-render pill badges (`[Verified]`, `[GOOD]`, `[BAD]`, branch tags) and scaled circular avatars into `QPixmapCache` keyed by `(text, color_scheme, dpr)` so `paintEvent` performs fast `painter.drawPixmap()` blits instead of recalculating `QFontMetrics` and `QPainterPath` on every frame.  
+- **Windowed `fetchMore` Pagination & Generation Tokens:** Fetch commits in pages of `performance.graph_page_size` (`500`). When the user types in the search bar, increment an integer `_search_generation_id` so any in-flight background worker from an older keystroke discards its result on completion instead of overwriting newer results.
+
+## 5\. Cross-Cutting Concerns & Mandatory UI Optimization Rules
+
+### 5.1 Theme System & Live Styling (`SRS FR-8.1`)
+
+- Supports `System (Follow Desktop Portal / KStyle)`, `Dark`, `Light`, and `High-Contrast` themes (`ui.theme_mode`), plus customizable UI font size (`ui.font_size_pt`) and monospace diff font (`diff.font_family`, `diff.font_size_pt`).
+
+### 5.2 Keyboard System, Vim Navigation & `Ctrl+K` Command Palette (`VP-23`)
+
+- Optional Vim-style navigation toggle (`ui.vim_navigation.enabled`, default `False`): when enabled, `j`/`k` steps rows/hunks, `s`/`u` stages/unstages, `c` focuses the commit box, and `/` focuses search.  
+- Global `Ctrl+K` / `Ctrl+Shift+P` Fuzzy Command Palette (`§6.24`) searches every menu action, branch, worktree, custom action, and **every setting toggle** in real time.
+
+### 5.3 Universal CLI Command Preview / Dry-Run Footer (`ui.show_cli_preview_in_dialogs`, default `True`)
+
+- **Purpose:** Demystifies Git GUI operations and prevents user anxiety before destructive actions.  
+- **Design:** Every action dialog (`ResetModeDialog`, `InteractiveRebaseDialog`, `CloneDialog`, `SparseCheckoutDialog`, `MergeDialog`, `AddWorktreeDialog`) embeds a reusable `CliCommandPreviewBar(QWidget)` (`src/wrench/ui/widgets/cli_preview_bar.py`) at the bottom:  
+  - Displays the exact command array that will run: e.g. `$ git -C /home/user/repo rebase --update-refs origin/main` with a `Copy Command` icon button.  
+  - Controlled globally by `ui.show_cli_preview_in_dialogs` (when `False`, the preview bar is hidden across all dialogs).
+
+### 5.5 Mandatory UI & Storage Optimization Rules for Coding Models (DO NOT SKIP)
+
+Every coding model implementing or modifying UI and storage code in `VP-0`..`VP-23` MUST implement these 6 optimizations:
+
+| Optimization ID | Pattern Name | Exact Implementation Requirement |
+| :---- | :---- | :---- |
+| **OPT-1** | **Lazy Page & Tab Instantiation** | Never instantiate hidden `QWidget` pages upfront. In `SettingsDialog` (`§6.11`) and `MainWindow` tabs (`§2.2`), store page builder callables in a dict and instantiate a category page only when the user clicks that category or searches. |
+| **OPT-2** | **150ms Debounced Auto-Save in Settings** | `SettingsDialog` has **no "Save" or "Apply" button** — all changes auto-save. For discrete controls (`QCheckBox`, `QComboBox`), call `settings.set()` immediately. For continuous controls (`QSpinBox`, `QLineEdit`), route `valueChanged`/`textChanged` through a `150ms` single-shot `QTimer` before calling `settings.set()` so rapid typing or spinning writes to SQLite only once after the user pauses. |
+| **OPT-3** | **Delta-Only Settings Snapshot & Undo/Redo Stack** | Never snapshot or copy the entire `global_settings` table on change. Whenever `settings.set(key, new_val, repo_path)` is called and `new_val != old_val`, insert **only a single delta row** `(change_id, timestamp, repo_path, key, old_value_json, new_value_json)` into a bounded 100-entry SQLite ring-buffer table `settings_undo_log`. Expose `settings.undo_last_change()` (`Ctrl+Z` in `SettingsDialog`) and `settings.redo_last_change()` (`Ctrl+Y`). |
+| **OPT-4** | **SQLite WAL Mode & Prepared Statement Batching** | Enable `PRAGMA journal_mode=WAL;` and `PRAGMA synchronous=NORMAL;` on `wrench.db` connection open so UI reads never block on background worker writes. Use `executemany()` inside a single `with conn:` transaction when caching forge issues/PRs or applying presets. |
+| **OPT-5** | **Bounded Ring-Buffer Output Widgets** | For streaming log widgets (`HookOutputDrawer` `VP-17`, `CILogDrawer` `VP-6`, `ActivityLog` `§6.13`), call `QPlainTextEdit.setMaximumBlockCount(5000)` and batch incoming stdout lines into `50ms` UI flush ticks (`QTimer`) so a fast subprocess printing 20,000 lines per second never freezes the Qt event loop. |
+| **OPT-6** | **Worker Generation Tokens & Cancellation** | Every background task dispatched from a UI view (`DiffWidget`, `CommitGraphWidget`, `BlameViewerDialog`, `PRReviewOverlay`) must carry a monotonically increasing `request_id: int`. When the worker finishes, if `request_id != self._latest_request_id`, discard the result immediately without touching the DOM/widgets. |
+| **OPT-7** | **5-Stage Mirror Resolution & `blake2b` Ref-Digest Cache** | Resolve multi-hosting mirrors via: (1) `< 10µs` pre-compiled URL canonicalizer, (2) `< 0.5ms` local `.git/packed-refs` \+ `.git/refs/remotes/` `blake2b` digest lookup in SQLite `mirror_resolution_cache`, (3) cached \$O(1)\$ root-commit OID equivalence check (`git rev-list --max-parents=0`), (4) parallel `ThreadPoolExecutor(max_workers=4)` `git ls-remote --refs` \+ HTTP/2 `httpx` pooling, and (5) a `120s` per-host circuit breaker for unreachable mirrors. |
+| **OPT-8** | **Zero-Copy Virtualized Diff Model & 512-Line LRU Cache** | Index patches into flat `array('I')` byte-offset tables (`< 3ms` for 50k lines), render only visible rows via `DiffLineModel(QAbstractListModel)` \+ `QListView(uniformItemSizes=True)`, memoize visible intra-line/syntax spans in a `512`\-entry LRU cache, and coalesce file-selection changes over a `35ms` timer. |
+
+### 5.6 2-Tier Progressive Disclosure Help System (`SRS FR-8.13`, `help.tooltip_mode`)
+
+- **Tier 1 — Contextual Beginner Hover Popover (`RichHelpTooltip`, `src/wrench/ui/widgets/rich_help_tooltip.py`):**  
+  - Attached to any Git concept or control via helper `attach_help_topic(widget, topic_id="rebase.update_refs")`.  
+  - Controlled by `help.tooltip_mode` in `SettingsRegistry`:  
+    1. `"beginner_rich"` (Default): Hovering for `help.tooltip_delay_ms` (`500ms`) opens a rich themed `QFrame` popover containing:  
+       - **Title & Shortcut:** e.g. `Cascade Rebase (--update-refs)  [Ctrl+Shift+U]`  
+       - **2-Line Plain-English Summary:** *"Updates this branch and automatically moves any child branches stacked on top of it so you don't have to rebase them one by one."*  
+       - **CLI Equivalent Badge:** `git rebase --update-refs`  
+       - **Footer Links:** **`[Read Full Guide (F1) →]`** (opens `HelpCenterDialog` directly to `topic_id`) and **`[Hide Beginner Tips]`** (sets `help.tooltip_mode = "compact_shortcut_only"` in 1 click).  
+    2. `"compact_shortcut_only"`: Uses standard native Qt tooltip showing only `"Cascade Rebase (Ctrl+Shift+U)"` with zero custom widget overhead.  
+    3. `"off"`: Suppresses tooltips completely.  
+- **Tier 2 — Searchable Offline Help & Git Concept Encyclopedia (`HelpCenterDialog` / `F1`, `src/wrench/ui/dialogs/help_center_dialog.py`):**  
+  - Opened via `F1`, `Help -> Wrench & Git Guide`, or clicking **`[Read Full Guide →]`** inside any Tier 1 hover tooltip.  
+  - **Left Pane:** Instant keyword search bar (`QLineEdit`) \+ topic tree (*Getting Started*, *Staging & Hunks*, *Branches, Rebasing & Stacks*, *Worktrees & Submodules*, *Resolving Conflicts & Rerere*, *Forges, PRs & CI*, *Troubleshooting Hooks & Signing*).  
+  - **Right Pane (`QTextBrowser`):** Renders bundled offline Markdown/HTML articles explaining both the Git concept (with visual ASCII/SVG diagrams) and how Wrench's UI executes it, plus interactive action links (`wrench://open-setting/<key>` to jump straight to that setting in `SettingsDialog`, or `wrench://highlight-ui/<widget_id>` to pulse-highlight the button in the main window).  
+  - **Mandatory Optimization (`OPT-1` Lazy Topic Loading):** Help articles are stored as lightweight Markdown files under `src/wrench/ui/help_topics/` and parsed/indexed **only when `F1` or `Read Full Guide` is triggered**, consuming `0 KB` of RAM during normal app usage.
+
+### 5.7 Mandatory Security & Secret-Redaction UI Rules (`SEC-1`–`SEC-7`)
+
+- **Automatic Credential & Token Redaction (`SEC-3`):** Before appending any text to `HookOutputDrawer`, `CILogDrawer`, `ActivityLog`, `CliCommandPreviewBar`, or error dialogs, pass the string through `src/wrench/core/security_sanitizer.py:redact_secrets(text)` which scrubs `ghp_[A-Za-z0-9_]+`, `github_pat_[A-Za-z0-9_]+`, `glpat-[A-Za-z0-9\-_]+`, `Bearer\s+\S+`, and basic-auth URLs (`https://[^:/\s]+:[^@\s]+@` \-\> `https://***:***@`).  
+- **Safe `wrench://` Help URI Allowlisting (`SEC-6`):** `HelpCenterDialog` must reject any `QUrl` whose scheme is not `wrench` or whose target setting key / widget ID is not in the registered `SettingsRegistry` / `HELP_TOPICS` allowlist.
+
+## 6\. Secondary UI Surfaces (`§6.1` – `§6.24`)
+
+### 6.1–6.10 Core v1 Surfaces (Enhanced with v2 Toggles & Previews)
+
+- **§6.1 Stash Panel (`stash_dialog.py`):** Upgraded in `VP-22` with mode badges (`staged-only`, `keep-index`, `untracked`), explicit `refs/stash@{n}` actions ([Sublime Merge \#945](https://github.com/sublimehq/sublime_merge/issues/945)), and `CliCommandPreviewBar`.  
+- **§6.2 Clone Dialog (`clone_dialog.py`):** Upgraded in `VP-16` with a `Partial Clone Filter` combo-box (`Full Clone`, `Blobless (--filter=blob:none)`, `Treeless (--filter=tree:0)`) and a `Configure Sparse-Checkout Immediately After Clone` checkbox ([GitHub Desktop \#17901](https://github.com/desktop/desktop/issues/17901)).  
+- **§6.3 LFS & Submodules (`lfs_locks_dialog.py`, `submodule_panel.py`):** Upgraded in `VP-4` & `VP-12` with dirty badges, recursive update toggles, and `.gitattributes` pattern management.  
+- **§6.4 Safety Snapshots Browser (`snapshots_panel/__init__.py`):** Upgraded in `VP-14` to display both pre-operation snapshots and periodic scheduled snapshots (`safety.scheduled_backups.enabled`) with side-by-side diff preview and 1-click restore.  
+- **§6.5 Identity & Commit Signing Dialog (`identity_dialog.py`):** Upgraded in `VP-8` & `VP-18` with GPG/SSH key selector (`gpg.format = ssh` or `openpgp`), `allowed_signers` auto-generator, and multi-account directory routing link.  
+- **§6.6 3-Way Merge Tool (`merge_tool/merge_dialog.py`):** Upgraded in `VP-10` & `VP-23` with an top info banner when `git rerere` auto-resolved conflicts (`"2 conflict hunks auto-resolved from your recorded git rerere memory — [Forget Recorded Resolution]"`, [Sublime Merge \#814](https://github.com/sublimehq/sublime_merge/issues/814)) and an `"Open in External Merge Tool"` button.  
+- **§6.7 Reflog History & Recovery Dialog (`reflog_dialog.py`):** Upgraded in `VP-11` with an `"Orphaned / Unreachable Commits Only"` filter chip, action badges (`reset`, `rebase`, `commit (amend)`), and 1-click `Restore Branch Here`.  
+- **§6.8–6.10 Remotes, Backup/Bundle, and Repository Discovery Dialogs:** Equipped with `⚙` settings jump links and `CliCommandPreviewBar`.
+
+### 6.11 Modular Settings Center (`src/wrench/ui/dialogs/settings_dialog.py` — `VP-0`, `SRS FR-8.8`–`8.11`)
+
+**Design Mandate:** Every single feature and threshold in Wrench is controllable here. Built for speed, discoverability, and mistake-proof Undo.
+
+- **Window Layout (`920px x 640px` minimum, non-blocking modal or dockable tab):**  
+  - **Top Header Bar:**  
+    1. **Instant Search Input (`QLineEdit`, focused on `Ctrl+F` or automatically on open):** Filters categories and highlights matching setting labels, descriptions, and keys in `<16ms`.  
+    2. **Scope Selector (`QComboBox`):** Switches between `🌐 Global Defaults` and `📁 Repository Override: {current_repo_name}`.  
+    3. **"Modified Only" Filter Pill (`QToolButton`, checkable):** When checked, hides all settings currently at their default value, showing only user-modified settings and active per-repo overrides.  
+    4. **Undo / Redo Buttons (`↶ Undo (Ctrl+Z)`, `↷ Redo (Ctrl+Y)`, `🕓 History`):** Wired to the **Delta-Only Settings Undo Stack (`OPT-3`)**. Shows a badge with the number of undoable setting changes in the current session. Clicking `🕓 History` opens a popover listing the last 50 individual setting deltas (`"18:42 — graph.lane_width_px: 16 → 22 [Revert This]"`) so the user can revert any specific past tweak even out of order\!  
+    5. **Preset & Portability Menu (`Presets & JSON ▾`):** `Apply Minimalist Local-Only Mode`, `Apply Power-User Full Mode`, `Export Settings to JSON...`, `Import Settings from JSON...`, `Reset All to Factory Defaults`.  
+  - **Left Category Navigation (`QListWidget`, 12 Categories):**  
+    1. `General & UI`  
+    2. `Staging & Commits`  
+    3. `Commit Graph`  
+    4. `Diff & Merge`  
+    5. `Branches & Stacks`  
+    6. `Worktrees & Submodules`  
+    7. `Remotes & LFS`  
+    8. `Forges & CI`  
+    9. `Hooks & Signing`  
+    10. `Blame & Search`  
+    11. `Watcher & Performance`  
+    12. `Safety & Backups`  
+    13. `Custom Actions & Shortcuts`  
+  - **Right Content Area (`QStackedWidget` with `OPT-1` Lazy Page Instantiation):**  
+    - Each category page is constructed **only when first selected** (or when a search query matches a setting inside that category).  
+    - **Live Interactive Mini-Preview Card at Top of Visual Categories:** In `Commit Graph`, `Diff & Merge`, and `General & UI`, a `72px`\-tall embedded preview strip renders a sample commit graph row or sample 4-line diff that updates live as the user drags `graph.lane_width_px`, `graph.row_height_px`, `ui.font_size_pt`, or toggles `diff.intraline_word_diff.enabled`.  
+    - **Per-Setting Row Anatomy (`SettingRowWidget`):**  
+      - Left: `★` Pin-to-Quick-Settings toggle icon \+ **Bold Label** \+ muted description subtitle \+ `(key_name)` badge \+ `[Repo Override]` pill if overridden for the current repo.  
+      - Right: Input control (`QCheckBox`, debounced `QSpinBox`, `QComboBox`, or `QLineEdit`) \+ `↺` Reset-to-Default button (visible only when current value `!= spec.default`).  
+      - Dependency dimming: If `spec.parent_toggle_key` is `False`, the child row is automatically disabled (`setEnabled(False)`) with a note `"Requires <Parent Setting> to be enabled"`.  
+  - **Bottom Floating Toast inside `SettingsDialog`:**  
+    - Whenever any setting is changed, a subtle footer bar shows: `✓ Auto-saved 'graph.show_avatars' (True → False)  [Undo (Ctrl+Z)]`.
+
+### 6.12–6.14 Avatars, Activity Log (`ui.humor_lines`), and About Dialog
+
+- Preserved from v1 Phase 4.4–4.6 and wired into `SettingsRegistry` (`graph.show_avatars`, `ui.humor_lines`, `ui.activity_dock.max_lines`).
+
+### 6.15 Visual Reset Mode Picker (`src/wrench/ui/dialogs/reset_dialog.py` — `VP-1`)
+
+- Displays target commit summary and three selectable mode cards:  
+  - **Soft (`--soft`):** Green badge — *"Moves branch pointer only. All commits between here and HEAD become Staged Changes."* (Shows exact count: `+N files will be staged`).  
+  - **Mixed (`--mixed`, Default):** Amber badge — *"Moves branch pointer and unstages index. All changes remain safely in your working files."*  
+  - **Hard (`--hard`):** Red badge — *"Discards all staged and working-tree modifications since target commit. Wrench will create an automatic safety snapshot first."*  
+- Includes `CliCommandPreviewBar` at bottom (`$ git reset --mixed <oid>`) and a `"Don't show this dialog again"` checkbox (`reset.show_visual_preview_dialog`).
+
+### 6.16 Visual Interactive Rebase Dialog (`src/wrench/ui/dialogs/interactive_rebase_dialog.py` — `VP-2`)
+
+- Top summary bar: `"Rebasing N commits onto <base_branch> (<base_short_oid>)"` \+ `Autostash (--autostash)` and `Autosquash (--autosquash)` checkboxes.  
+- Center `QTableWidget`: Drag-handle column (`≡`), Action `QComboBox` (`pick`, `reword`, `edit`, `squash`, `fixup`, `drop` color-coded by action), Short OID, Commit Summary, Author.  
+- Selecting `reword` or `squash` expands an inline `QPlainTextEdit` below the table to pre-edit the resulting commit message before starting the rebase.  
+- Validation rule: If row 0 is set to `squash` or `fixup`, disables `Start Rebase` and highlights row 0 with `"Cannot squash/fixup the first commit — no previous commit above it"`.
+
+### 6.17 Worktree Manager Panel & Bare-Repo Worktree Hub (`src/wrench/ui/widgets/worktree_panel.py` — `VP-3`)
+
+- Sidebar collapsible panel listing active worktrees with branch badge, lock icon (`🔒`), dirty indicator dot, and full filesystem path tooltip on hover ([GitHub Desktop Issues](https://github.com/desktop/desktop/issues)).  
+- When a bare repository with worktrees is opened (`worktrees.bare_hub.enabled`), `MainWindow` displays a full-window **Bare Repository Worktree Hub** card grid allowing the user to open any linked worktree tab or create a new worktree from a branch ([Lazygit \#3100](https://github.com/jesseduffield/lazygit/issues/3100)).
+
+### 6.18 PR Inline Review Overlay & Live CI Log Drawer (`src/wrench/ui/widgets/pr_review_overlay.py` — `VP-6`)
+
+- Inline comment cards mounted inside `DiffWidget` below commented lines with `Reply`, `Resolve Thread`, and Markdown formatting preview.  
+- Top PR toolbar button `Checkout PR #N Locally` (`git fetch origin pull/N/head:pr-N`).  
+- Bottom collapsible `CILogDrawer` with `OPT-5` 5,000-line ring buffer, step filter, and `Re-run Failed Jobs` button.
+
+### 6.19 Multi-Account Directory Routing Dialog (`src/wrench/ui/dialogs/account_rules_dialog.py` — `VP-8`)
+
+- Table of directory prefix rules (`~/work/ -> GitHub (@corp-user), SSH: ~/.ssh/id_work, Author: Name <work@corp.com>`) with `Add Rule`, `Edit`, `Delete`, and a live `"Test Repository Path"` verifier input.
+
+### 6.20 Sparse-Checkout Directory Tree Dialog (`src/wrench/ui/dialogs/sparse_checkout_dialog.py` — `VP-16`)
+
+- Lazy-loaded `QTreeWidget` populated from `HEAD` tree objects via `pygit2` (`list_head_top_directories`), allowing users in monorepos to check/uncheck folders to materialize via `git sparse-checkout set` ([GitHub Desktop \#17901](https://github.com/desktop/desktop/issues/17901)).
+
+### 6.21 Interactive Git Bisect Control Banner (`src/wrench/ui/widgets/bisect_banner.py` — `VP-19`)
+
+- Docked at the top of `HistoryTab` during active bisect: shows current commit under test, progress bar (`~4 steps remaining`), `✓ Mark Good`, `✕ Mark Bad`, `⏭ Skip`, `▶ Run Automated Script...`, and `Abort / Reset Bisect` buttons ([Lazygit \#1542](https://github.com/jesseduffield/lazygit/issues/1542), [\#5575](https://github.com/jesseduffield/lazygit/issues/5575)).
+
+### 6.22 Stacked Branches Sidebar & Hunk-to-Commit Picker (`src/wrench/ui/widgets/stack_panel.py` — `VP-20`)
+
+- Visual stack tree in `ChangesTab` left column showing ordered branches in the current stack, `New Stacked Branch on Top`, `Restack All (--update-refs)`, and `Push & Sync Stack PRs`.  
+- Includes `HunkTargetCommitDialog` allowing users to pick any historical commit in the current branch/stack to receive a selected diff hunk via automated `--fixup` \+ `--autosquash` ([GitButler \#2513](https://github.com/gitbutlerapp/gitbutler/issues/2513)).
+
+### 6.23 Interactive Blame Viewer & Line History (`git log -L`) Drawer (`src/wrench/ui/widgets/blame_viewer.py` — `VP-21`)
+
+- Split view: left gutter renders commit short SHA, author, date, and age-heatmap bar; right pane renders syntax-highlighted file lines.  
+- Toolbar includes `Respect .git-blame-ignore-revs` checkbox, `Blame Parent Commit (<<)` button, `Add Selected Commit to .git-blame-ignore-revs` button, and a bottom drawer showing `git log -L <start>,<end>:<file>` commit diffs for any highlighted line range ([Sublime Merge Forum \#39746](https://forum.sublimetext.com/t/feature-request-line-history/39746)).
+
+### 6.24 Global Fuzzy Command Palette (`Ctrl+K`) & Custom Actions (`src/wrench/ui/dialogs/command_palette.py` — `VP-23`)
+
+- Frameless, centered top overlay (`600px` wide) opened with `Ctrl+K` or `Ctrl+Shift+P`.  
+- Searches 4 unified providers in `<10ms`:  
+  1. **Built-in Commands** (e.g. `Branch: Interactive Rebase...`, `Stash: Stash Staged Only`)  
+  2. **Branches & Worktrees** (type a branch name to switch immediately)  
+  3. **User Custom Actions** (`VP-23`, e.g. `Run pytest on current file`)  
+  4. **Settings Quick-Toggles** (type `toggle blame` or `togglelanes` to flip any `SettingsRegistry` boolean setting inline without even opening `SettingsDialog`\!).
+
+### 6.26 Multi-Hosting Mirror Manager & Sync Matrix Dialog (`src/wrench/ui/dialogs/mirror_manager_dialog.py` — `VP-25`, `SRS FR-3.10`, `FR-4.6`, `FR-4.7`)
+
+- **Purpose:** Lets users manage repositories mirrored across multiple hosting sites (GitHub, GitLab, Codeberg/Forgejo, Bitbucket, SourceForge), inspect cross-mirror branch drift, and push/fetch across all mirrors in parallel.  
+- **Layout (`780px x 520px` dialog opened via `Repository -> Mirrors & Multi-Hosting Sync...` or clicking any `[🌐 ...]` mirror pill in `CommitGraphWidget`):**  
+  - **Top Summary Bar:** Displays canonical Root-Commit Fingerprint (`Root OID: 8f3a1c9... — Verified across N mirrors`), `Probe All Mirrors Now` button, `Push All Synced Branches to All Mirrors` button, and `⚙` Settings shortcut.  
+  - **Center Mirror Sync Matrix Table (`QTableWidget`):**  
+    - Columns: `Remote Name` (`origin`, `gitlab`, `codeberg`), `Hosting Forge` (icon \+ detected adapter), `Canonical URL`, `Root Lineage Match` (`✓ Verified Mirror` vs `✕ Unrelated Repo`), `Branch Sync Status` (`✓ All 6 branches synced` or `⚠ main ↓4 behind origin`), `Circuit-Breaker / Latency` (`142ms` or `⚡ Offline — circuit open 95s`), and `Quick Actions` (`[Sync Now]`, `[Open Web]`).  
+  - **Bottom `CliCommandPreviewBar` (`§5.3`):** Previews the exact parallel `git push` / `git fetch --multiple` command that will run.
+
+## 7\. Complete File / Component Mapping (v1 \+ v2)
+
+| File Path | Status | Owning Phase & UI Section |
+| :---- | :---- | :---- |
+| `src/wrench/storage/settings_registry.py` | **NEW (v2)** | `VP-0` (§6.11, §5.5 `OPT-2`/`OPT-3` Delta Undo Stack) |
+| `src/wrench/ui/main_window.py` | **EXTEND** | `VP-0`..`VP-23` (§1 Window Chrome, Lazy Tabs `OPT-1`, Zen Mode `F11`) |
+| `src/wrench/ui/widgets/undo_toast.py` | **NEW (v2)** | `VP-0` / `VP-1` (§1.4 Global Action & Undo Toast Banner) |
+| `src/wrench/ui/widgets/cli_preview_bar.py` | **NEW (v2)** | `VP-1` (§5.3 CLI Command Dry-Run Preview Footer) |
+| `src/wrench/ui/dialogs/settings_dialog.py` | **REWRITE (v2)** | `VP-0` (§6.11 Lazy Pages, Debounced Auto-Save, Delta Undo/Redo) |
+| `src/wrench/ui/dialogs/reset_dialog.py` | **NEW (v2)** | `VP-1` (§6.15 Visual Reset Mode Picker) |
+| `src/wrench/ui/dialogs/interactive_rebase_dialog.py` | **NEW (v2)** | `VP-2` (§6.16 Drag-and-Drop Interactive Rebase UI) |
+| `src/wrench/ui/widgets/worktree_panel.py` | **NEW (v2)** | `VP-3` (§6.17 Worktree Sidebar & Bare-Repo Worktree Hub) |
+| `src/wrench/ui/widgets/submodule_panel.py` | **NEW (v2)** | `VP-4` (§6.3 Submodules Panel & Dirty Badges) |
+| `src/wrench/ui/widgets/coauthor_input.py` | **NEW (v2)** | `VP-5` (§3.1 Co-Author Pill Completer) |
+| `src/wrench/ui/widgets/pr_review_overlay.py` | **NEW (v2)** | `VP-6` (§6.18 Inline PR Diff Review & `CILogDrawer`) |
+| `src/wrench/ui/tabs/issue_list_tab.py` | **EXTEND (v2)** | `VP-7` (§2.1 Issues Tab & `issue_completer.py`) |
+| `src/wrench/ui/dialogs/account_rules_dialog.py` | **NEW (v2)** | `VP-8` (§6.19 Multi-Account Directory Routing Dialog) |
+| `src/wrench/ui/diff_view/diff_widget.py` | **EXTEND (v2)** | `VP-10` (§3.2 Split Diff, Minimap, Sticky Header, Intra-line, `--color-moved`) |
+| `src/wrench/ui/dialogs/reflog_dialog.py` | **EXTEND (v2)** | `VP-11` (§6.7 Orphaned Commit Filter & 1-Click Recovery) |
+| `src/wrench/ui/dialogs/lfs_locks_dialog.py` | **NEW (v2)** | `VP-12` (§6.3 LFS Locks & `.gitattributes` Pattern Editor) |
+| `src/wrench/ui/tray_manager.py` | **NEW (v2)** | `VP-13` (§1.1 System Tray Indicator & Close-to-Tray) |
+| `src/wrench/ui/snapshots_panel/__init__.py` | **EXTEND (v2)** | `VP-14` (§6.4 Scheduled Safety Snapshots & Restore Browser) |
+| `src/wrench/ui/dialogs/sparse_checkout_dialog.py` | **NEW (v2)** | `VP-16` (§6.20 Sparse-Checkout Directory Picker) |
+| `src/wrench/ui/widgets/hook_output_drawer.py` | **NEW (v2)** | `VP-17` (§3.1 Live Hook Output Ring-Buffer Drawer & `--no-verify`) |
+| `src/wrench/ui/commit_graph/graph_widget.py` | **EXTEND (v2)** | `VP-16`, `VP-18`, `VP-19`, `VP-20` (§4.2 Signature Badges, Hover X-Ray, Bisect, 100k+ Paging) |
+| `src/wrench/ui/widgets/bisect_banner.py` | **NEW (v2)** | `VP-19` (§6.21 Interactive Bisect Banner & Script Runner) |
+| `src/wrench/ui/widgets/stack_panel.py` | **NEW (v2)** | `VP-20` (§6.22 Stacked Branches Sidebar & Hunk Routing Picker) |
+| `src/wrench/ui/widgets/blame_viewer.py` | **NEW (v2)** | `VP-21` (§6.23 Blame Heatmap Gutter & `git log -L` Drawer) |
+| `src/wrench/ui/widgets/skip_worktree_panel.py` | **NEW (v2)** | `VP-22` (§3.1 Locally Ignored `--skip-worktree` Drawer & Stash Split-Button) |
+| `src/wrench/ui/dialogs/command_palette.py` | **NEW (v2)** | `VP-23` (§6.24 `Ctrl+K` Fuzzy Command Palette & Custom Actions) |
+
+## 8\. Sequential UI Implementation Order (v1 Steps 1–25 \+ v2 Steps 26–49)
+
+- **Steps 1–25 (v1 Baseline):** As specified in v1 (`implementation-plan.md` Phases 1–7).  
+- **Step 26 (`VP-0`):** Implement `SettingsRegistry` with Delta-Only Undo Stack (`OPT-3`), WAL mode (`OPT-4`), and rewrite `settings_dialog.py` (§6.11) with Lazy Category Pages (`OPT-1`), `150ms` Debounced Auto-Save (`OPT-2`), Live Mini-Preview cards, and Quick-Settings Pinning (§1.3).  
+- **Step 27 (`VP-0`):** Implement `LazyTabContainer` (`OPT-1`, §2.2), `UndoToastWidget` (§1.4), and `Focus / Zen Mode (F11)` (§1.2) on `MainWindow`.  
+- **Step 28 (`VP-1`):** Build `CliCommandPreviewBar` (§5.3), `ResetModeDialog` (§6.15), and multi-select Cherry-Pick/Revert context menus in `HistoryTab`.  
+- **Step 29 (`VP-2`):** Build `InteractiveRebaseDialog` (§6.16) with drag-and-drop row reordering and inline message editor.  
+- **Step 30 (`VP-3`):** Build `WorktreePanel` and Bare-Repo Worktree Hub (§6.17) \+ Workspace Sessions menu (§1.2).  
+- **Step 31 (`VP-4`):** Build `SubmodulePanel` (§6.3) with dirty badges and double-click-to-open-tab.  
+- **Step 32 (`VP-5`):** Build `CoAuthorInputWidget` and Commit Template selector in `ChangesTab` (§3.1).  
+- **Step 33 (`VP-6`):** Build `PRReviewOverlayWidget` and `CILogDrawer` with 5,000-line ring buffer (`OPT-5`, §6.18).  
+- **Step 34 (`VP-7`):** Extend `IssueListTab` and wire `#` `IssueCompleter` into `ChangesTab` (§2.1, §3.1).  
+- **Step 35 (`VP-8`):** Build `AccountRulesDialog` (§6.19) and top-right Account/Identity Switcher pill.  
+- **Step 36 (`VP-9`):** Add Custom Forge Domains & Plugin Inspector UI to `SettingsDialog` (`Forges & CI` page, §6.11).  
+- **Step 37 (`VP-10`):** Upgrade `DiffWidget` (§3.2) with Split/Unified toggle (`Ctrl+D`), Diff Minimap Scrubber, Sticky Function Header, `Alt+W` whitespace peek, intra-line word diff, and `--color-moved`.  
+- **Step 38 (`VP-11`):** Upgrade `ReflogDialog` (§6.7) and add Pickaxe (`-S`/`-G`) search filters to `HistoryTab` (§4.1).  
+- **Step 39 (`VP-12`):** Build `LFSLocksDialog` (§6.3) and locked-file icons in `ChangesTab`.  
+- **Step 40 (`VP-13`):** Build `TrayManager` (§1.1) obeying `desktop.system_tray.enabled`.  
+- **Step 41 (`VP-14`):** Upgrade `SnapshotsPanel` (§6.4) with scheduled backup interval controls and diff restore preview.  
+- **Step 42 (`VP-15`):** Add Credential Backend selector (`auto` / `secret_service` / `xdg_portal` / `memory_only_ephemeral`) to `SettingsDialog`.  
+- **Step 43 (`VP-16`):** Upgrade `CloneDialog` (§6.2) with `--filter=blob:none`, build `SparseCheckoutDialog` (§6.20), and add 100k+ commit lazy pagination \+ `QPixmapCache` to `CommitGraphWidget` (§4.3).  
+- **Step 44 (`VP-17`):** Build `HookOutputDrawer` (`OPT-5`, §3.1) and `--no-verify` bypass controls in `ChangesTab`.  
+- **Step 45 (`VP-18`):** Add `[✓ Verified]` signature badges and Hover X-Ray Commit Preview Cards (§4.2) to `CommitGraphWidget`.  
+- **Step 46 (`VP-19`):** Build `BisectBannerWidget` (§6.21) and bisect visual dimming/badges on `CommitGraphWidget`.  
+- **Step 47 (`VP-20`):** Build `StackPanel` and `HunkTargetCommitDialog` (§6.22) for stacked branches and hunk-to-commit routing.  
+- **Step 48 (`VP-21`):** Build `BlameViewerDialog` and `"View Line History (git log -L)"` context menu drawer (§6.23).  
+- **Step 49 (`VP-22` & `VP-23`):** Build Granular Stash split-button and `SkipWorktreePanel` (§3.1), `git rerere` banner in `MergeDialog` (§6.6), and `CommandPaletteDialog` (`Ctrl+K`, §6.24).  
+- **Step 50 (`VP-24`):** Build `RichHelpTooltipManager` (§5.6), `HelpCenterDialog` (`F1`, §6.25), `UIWidgetHighlighter`, and `help_topics.py`.  
+- **Step 51 (`VP-25`):** Build `MirrorManagerDialog` (§6.26) and multi-mirror unified ref pills, drift badges, and cross-forge CI aggregation in `CommitGraphWidget` (§4.2.5).

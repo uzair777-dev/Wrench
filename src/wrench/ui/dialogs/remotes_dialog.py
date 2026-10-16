@@ -11,7 +11,6 @@ import sqlite3
 from typing import TYPE_CHECKING
 
 from PySide6.QtCore import Signal
-from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QDialog,
@@ -37,6 +36,7 @@ from wrench.core.exceptions import (
     RemoteExistsError,
     RemoteNotFoundError,
 )
+from wrench.ui.theme import get_remote_status_color, is_dark_theme
 
 if TYPE_CHECKING:
     pass
@@ -213,15 +213,14 @@ class RemotesDialog(QDialog):
 
             # Reachability
             reach_item = QTableWidgetItem()
+            is_dark = is_dark_theme(self)
             if remote.is_reachable is True:
                 reach_item.setText("● Reachable")
-                reach_item.setForeground(QColor("#2da44e"))
             elif remote.is_reachable is False:
                 reach_item.setText("● Unreachable")
-                reach_item.setForeground(QColor("#cf222e"))
             else:
                 reach_item.setText("● Unknown")
-                reach_item.setForeground(QColor("#6e7781"))
+            reach_item.setForeground(get_remote_status_color(remote.is_reachable, is_dark))
 
             self.table.setItem(row, 3, reach_item)
 

@@ -51,7 +51,7 @@ class SecretScanningDialog(QDialog):
             "A secret or credential was detected in your commit."
         )
         warning.setWordWrap(True)
-        warning.setStyleSheet("color: #d20f39; font-size: 13px; padding: 8px;")
+        warning.setStyleSheet("color: palette(bright-text); font-size: 13px; padding: 8px;")
         layout.addWidget(warning)
 
         # Secret type

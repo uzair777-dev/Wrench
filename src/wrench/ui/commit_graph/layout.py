@@ -10,19 +10,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 
 from wrench.core.engine import Commit, LogFilter, RefLabel
-
-GRAPH_COLORS = [
-    "#4C9EEB",  # blue
-    "#E55B5B",  # red
-    "#50C878",  # green
-    "#F5A623",  # orange
-    "#9B59B6",  # purple
-    "#1ABC9C",  # teal
-    "#E67E22",  # amber
-    "#3498DB",  # light blue
-    "#E74C3C",  # crimson
-    "#2ECC71",  # emerald
-]
+from wrench.ui.theme import GRAPH_COLORS
 
 
 class ConnectorKind(str, Enum):

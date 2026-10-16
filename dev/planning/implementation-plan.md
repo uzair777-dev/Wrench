@@ -2754,12 +2754,12 @@ Flattened, in strict execution order, across every phase — the literal path th
 - [x] 4.2.4 **CHECK**: lazy/restore/switch/auto-fetch suites green; manual QA — spinner on switch, no stale renders, fetch provably ran (ref mtime), toggle respected
 
 **Phase 4.3 — Theming Consistency & Modular Settings Dialog** *(prerequisites: 4.2.4 checked)*
-- [ ] 4.3.1 Two inventories recorded in the completion notes: toggle inventory (settings keys + checkable menu actions + snapshot settings table fields, each classified with exemption rationale) and style inventory (per-file hardcoded-hex sweep)
-- [ ] 4.3.2 `theme.py` token expansion + extraction sweep — zero hex literals outside `theme.py` (gate test); palette-role conversion for System-mode-tracking widgets; luminance-keyed tokens for semantic colors; recursion guards untouched
-- [ ] 4.3.3 Contrast test (≥4.5 text / ≥3.0 decorative, WCAG-relative-luminance rule from §5 Phase 4.3 step 2) registered per token pair + per-mode smoke instantiation test + manual three-theme matrix all-PASS
-- [ ] 4.3.4 `ui/dialogs/settings_dialog.py` skeleton: `SettingsPage` base, left module list + `QStackedWidget`, instant-apply, `showEvent` re-load
-- [ ] 4.3.5 Module pages covering EVERY inventory row: Appearance (3-mode radio + live token preview strip) / Tabs / Repositories (auto-fetch) / Snapshots (active-repo editor + `restart_snapshot_timer`) / Forge (opens AccountsDialog) / Editor & Diff only-if-inventory-finds-items / Advanced with per-knob reason tooltips — shared setters, zero direct key writes
-- [ ] 4.3.6 **CHECK**: round-trip + menu↔dialog sync tests; both test gates green; keyboard-only page walkthrough; theme-flip retro-check with Accounts + Merge dialogs open; `phase-4.3.md` reproduces both inventories
+- [x] 4.3.1 Two inventories recorded in the completion notes: toggle inventory (settings keys + checkable menu actions + snapshot settings table fields, each classified with exemption rationale) and style inventory (per-file hardcoded-hex sweep)
+- [x] 4.3.2 `theme.py` token expansion + extraction sweep — zero hex literals outside `theme.py` (gate test); palette-role conversion for System-mode-tracking widgets; luminance-keyed tokens for semantic colors; recursion guards untouched
+- [x] 4.3.3 Contrast test (≥4.5 text / ≥3.0 decorative, WCAG-relative-luminance rule from §5 Phase 4.3 step 2) registered per token pair + per-mode smoke instantiation test + manual three-theme matrix all-PASS
+- [x] 4.3.4 `ui/dialogs/settings_dialog.py` skeleton: `SettingsPage` base, left module list + `QStackedWidget`, instant-apply, `showEvent` re-load
+- [x] 4.3.5 Module pages covering EVERY inventory row: Appearance (3-mode radio + live token preview strip) / Tabs / Repositories (auto-fetch) / Snapshots (active-repo editor + `restart_snapshot_timer`) / Forge (opens AccountsDialog) / Editor & Diff only-if-inventory-finds-items / Advanced with per-knob reason tooltips — shared setters, zero direct key writes
+- [x] 4.3.6 **CHECK**: round-trip + menu↔dialog sync tests; both test gates green; keyboard-only page walkthrough; theme-flip retro-check with Accounts + Merge dialogs open; `phase-4.3.md` reproduces both inventories
 
 **Phase 4.4 — Forge Avatars** *(prerequisites: 4.3.6 checked)*
 - [ ] 4.4.1 avatar fields pinned from fixtures/docs; `author_avatar_url` mapped in all four adapters; zero pre-existing constructor call sites broken

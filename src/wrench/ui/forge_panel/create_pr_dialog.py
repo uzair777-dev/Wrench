@@ -54,7 +54,9 @@ class CreatePRDialog(QDialog):
         # Inline error label
         self.error_label = QLabel(self)
         self.error_label.setWordWrap(True)
-        self.error_label.setStyleSheet("color: #d20f39; font-weight: bold; padding: 4px;")
+        self.error_label.setStyleSheet(
+            "color: palette(bright-text); font-weight: bold; padding: 4px;"
+        )
         self.error_label.setVisible(False)
         layout.addWidget(self.error_label)
 

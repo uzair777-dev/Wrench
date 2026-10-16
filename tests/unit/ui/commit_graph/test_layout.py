@@ -6,6 +6,7 @@ from wrench.ui.commit_graph.layout import (
     compute_graph_layout,
     matches_filter,
 )
+from wrench.ui.theme import GRAPH_LANES
 
 
 def _make_commit(
@@ -121,9 +122,9 @@ class TestGraphLayout:
         assert rows[2].has_top_rail is True
 
         # Node color and active lane colors are populated
-        assert rows[0].node_color == "#4C9EEB"
+        assert rows[0].node_color == GRAPH_LANES["dark"][0]
         assert len(rows[0].active_lane_colors) == 1
-        assert rows[0].active_lane_colors[0] == (0, "#4C9EEB")
+        assert rows[0].active_lane_colors[0] == (0, GRAPH_LANES["dark"][0])
 
 
 class TestMatchesFilter:

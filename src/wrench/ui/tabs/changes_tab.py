@@ -51,6 +51,8 @@ from wrench.ui.merge_tool.merge_dialog import MergeDialog
 from wrench.ui.theme import (
     ACCENT_COLORS,
     CONFLICT_BANNER_STYLES,
+    FORGE_LINK_STYLES,
+    PRIMARY_BUTTON_STYLES,
     get_badge_colors,
     is_dark_theme,
 )
@@ -613,52 +615,25 @@ class ChangesTab(QWidget):
         """Updates repo combo styling based on active theme."""
         if not hasattr(self, "repo_combo"):
             return
-        if is_dark_theme(self):
-            # In dark mode: exactly untouched original stylesheet
-            self.repo_combo.setStyleSheet(
-                "QComboBox { border: none; font-weight: bold; font-size: 13px; "
-                "padding: 4px; background: transparent; color: palette(window-text); } "
-                "QComboBox:hover { background-color: rgba(128, 128, 128, 0.1); "
-                "border-radius: 3px; } "
-                "QComboBox::drop-down { border: none; width: 16px; } "
-                "QComboBox QAbstractItemView { "
-                "background-color: palette(base); color: palette(text); "
-                "selection-background-color: palette(highlight); "
-                "selection-color: palette(highlighted-text); "
-                "border: 1px solid rgba(128, 128, 128, 0.25); border-radius: 4px; padding: 2px; }"
-            )
-        else:
-            # In light mode: dark text (#4c4f69) so repository name is never white/invisible
-            self.repo_combo.setStyleSheet(
-                "QComboBox { border: none; font-weight: bold; font-size: 13px; "
-                "padding: 4px; background: transparent; color: #4c4f69; } "
-                "QComboBox:hover { background-color: rgba(0, 0, 0, 0.06); border-radius: 3px; } "
-                "QComboBox::drop-down { border: none; width: 16px; } "
-                "QComboBox QAbstractItemView { "
-                "background-color: #ffffff; color: #4c4f69; "
-                "selection-background-color: #1e66f5; "
-                "selection-color: #ffffff; "
-                "border: 1px solid rgba(76, 79, 105, 0.2); border-radius: 4px; padding: 2px; }"
-            )
+        self.repo_combo.setStyleSheet(
+            "QComboBox { border: none; font-weight: bold; font-size: 13px; "
+            "padding: 4px; background: transparent; color: palette(window-text); } "
+            "QComboBox:hover { background-color: rgba(128, 128, 128, 0.1); "
+            "border-radius: 3px; } "
+            "QComboBox::drop-down { border: none; width: 16px; } "
+            "QComboBox QAbstractItemView { "
+            "background-color: palette(base); color: palette(text); "
+            "selection-background-color: palette(highlight); "
+            "selection-color: palette(highlighted-text); "
+            "border: 1px solid rgba(128, 128, 128, 0.25); border-radius: 4px; padding: 2px; }"
+        )
 
     def _update_commit_btn_theme(self) -> None:
         """Updates commit button styling based on active theme."""
         if not hasattr(self, "commit_btn"):
             return
-        if is_dark_theme(self):
-            # In dark mode: untouched native Qt styling (no stylesheet)
-            self.commit_btn.setStyleSheet("")
-        else:
-            # In light mode: sapphire primary button with white text (not washed-out grey)
-            self.commit_btn.setStyleSheet(
-                "QPushButton { background-color: #1e66f5; color: #ffffff; font-weight: bold; "
-                "font-size: 12px; padding: 5px 12px; border: none; border-radius: 4px; } "
-                "QPushButton:hover { background-color: #1857d4; color: #ffffff; } "
-                "QPushButton:pressed { background-color: #154bb8; color: #ffffff; } "
-                "QPushButton:disabled { background-color: #e6e9ef; color: #7c7f93; "
-                "font-weight: bold; font-size: 12px; padding: 5px 12px; "
-                "border: 1px solid rgba(76, 79, 105, 0.2); border-radius: 4px; }"
-            )
+        is_dark = is_dark_theme(self)
+        self.commit_btn.setStyleSheet(PRIMARY_BUTTON_STYLES["dark" if is_dark else "light"])
 
     def _update_conflict_banner_theme(self) -> None:
         """Updates the conflict banner styling according to current theme."""
@@ -675,18 +650,9 @@ class ChangesTab(QWidget):
         if not hasattr(self, "forge_link_banner") or not hasattr(self, "forge_link_label"):
             return
         is_dark = is_dark_theme(self)
-        if is_dark:
-            self.forge_link_banner.setStyleSheet(
-                "QFrame { background-color: rgba(59, 130, 246, 0.15); "
-                "border: 1px solid rgba(59, 130, 246, 0.4); border-radius: 4px; }"
-            )
-            self.forge_link_label.setStyleSheet("color: #93c5fd; font-size: 11px;")
-        else:
-            self.forge_link_banner.setStyleSheet(
-                "QFrame { background-color: rgba(59, 130, 246, 0.1); "
-                "border: 1px solid rgba(59, 130, 246, 0.3); border-radius: 4px; }"
-            )
-            self.forge_link_label.setStyleSheet("color: #1e40af; font-size: 11px;")
+        styles = FORGE_LINK_STYLES["dark" if is_dark else "light"]
+        self.forge_link_banner.setStyleSheet(f"QFrame {{ {styles['frame']} }}")
+        self.forge_link_label.setStyleSheet(styles["label"])
 
     def _handle_forge_link_clicked(self) -> None:
         if callable(self._on_forge_link_cb):

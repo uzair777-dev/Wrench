@@ -17,7 +17,12 @@ from PySide6.QtWidgets import (
 
 from wrench.core import engine
 from wrench.core.engine import Diff, RepoHandle
-from wrench.ui.theme import DIFF_STYLES, is_dark_theme
+from wrench.ui.theme import (
+    DIFF_STYLES,
+    DIFF_TEXT_COLOR,
+    SECONDARY_TEXT,
+    is_dark_theme,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -160,9 +165,10 @@ class DiffWidget(QWidget):
         del_style = styles["del"]
         ctx_style = styles["ctx"]
 
+        sec_color = SECONDARY_TEXT["dark" if is_dark else "light"]
         if self._diff.is_binary:
             self.editor.setHtml(
-                "<p style='color: #888888; padding: 10px;'>"
+                f"<p style='color: {sec_color}; padding: 10px;'>"
                 "<i>Binary file diff not supported.</i></p>"
             )
             self.hunk_combo.setVisible(False)
@@ -171,7 +177,7 @@ class DiffWidget(QWidget):
 
         if not self._diff.hunks:
             self.editor.setHtml(
-                "<p style='color: #888888; padding: 10px;'><i>No changes in this file.</i></p>"
+                f"<p style='color: {sec_color}; padding: 10px;'><i>No changes in this file.</i></p>"
             )
             self.hunk_combo.setVisible(False)
             self.stage_hunk_btn.setVisible(False)
@@ -192,7 +198,7 @@ class DiffWidget(QWidget):
             self.stage_hunk_btn.setVisible(True)
 
         # Build colored diff HTML
-        text_color = "#cdd6f4" if is_dark else "#4c4f69"
+        text_color = DIFF_TEXT_COLOR["dark" if is_dark else "light"]
         pre_tag = (
             f"<pre style='font-family: monospace; font-size: 12px; line-height: 1.4; "
             f"margin: 0; padding: 6px; color: {text_color};'>"

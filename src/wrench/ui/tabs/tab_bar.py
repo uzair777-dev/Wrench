@@ -107,7 +107,7 @@ class TabButton(QWidget):
         self.close_btn.setStyleSheet(
             "QToolButton { border: none; font-size: 14px; font-weight: bold; "
             "padding: 0px 3px; color: palette(placeholder-text); } "
-            "QToolButton:hover { color: #e55b5b; background: transparent; }"
+            "QToolButton:hover { color: palette(bright-text); background: transparent; }"
         )
         self.close_btn.clicked.connect(self.close_requested.emit)
         layout.addWidget(self.close_btn)

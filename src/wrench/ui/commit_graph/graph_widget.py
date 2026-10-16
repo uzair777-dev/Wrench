@@ -38,6 +38,7 @@ from wrench.ui.commit_graph.layout import (
     GraphRow,
     compute_graph_layout,
 )
+from wrench.ui.theme import get_ref_badge_qcolor, is_dark_theme
 
 logger = logging.getLogger(__name__)
 
@@ -212,6 +213,7 @@ class RefLabelDelegate(QStyledItemDelegate):
         painter.setFont(badge_font)
 
         # Draw ref labels
+        is_dark = is_dark_theme(option.palette)
         for label in row_data.ref_labels:
             text = label.name
             metrics = painter.fontMetrics()
@@ -219,12 +221,7 @@ class RefLabelDelegate(QStyledItemDelegate):
             th = metrics.height() + 2
             badge_rect = QRectF(x, y_center - th / 2.0, tw, th)
 
-            if label.kind == "head":
-                bg = QColor("#8e44ad")
-            elif label.kind == "tag":
-                bg = QColor("#d35400")
-            else:
-                bg = QColor("#2980b9")
+            bg = get_ref_badge_qcolor(label.kind, is_dark)
 
             painter.setPen(Qt.NoPen)
             painter.setBrush(QBrush(bg))

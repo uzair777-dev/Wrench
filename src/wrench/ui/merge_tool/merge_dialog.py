@@ -25,6 +25,11 @@ from PySide6.QtWidgets import (
 
 from wrench.core import engine
 from wrench.core.engine import RepoHandle
+from wrench.ui.theme import (
+    SUCCESS_BUTTON_STYLES,
+    get_merge_mode_color,
+    is_dark_theme,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -103,15 +108,18 @@ class MergeDialog(QDialog):
         header_layout.addWidget(title_lbl)
         header_layout.addStretch()
 
+        is_dark = is_dark_theme(self)
         if self._mode == "rebase":
+            mode_color = get_merge_mode_color("rebase", is_dark)
             mode_lbl = QLabel(
-                "<span style='color: #e67e22;'><b>Mode: Rebase</b> "
+                f"<span style='color: {mode_color};'><b>Mode: Rebase</b> "
                 "(Ours = Upstream target, Theirs = Commit being applied)</span>",
                 self,
             )
         else:
+            mode_color = get_merge_mode_color("merge", is_dark)
             mode_lbl = QLabel(
-                "<span style='color: #3498db;'><b>Mode: Merge</b> "
+                f"<span style='color: {mode_color};'><b>Mode: Merge</b> "
                 "(Ours = Current branch, Theirs = Incoming branch)</span>",
                 self,
             )
@@ -217,9 +225,7 @@ class MergeDialog(QDialog):
 
         self.save_btn = QPushButton("Save && Mark Resolved", self)
         self.save_btn.setDefault(True)
-        self.save_btn.setStyleSheet(
-            "font-weight: bold; background-color: #27ae60; color: white; padding: 6px 12px;"
-        )
+        self.save_btn.setStyleSheet(SUCCESS_BUTTON_STYLES["dark" if is_dark else "light"])
         self.save_btn.clicked.connect(self._save_and_mark_resolved)
         btn_bar.addWidget(self.save_btn)
 

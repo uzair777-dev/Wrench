@@ -86,7 +86,7 @@ class BusyDialog(QDialog):
         btn_bar.addStretch()
 
         self.force_btn = QPushButton("Force Release Lock", self)
-        self.force_btn.setStyleSheet("color: #e74c3c;")
+        self.force_btn.setStyleSheet("color: palette(bright-text);")
         # Enable force release if process is dead/stale or after waiting
         self.force_btn.clicked.connect(self._on_force_release)
         btn_bar.addWidget(self.force_btn)

@@ -141,10 +141,10 @@ def test_repo_combo_stylesheet_and_file_item_badge():
     assert "QComboBox QAbstractItemView" in tab.repo_combo.styleSheet()
     assert tab.commit_btn.styleSheet() == ""  # Untouched native Qt button
 
-    # 2. Light mode: readable dark text on combo and sapphire commit button
+    # 2. Light mode: readable text on combo via palette role and sapphire commit button
     tab.setPalette(create_pastel_light_palette())
     tab.refresh_theme()
-    assert "#4c4f69" in tab.repo_combo.styleSheet()
+    assert "color: palette(window-text);" in tab.repo_combo.styleSheet()
     assert "QComboBox QAbstractItemView" in tab.repo_combo.styleSheet()
     assert "#1e66f5" in tab.commit_btn.styleSheet()
     assert "#ffffff" in tab.commit_btn.styleSheet()

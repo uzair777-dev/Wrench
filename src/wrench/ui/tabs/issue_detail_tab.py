@@ -19,6 +19,7 @@ from wrench.forge.models import Issue
 from wrench.forge.registry import get_adapter_for_account
 from wrench.storage import db, forge_accounts
 from wrench.ui.forge_panel.badges import IssueStateBadge, RemoteBadge
+from wrench.ui.theme import get_banner_style, is_dark_theme
 from wrench.ui.workers import run_in_background
 
 logger = logging.getLogger(__name__)
@@ -53,15 +54,18 @@ class IssueDetailTab(QWidget):
         main_layout.setSpacing(8)
 
         # 1. Stale Repo Informational Banner
+        is_dark = is_dark_theme(self)
+        warn_style = get_banner_style("warning", is_dark)
         self.stale_banner = QFrame(self)
         self.stale_banner.setStyleSheet(
-            "QFrame { background-color: #38281a; border: 1px solid #fab387; "
+            f"QFrame {{ background-color: {warn_style['bg']}; "
+            f"border: 1px solid {warn_style['border']}; "
             "border-radius: 4px; padding: 4px; }"
         )
         stale_layout = QHBoxLayout(self.stale_banner)
         stale_layout.setContentsMargins(6, 2, 6, 2)
         self.stale_label = QLabel(self)
-        self.stale_label.setStyleSheet("color: #fab387; font-size: 11px;")
+        self.stale_label.setStyleSheet(f"color: {warn_style['fg']}; font-size: 11px;")
         stale_layout.addWidget(self.stale_label)
         self.stale_banner.setVisible(False)
         main_layout.addWidget(self.stale_banner)

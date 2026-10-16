@@ -77,7 +77,7 @@ class RecoveryDialog(QDialog):
             self.details_edit.setReadOnly(True)
             self.details_edit.setFixedHeight(110)
             self.details_edit.setStyleSheet(
-                "background-color: #1e1e1e; color: #f1f1f1; "
+                "background-color: palette(base); color: palette(text); "
                 "font-family: monospace; font-size: 11px;"
             )
 
@@ -85,7 +85,7 @@ class RecoveryDialog(QDialog):
 
         # Status text
         self.status_lbl = QLabel("", self)
-        self.status_lbl.setStyleSheet("font-style: italic; color: #7f8c8d;")
+        self.status_lbl.setStyleSheet("font-style: italic; color: palette(placeholder-text);")
         layout.addWidget(self.status_lbl)
 
         # Action Buttons
@@ -99,7 +99,8 @@ class RecoveryDialog(QDialog):
             if action.is_primary:
                 btn.setDefault(True)
                 btn.setStyleSheet(
-                    "font-weight: bold; background-color: #2980b9; color: white; padding: 6px 14px;"
+                    "font-weight: bold; background-color: palette(highlight); "
+                    "color: palette(highlighted-text); padding: 6px 14px; border-radius: 4px;"
                 )
             btn.clicked.connect(lambda _, a=action: self._on_execute_action(a))
             btn_bar.addWidget(btn)

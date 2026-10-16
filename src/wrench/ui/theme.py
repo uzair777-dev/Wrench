@@ -30,8 +30,9 @@ def is_dark_theme(widget_or_palette: QWidget | QPalette | None = None) -> bool:
     """
     if isinstance(widget_or_palette, QPalette):
         pal = widget_or_palette
-    elif widget_or_palette is not None:
-        pal = widget_or_palette.palette()
+    elif widget_or_palette is not None and hasattr(widget_or_palette, "palette"):
+        p = widget_or_palette.palette
+        pal = p() if callable(p) else p
     else:
         pal = QApplication.palette()
     win_color = pal.color(QPalette.Window)
@@ -224,3 +225,249 @@ COMMIT_STAT_COLORS = {
         "del": "#f38ba8",  # Luminous flamingo
     },
 }
+
+
+# --- Graph Lanes (Catppuccin Velvet Pastel 10-Lane DAG) ---
+
+GRAPH_LANES = {
+    "light": [
+        "#1e66f5",  # 0: Sapphire
+        "#e64553",  # 1: Maroon
+        "#2d7d20",  # 2: Green
+        "#d95700",  # 3: Peach
+        "#8839ef",  # 4: Mauve
+        "#179299",  # 5: Teal
+        "#b2535d",  # 6: Flamingo
+        "#157388",  # 7: Sapphire/Sky
+        "#d20f39",  # 8: Red
+        "#0375a3",  # 9: Sky
+    ],
+    "dark": [
+        "#89b4fa",  # 0: Pastel Sky
+        "#eba0ac",  # 1: Pastel Maroon
+        "#a6e3a1",  # 2: Pastel Green
+        "#fab387",  # 3: Pastel Peach
+        "#cba6f7",  # 4: Pastel Mauve
+        "#94e2d5",  # 5: Pastel Teal
+        "#f2cdcd",  # 6: Pastel Flamingo
+        "#89dceb",  # 7: Pastel Sapphire
+        "#f38ba8",  # 8: Pastel Red
+        "#74c7ec",  # 9: Pastel Sky
+    ],
+}
+# Backward compatibility alias
+GRAPH_COLORS = GRAPH_LANES["dark"]
+
+
+def get_graph_lane_color(index: int, is_dark: bool) -> str:
+    """Returns the hex color string for a graph lane index."""
+    lanes = GRAPH_LANES["dark" if is_dark else "light"]
+    return lanes[index % len(lanes)]
+
+
+def get_graph_lane_qcolor(index: int, is_dark: bool) -> QColor:
+    """Returns a QColor object for a graph lane index."""
+    return QColor(get_graph_lane_color(index, is_dark))
+
+
+# --- Ref Badge Colors (HEAD, Tag, Branch) ---
+
+REF_BADGE_COLORS = {
+    "light": {
+        "head": "#8839ef",  # Mauve (purple)
+        "tag": "#fe640b",  # Peach (orange)
+        "branch": "#1e66f5",  # Sapphire (blue)
+    },
+    "dark": {
+        "head": "#cba6f7",  # Mauve
+        "tag": "#fab387",  # Peach
+        "branch": "#89b4fa",  # Sapphire
+    },
+}
+
+
+def get_ref_badge_color(kind: str, is_dark: bool) -> str:
+    """Returns the hex color string for a ref badge kind."""
+    palette = REF_BADGE_COLORS["dark" if is_dark else "light"]
+    return palette.get(kind, palette["branch"])
+
+
+def get_ref_badge_qcolor(kind: str, is_dark: bool) -> QColor:
+    """Returns a QColor for a ref badge kind."""
+    return QColor(get_ref_badge_color(kind, is_dark))
+
+
+# --- Semantic Banners (Error, Warning, Info, Success) ---
+
+BANNER_STYLES = {
+    "light": {
+        "error": {"bg": "#fee2e2", "border": "#ef4444", "fg": "#991b1b"},
+        "warning": {"bg": "#fef3c7", "border": "#f59e0b", "fg": "#92400e"},
+        "info": {"bg": "#f1f5f9", "border": "#64748b", "fg": "#334155"},
+        "success": {"bg": "#dcfce7", "border": "#22c55e", "fg": "#15803d"},
+    },
+    "dark": {
+        "error": {"bg": "#3a1c24", "border": "#f38ba8", "fg": "#f38ba8"},
+        "warning": {"bg": "#38281a", "border": "#fab387", "fg": "#fab387"},
+        "info": {"bg": "#252638", "border": "#89b4fa", "fg": "#cdd6f4"},
+        "success": {"bg": "#1e3827", "border": "#a6e3a1", "fg": "#a6e3a1"},
+    },
+}
+
+
+def get_banner_style(level: str, is_dark: bool) -> dict[str, str]:
+    """Returns {'bg': hex, 'border': hex, 'fg': hex} for a banner level."""
+    mode = "dark" if is_dark else "light"
+    return BANNER_STYLES[mode].get(level, BANNER_STYLES[mode]["error"])
+
+
+# --- Forge Badges & CI Config (Migrated from badges.py) ---
+
+FORGE_BADGE_COLORS = {
+    "light": {
+        "open": ("#2a5c20", "#dcfce7"),  # Dark green on pastel green
+        "merged": ("#582d8c", "#f3e8ff"),  # Dark purple on pastel purple
+        "closed": ("#8c1d28", "#fee2e2"),  # Dark red on pastel red
+        "mirror": ("#1e40af", "#dbeafe"),  # Deep blue on pastel blue
+    },
+    "dark": {
+        "open": ("#a6e3a1", "#1e3827"),  # Mint on dark forest green
+        "merged": ("#cba6f7", "#322046"),  # Mauve on dark purple
+        "closed": ("#f38ba8", "#3e1e28"),  # Flamingo on dark red
+        "mirror": ("#89b4fa", "#1e2942"),  # Sky on dark slate
+    },
+}
+
+CI_STATUS_CONFIG = {
+    "success": ("✔", "#40a02b", "#a6e3a1", "CI: Success — all checks passed"),
+    "failure": ("✖", "#d20f39", "#f38ba8", "CI: Failure — checks failed"),
+    "pending": ("●", "#1e66f5", "#89b4fa", "CI: Pending — checks in progress"),
+    "unknown": ("○", "#7c7f93", "#9399b2", "CI: No checks reported / unknown"),
+}
+
+REMOTE_BADGE_COLORS = {
+    "light": {"fg": "#1e40af", "bg": "#dbeafe"},
+    "dark": {"fg": "#89b4fa", "bg": "#1e2942"},
+}
+
+
+def get_remote_badge_colors(is_dark: bool) -> tuple[str, str]:
+    """Returns (fg_hex, bg_hex) for remote source badges."""
+    colors = REMOTE_BADGE_COLORS["dark" if is_dark else "light"]
+    return colors["fg"], colors["bg"]
+
+
+# --- Popover Styles (Migrated from info_popover.py) ---
+
+INFO_POPOVER_STYLES = {
+    "light": {
+        "bg": "#eff1f5",
+        "border": "#ccd0da",
+        "text": "#4c4f69",
+        "link": "#1e66f5",
+        "tool": "#7c7f93",
+    },
+    "dark": {
+        "bg": "#313244",
+        "border": "#45475a",
+        "text": "#cdd6f4",
+        "link": "#89b4fa",
+        "tool": "#a6adc8",
+    },
+}
+
+
+def get_info_popover_style(is_dark: bool) -> str:
+    """Returns the QSS stylesheet for InfoPopover."""
+    mode = "dark" if is_dark else "light"
+    p = INFO_POPOVER_STYLES[mode]
+    return (
+        f"InfoPopover {{ background-color: {p['bg']}; border: 1px solid {p['border']}; "
+        f"border-radius: 8px; }} QLabel {{ color: {p['text']}; font-size: 12px; }} "
+        f"a {{ color: {p['link']}; text-decoration: underline; }} "
+        f"QToolButton {{ color: {p['tool']}; }}"
+    )
+
+
+# --- Merge Tool & Action Colors ---
+
+MERGE_MODE_COLORS = {
+    "light": {"rebase": "#df8e1d", "merge": "#1e66f5"},
+    "dark": {"rebase": "#fab387", "merge": "#89b4fa"},
+}
+
+
+def get_merge_mode_color(mode: str, is_dark: bool) -> str:
+    """Returns the hex color string for rebase or merge mode labels."""
+    m = "dark" if is_dark else "light"
+    return MERGE_MODE_COLORS[m].get(mode, MERGE_MODE_COLORS[m]["merge"])
+
+
+SUCCESS_BUTTON_STYLES = {
+    "light": (
+        "QPushButton { font-weight: bold; background-color: #40a02b; color: #ffffff; "
+        "padding: 6px 12px; border: none; border-radius: 4px; } "
+        "QPushButton:hover { background-color: #348423; }"
+    ),
+    "dark": (
+        "QPushButton { font-weight: bold; background-color: #a6e3a1; color: #11111b; "
+        "padding: 6px 12px; border: none; border-radius: 4px; } "
+        "QPushButton:hover { background-color: #94d38f; }"
+    ),
+}
+
+PRIMARY_BUTTON_STYLES = {
+    "light": (
+        "QPushButton { background-color: #1e66f5; color: #ffffff; font-weight: bold; "
+        "font-size: 12px; padding: 5px 12px; border: none; border-radius: 4px; } "
+        "QPushButton:hover { background-color: #1857d4; color: #ffffff; } "
+        "QPushButton:pressed { background-color: #154bb8; color: #ffffff; } "
+        "QPushButton:disabled { background-color: #e6e9ef; color: #7c7f93; "
+        "font-weight: bold; font-size: 12px; padding: 5px 12px; "
+        "border: 1px solid rgba(76, 79, 105, 0.2); border-radius: 4px; }"
+    ),
+    "dark": "",
+}
+
+FORGE_LINK_STYLES = {
+    "light": {
+        "frame": (
+            "background-color: rgba(59, 130, 246, 0.1); "
+            "border: 1px solid rgba(59, 130, 246, 0.3); border-radius: 4px;"
+        ),
+        "label": "color: #1e40af; font-size: 11px;",
+    },
+    "dark": {
+        "frame": (
+            "background-color: rgba(59, 130, 246, 0.15); "
+            "border: 1px solid rgba(59, 130, 246, 0.4); border-radius: 4px;"
+        ),
+        "label": "color: #93c5fd; font-size: 11px;",
+    },
+}
+
+DIFF_TEXT_COLOR = {
+    "light": "#4c4f69",
+    "dark": "#cdd6f4",
+}
+
+
+# --- Remotes Reachability Colors ---
+
+REMOTES_STATUS_COLORS = {
+    "reachable": {"light": "#2da44e", "dark": "#a6e3a1"},
+    "unreachable": {"light": "#cf222e", "dark": "#f38ba8"},
+    "unknown": {"light": "#6e7781", "dark": "#9399b2"},
+}
+
+
+def get_remote_status_color(is_reachable: bool | None, is_dark: bool) -> QColor:
+    """Returns QColor for remote reachability status indicator."""
+    mode = "dark" if is_dark else "light"
+    if is_reachable is True:
+        key = "reachable"
+    elif is_reachable is False:
+        key = "unreachable"
+    else:
+        key = "unknown"
+    return QColor(REMOTES_STATUS_COLORS[key][mode])

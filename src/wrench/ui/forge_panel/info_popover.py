@@ -10,7 +10,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from wrench.ui.theme import is_dark_theme
+from wrench.ui.theme import get_info_popover_style, is_dark_theme
 
 
 class InfoPopover(QFrame):
@@ -50,20 +50,7 @@ class InfoPopover(QFrame):
         """Position the popover and show it with the given rich-text content."""
         self._label.setText(text)
         is_dark = is_dark_theme(self.palette())
-        if is_dark:
-            self.setStyleSheet(
-                "InfoPopover { background-color: #313244; border: 1px solid #45475a; "
-                "border-radius: 8px; } QLabel { color: #cdd6f4; font-size: 12px; } "
-                "a { color: #89b4fa; text-decoration: underline; } "
-                "QToolButton { color: #a6adc8; }"
-            )
-        else:
-            self.setStyleSheet(
-                "InfoPopover { background-color: #eff1f5; border: 1px solid #ccd0da; "
-                "border-radius: 8px; } QLabel { color: #4c4f69; font-size: 12px; } "
-                "a { color: #1e66f5; text-decoration: underline; } "
-                "QToolButton { color: #7c7f93; }"
-            )
+        self.setStyleSheet(get_info_popover_style(is_dark))
         self.adjustSize()
         self.move(global_pos)
         self.show()

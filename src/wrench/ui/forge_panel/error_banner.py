@@ -17,7 +17,7 @@ from wrench.forge.exceptions import (
     ForgeRateLimitedError,
     ForgeUnreachableError,
 )
-from wrench.ui.theme import is_dark_theme
+from wrench.ui.theme import get_banner_style, is_dark_theme
 
 
 class ForgeErrorBanner(QFrame):
@@ -74,18 +74,14 @@ class ForgeErrorBanner(QFrame):
         self._countdown_timer.stop()
 
         if isinstance(exc, ForgeAuthenticationError):
-            bg = "#3a1c24" if is_dark else "#fee2e2"
-            border = "#f38ba8" if is_dark else "#ef4444"
-            fg = "#f38ba8" if is_dark else "#991b1b"
+            style = get_banner_style("error", is_dark)
             self.message_label.setText(str(exc))
             self.action_btn.setText("Re-enter Token…")
             self.action_btn.setProperty("action", "reenter_token")
             self.action_btn.setVisible(True)
 
         elif isinstance(exc, ForgeInsufficientScopeError):
-            bg = "#38281a" if is_dark else "#fef3c7"
-            border = "#fab387" if is_dark else "#f59e0b"
-            fg = "#fab387" if is_dark else "#92400e"
+            style = get_banner_style("warning", is_dark)
             msg = f"{exc} ({exc.scope_hint})" if exc.scope_hint else str(exc)
             self.message_label.setText(msg)
             self.action_btn.setText("Edit Account…")
@@ -93,31 +89,27 @@ class ForgeErrorBanner(QFrame):
             self.action_btn.setVisible(True)
 
         elif isinstance(exc, ForgeRateLimitedError):
-            bg = "#38281a" if is_dark else "#fef3c7"
-            border = "#fab387" if is_dark else "#f59e0b"
-            fg = "#fab387" if is_dark else "#92400e"
+            style = get_banner_style("warning", is_dark)
             self._retry_epoch = time.time() + exc.retry_after_seconds
             self._update_rate_limit_text()
             self._countdown_timer.start()
             self.action_btn.setVisible(False)
 
         elif isinstance(exc, ForgeUnreachableError):
-            bg = "#252638" if is_dark else "#f1f5f9"
-            border = "#89b4fa" if is_dark else "#64748b"
-            fg = "#cdd6f4" if is_dark else "#334155"
+            style = get_banner_style("info", is_dark)
             self.message_label.setText(str(exc))
             self.action_btn.setText("Network Settings…")
             self.action_btn.setProperty("action", "network_settings")
             self.action_btn.setVisible(True)
 
         else:
-            bg = "#3a1c24" if is_dark else "#fee2e2"
-            border = "#f38ba8" if is_dark else "#ef4444"
-            fg = "#f38ba8" if is_dark else "#991b1b"
+            style = get_banner_style("error", is_dark)
             self.message_label.setText(str(exc)[:300])
             self.action_btn.setText("Retry")
             self.action_btn.setProperty("action", "retry")
             self.action_btn.setVisible(True)
+
+        bg, border, fg = style["bg"], style["border"], style["fg"]
 
         self.setStyleSheet(
             f"ForgeErrorBanner {{ background-color: {bg}; border: 1px solid {border}; "

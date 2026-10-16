@@ -5,30 +5,12 @@ from PySide6.QtGui import QColor, QPainter, QPen
 from PySide6.QtWidgets import QLabel
 
 from wrench.forge.models import CIStatus
-from wrench.ui.theme import is_dark_theme
-
-# Catppuccin Velvet Pastel palettes for forge state pills
-FORGE_BADGE_COLORS = {
-    "light": {
-        "open": ("#2a5c20", "#dcfce7"),  # Dark green text on pastel green pill
-        "merged": ("#582d8c", "#f3e8ff"),  # Dark purple text on pastel purple pill
-        "closed": ("#8c1d28", "#fee2e2"),  # Dark red text on pastel red pill
-        "mirror": ("#1e40af", "#dbeafe"),  # Deep blue on pastel blue
-    },
-    "dark": {
-        "open": ("#a6e3a1", "#1e3827"),  # Mint on dark forest green
-        "merged": ("#cba6f7", "#322046"),  # Mauve on dark purple
-        "closed": ("#f38ba8", "#3e1e28"),  # Flamingo on dark red
-        "mirror": ("#89b4fa", "#1e2942"),  # Sky on dark slate
-    },
-}
-
-CI_STATUS_CONFIG = {
-    "success": ("✔", "#40a02b", "#a6e3a1", "CI: Success — all checks passed"),
-    "failure": ("✖", "#d20f39", "#f38ba8", "CI: Failure — checks failed"),
-    "pending": ("●", "#1e66f5", "#89b4fa", "CI: Pending — checks in progress"),
-    "unknown": ("○", "#7c7f93", "#9399b2", "CI: No checks reported / unknown"),
-}
+from wrench.ui.theme import (
+    CI_STATUS_CONFIG,
+    FORGE_BADGE_COLORS,
+    get_remote_badge_colors,
+    is_dark_theme,
+)
 
 
 def paint_pr_state_badge(painter: QPainter, rect: QRect, state: str, is_dark: bool) -> None:
@@ -144,8 +126,7 @@ class RemoteBadge(QLabel):
 
     def update_remote(self, remote_name: str, provider: str) -> None:
         is_dark = is_dark_theme(self.palette())
-        fg = "#89b4fa" if is_dark else "#1e40af"
-        bg = "#1e2942" if is_dark else "#dbeafe"
+        fg, bg = get_remote_badge_colors(is_dark)
 
         self.setText(f"{remote_name} · {provider.capitalize()}")
         self.setStyleSheet(

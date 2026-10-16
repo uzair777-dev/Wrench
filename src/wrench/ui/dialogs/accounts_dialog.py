@@ -263,8 +263,8 @@ class AddAccountDialog(QDialog):
         card_style = (
             "QPushButton { text-align: left; padding: 14px 16px; font-size: 13px; "
             "border: 1px solid palette(mid); border-radius: 8px; }"
-            "QPushButton:hover { border-color: #1e66f5; "
-            "background-color: rgba(30, 102, 245, 0.08); }"
+            "QPushButton:hover { border-color: palette(highlight); "
+            "background-color: rgba(128, 128, 128, 0.08); }"
         )
 
         self.assisted_btn = QPushButton(
@@ -383,7 +383,7 @@ class AddAccountDialog(QDialog):
             self._assisted_form_widget,
         )
         sec_note.setStyleSheet(
-            "color: #40a02b; font-size: 11px; margin-left: 20px; margin-bottom: 6px;"
+            "color: palette(link); font-size: 11px; margin-left: 20px; margin-bottom: 6px;"
         )
         scope_layout.addWidget(sec_note)
 
@@ -404,7 +404,7 @@ class AddAccountDialog(QDialog):
             "⚠️ You won't be able to see or interact with private repositories.",
             self._assisted_form_widget,
         )
-        public_warn.setStyleSheet("color: #df8e1d; font-size: 11px; margin-left: 20px;")
+        public_warn.setStyleSheet("color: palette(highlight); font-size: 11px; margin-left: 20px;")
         scope_layout.addWidget(public_warn)
 
         # Advanced scopes toggle button
@@ -479,7 +479,7 @@ class AddAccountDialog(QDialog):
         self.verification_url_label = QLabel(self._assisted_waiting_widget)
         self.verification_url_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
         self.verification_url_label.setStyleSheet(
-            "font-weight: bold; font-size: 13px; color: #1e66f5;"
+            "font-weight: bold; font-size: 13px; color: palette(link);"
         )
         url_row2.addWidget(self.verification_url_label)
         self.open_browser_btn = QPushButton("Open in Browser", self._assisted_waiting_widget)
@@ -643,7 +643,7 @@ class AddAccountDialog(QDialog):
         # Status / Error Label
         self.status_label = QLabel(page)
         self.status_label.setWordWrap(True)
-        self.status_label.setStyleSheet("color: #d20f39; font-size: 11px;")
+        self.status_label.setStyleSheet("color: palette(bright-text); font-size: 11px;")
         layout.addWidget(self.status_label)
 
         # Action Buttons
@@ -697,7 +697,9 @@ class AddAccountDialog(QDialog):
         if self.enterprise_radio.isChecked():
             instance_url = self.assisted_url_edit.text().strip().rstrip("/")
             if not instance_url:
-                self.assisted_status_label.setStyleSheet("color: #d20f39; font-size: 11px;")
+                self.assisted_status_label.setStyleSheet(
+                    "color: palette(bright-text); font-size: 11px;"
+                )
                 self.assisted_status_label.setText("Error: Instance URL cannot be empty.")
                 return
         else:
@@ -832,7 +834,7 @@ class AddAccountDialog(QDialog):
 
         if isinstance(exc, ForgeAuthenticationError):
             self.waiting_status_label.setStyleSheet(
-                "color: #df8e1d; font-size: 12px; font-weight: bold;"
+                "color: palette(highlight); font-size: 12px; font-weight: bold;"
             )
             self.waiting_status_label.setText(
                 "Authorization was denied. You can try again or use Manual Setup."
@@ -840,7 +842,7 @@ class AddAccountDialog(QDialog):
             show_manual_fallback = True
         elif "expired" in msg.lower():
             self.waiting_status_label.setStyleSheet(
-                "color: #df8e1d; font-size: 12px; font-weight: bold;"
+                "color: palette(highlight); font-size: 12px; font-weight: bold;"
             )
             self.waiting_status_label.setText(
                 "The authorization code has expired (15 minute limit). "
@@ -853,7 +855,7 @@ class AddAccountDialog(QDialog):
             return
         elif "unauthorized_client" in msg.lower() or "could not be verified" in msg.lower():
             self.waiting_status_label.setStyleSheet(
-                "color: #d20f39; font-size: 12px; font-weight: bold;"
+                "color: palette(bright-text); font-size: 12px; font-weight: bold;"
             )
             self.waiting_status_label.setText(
                 "The Wrench OAuth app could not be verified. "
@@ -864,7 +866,7 @@ class AddAccountDialog(QDialog):
             show_try_again = False
         elif "unsupported_grant_type" in msg.lower() or "not enabled" in msg.lower():
             self.waiting_status_label.setStyleSheet(
-                "color: #d20f39; font-size: 12px; font-weight: bold;"
+                "color: palette(bright-text); font-size: 12px; font-weight: bold;"
             )
             self.waiting_status_label.setText(
                 "Device Flow is not enabled for this GitHub instance. "
@@ -875,7 +877,7 @@ class AddAccountDialog(QDialog):
             show_try_again = False
         elif "ssl" in msg.lower() or "certificate" in msg.lower():
             self.waiting_status_label.setStyleSheet(
-                "color: #d20f39; font-size: 12px; font-weight: bold;"
+                "color: palette(bright-text); font-size: 12px; font-weight: bold;"
             )
             self.waiting_status_label.setText(
                 "SSL certificate verification failed. "
@@ -885,14 +887,14 @@ class AddAccountDialog(QDialog):
             show_manual_fallback = True
         elif "status.github.com" in msg.lower() or "50" in msg:
             self.waiting_status_label.setStyleSheet(
-                "color: #d20f39; font-size: 12px; font-weight: bold;"
+                "color: palette(bright-text); font-size: 12px; font-weight: bold;"
             )
             self.waiting_status_label.setText(
                 "GitHub is experiencing issues. " "Check status.github.com and try again later."
             )
         else:
             self.waiting_status_label.setStyleSheet(
-                "color: #d20f39; font-size: 12px; font-weight: bold;"
+                "color: palette(bright-text); font-size: 12px; font-weight: bold;"
             )
             self.waiting_status_label.setText(msg)
 
@@ -1046,7 +1048,7 @@ class AddAccountDialog(QDialog):
                 tls_insecure=insecure,
             )
         except Exception as exc:
-            self.status_label.setStyleSheet("color: #d20f39; font-size: 11px;")
+            self.status_label.setStyleSheet("color: palette(bright-text); font-size: 11px;")
             self.status_label.setText(f"Failed to store account: {exc}")
             self.save_btn.setEnabled(True)
             self.cancel_btn.setEnabled(True)
@@ -1059,7 +1061,7 @@ class AddAccountDialog(QDialog):
     def _on_validation_failure(self, exc: Exception) -> None:
         self.save_btn.setEnabled(True)
         self.cancel_btn.setEnabled(True)
-        self.status_label.setStyleSheet("color: #d20f39; font-size: 11px;")
+        self.status_label.setStyleSheet("color: palette(bright-text); font-size: 11px;")
         self.status_label.setText(f"Validation failed: {exc}")
 
 
@@ -1145,7 +1147,7 @@ class EditAccountDialog(QDialog):
         # Status Label
         self.status_label = QLabel(self)
         self.status_label.setWordWrap(True)
-        self.status_label.setStyleSheet("color: #d20f39; font-size: 11px;")
+        self.status_label.setStyleSheet("color: palette(bright-text); font-size: 11px;")
         layout.addWidget(self.status_label)
 
         # Buttons
@@ -1241,7 +1243,7 @@ class EditAccountDialog(QDialog):
         except Exception as exc:
             self.save_btn.setEnabled(True)
             self.cancel_btn.setEnabled(True)
-            self.status_label.setStyleSheet("color: #d20f39; font-size: 11px;")
+            self.status_label.setStyleSheet("color: palette(bright-text); font-size: 11px;")
             self.status_label.setText(f"Failed to update account: {exc}")
             return
         finally:
@@ -1252,7 +1254,7 @@ class EditAccountDialog(QDialog):
     def _on_validation_failure(self, exc: Exception) -> None:
         self.save_btn.setEnabled(True)
         self.cancel_btn.setEnabled(True)
-        self.status_label.setStyleSheet("color: #d20f39; font-size: 11px;")
+        self.status_label.setStyleSheet("color: palette(bright-text); font-size: 11px;")
         self.status_label.setText(f"Validation failed: {exc}")
 
     def _reauth_github(self) -> None:
@@ -1313,7 +1315,7 @@ class AccountsDialog(QDialog):
         btn_bar.addWidget(self.reauth_btn)
 
         self.delete_btn = QPushButton("Delete", self)
-        self.delete_btn.setStyleSheet("color: #d20f39;")
+        self.delete_btn.setStyleSheet("color: palette(bright-text);")
         self.delete_btn.clicked.connect(self._delete_account)
         btn_bar.addWidget(self.delete_btn)
 

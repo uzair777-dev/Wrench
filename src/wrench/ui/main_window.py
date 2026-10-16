@@ -266,6 +266,12 @@ class MainWindow(QMainWindow):
         act_identity = edit_menu.addAction(self.tr("Git &Identity…"))
         act_identity.triggered.connect(self._on_git_identity)
 
+        edit_menu.addSeparator()
+
+        self.act_preferences = edit_menu.addAction(self.tr("&Preferences…"))
+        self.act_preferences.setShortcut(QKeySequence("Ctrl+,"))
+        self.act_preferences.triggered.connect(self._on_open_preferences)
+
         # ---------------- View Menu ----------------
         view_menu = menu_bar.addMenu(self.tr("&View"))
 
@@ -711,6 +717,7 @@ class MainWindow(QMainWindow):
             self._current_repo = engine.open_repo(path)
             self.history_tab.set_repo(self._current_repo)
             self.snapshots_panel.set_repo(self._current_repo)
+            self.restart_snapshot_timer()
 
             # Start inotify watcher
             self._watcher = RepoWatcher(
@@ -1563,6 +1570,7 @@ class MainWindow(QMainWindow):
 
         if self._current_repo:
             self._current_repo = None
+            self.restart_snapshot_timer()
             if self._watcher:
                 self._watcher.stop()
                 self._watcher = None
@@ -1637,11 +1645,51 @@ class MainWindow(QMainWindow):
                 self.tr(f"Could not save identity: {e}"),
             )
 
+    @property
+    def _repo_path(self) -> Path | None:
+        """Returns the Path of the currently opened repository, or None."""
+        return self._current_repo.path if self._current_repo else None
+
+    def _set_tab_orientation(self, orient: Qt.Orientation | str) -> None:
+        """Sets tab container orientation, propagates to widgets, and persists to settings."""
+        if isinstance(orient, str):
+            qt_orient = Qt.Horizontal if orient.lower() == "horizontal" else Qt.Vertical
+        else:
+            qt_orient = orient
+        self.tab_container.set_orientation(qt_orient)
+        orient_str = "horizontal" if qt_orient == Qt.Horizontal else "vertical"
+        settings.set_setting(self._conn, "ui.tab_orientation", orient_str)
+
     def _on_toggle_tab_orientation(self) -> None:
         new_orient = (
             Qt.Horizontal if self.tab_container.orientation() == Qt.Vertical else Qt.Vertical
         )
-        self.tab_container.set_orientation(new_orient)
+        self._set_tab_orientation(new_orient)
+
+    def restart_snapshot_timer(self) -> None:
+        """Refreshes or stops the automatic snapshot timer based on active repository settings."""
+        if self._current_repo:
+            try:
+                from wrench.core import snapshots
+
+                cfg = snapshots.get_snapshot_settings(self._current_repo, conn=self._conn)
+                if cfg.trigger_on_timer and cfg.timer_interval_minutes > 0:
+                    self._snapshot_timer.setInterval(int(cfg.timer_interval_minutes * 60 * 1000))
+                    self._snapshot_timer.start()
+                else:
+                    self._snapshot_timer.stop()
+            except Exception as exc:
+                logger.debug("Failed to restart snapshot timer: %s", exc)
+                self._snapshot_timer.stop()
+        else:
+            self._snapshot_timer.stop()
+
+    def _on_open_preferences(self) -> None:
+        """Opens the Preferences / Settings dialog."""
+        from wrench.ui.dialogs.settings_dialog import SettingsDialog
+
+        dlg = SettingsDialog(main_window=self, parent=self)
+        dlg.exec()
 
     def _on_add_category_tab(self, tab_type: str) -> None:
         if tab_type == "changes":

@@ -11,6 +11,14 @@
 
 ---
 
+> [!WARNING]
+> 1. Its only for linux as of now, but its foundation for cross-platform compatibility is being laid and is scheduled for v3, as i want to make it stable on one platform first rather than doing all at once.
+> 2. I do not recommend this for production use yet, but it can be used for personal use until full v2 spec and stability lands. 
+
+
+
+---
+
 ## Key Features
 
 - **Hybrid Git Core**: Fast in-memory status, diffs, and log traversal via `pygit2` (libgit2), combined with system `git` CLI execution for safe, conflict-aware write and staging operations.

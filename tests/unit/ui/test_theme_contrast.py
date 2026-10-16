@@ -2,8 +2,11 @@
 
 from wrench.ui.theme import (
     BANNER_STYLES,
+    CI_STATUS_CONFIG,
     FORGE_BADGE_COLORS,
     GRAPH_LANES,
+    MERGE_MODE_COLORS,
+    SECONDARY_TEXT,
     create_pastel_dark_palette,
     create_pastel_light_palette,
 )
@@ -93,3 +96,61 @@ def test_graph_lane_tokens_contrast():
     for i, hex_col in enumerate(GRAPH_LANES["dark"]):
         ratio = contrast_ratio(hex_col, dark_bg)
         assert ratio >= 3.0, f"Dark graph lane {i} ({hex_col}) contrast {ratio:.2f} < 3.0"
+
+
+def test_placeholder_and_secondary_text_contrast():
+    """Verify placeholder and secondary text against backgrounds (>= 4.5:1)."""
+    light_pal = create_pastel_light_palette()
+    dark_pal = create_pastel_dark_palette()
+
+    light_win = light_pal.window().color().name()
+    light_base = light_pal.base().color().name()
+    dark_win = dark_pal.window().color().name()
+    dark_base = dark_pal.base().color().name()
+
+    # PlaceholderText in QPalette
+    light_ph = light_pal.placeholderText().color().name()
+    dark_ph = dark_pal.placeholderText().color().name()
+
+    assert contrast_ratio(light_ph, light_win) >= 4.5
+    assert contrast_ratio(light_ph, light_base) >= 4.5
+    assert contrast_ratio(dark_ph, dark_win) >= 4.5
+    assert contrast_ratio(dark_ph, dark_base) >= 4.5
+
+    # SECONDARY_TEXT token map
+    assert contrast_ratio(SECONDARY_TEXT["light"], light_win) >= 4.5
+    assert contrast_ratio(SECONDARY_TEXT["dark"], dark_win) >= 4.5
+
+
+def test_merge_mode_tokens_contrast():
+    """Verify rebase and merge mode label colors against window background (>= 4.5:1)."""
+    light_win = create_pastel_light_palette().window().color().name()
+    dark_win = create_pastel_dark_palette().window().color().name()
+
+    for mode in ("rebase", "merge"):
+        light_col = MERGE_MODE_COLORS["light"][mode]
+        dark_col = MERGE_MODE_COLORS["dark"][mode]
+        ratio_l = contrast_ratio(light_col, light_win)
+        ratio_d = contrast_ratio(dark_col, dark_win)
+        assert (
+            ratio_l >= 4.5
+        ), f"Light merge mode '{mode}' ({light_col}) failed contrast: {ratio_l:.2f} < 4.5"
+        assert (
+            ratio_d >= 4.5
+        ), f"Dark merge mode '{mode}' ({dark_col}) failed contrast: {ratio_d:.2f} < 4.5"
+
+
+def test_ci_status_tokens_contrast():
+    """Verify CI status indicators against window background (>= 4.5:1)."""
+    light_win = create_pastel_light_palette().window().color().name()
+    dark_win = create_pastel_dark_palette().window().color().name()
+
+    for kind, (_sym, light_col, dark_col, _desc) in CI_STATUS_CONFIG.items():
+        ratio_l = contrast_ratio(light_col, light_win)
+        ratio_d = contrast_ratio(dark_col, dark_win)
+        assert (
+            ratio_l >= 4.5
+        ), f"Light CI status '{kind}' ({light_col}) failed contrast: {ratio_l:.2f} < 4.5"
+        assert (
+            ratio_d >= 4.5
+        ), f"Dark CI status '{kind}' ({dark_col}) failed contrast: {ratio_d:.2f} < 4.5"

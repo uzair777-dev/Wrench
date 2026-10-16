@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 
 import pygit2
 import pytest
-from PySide6.QtWidgets import QApplication, QMessageBox, QPushButton
+from PySide6.QtWidgets import QApplication, QLabel, QMessageBox, QPushButton
 
 from wrench.core.engine import RepoHandle
 from wrench.forge.exceptions import ForgeAuthenticationError
@@ -659,3 +659,33 @@ class TestAdvancedScopes:
         scopes = dlg._get_selected_scopes()
         assert "workflow" in scopes
         assert "public_repo" in scopes
+
+
+class TestAccountsDialogThemeLegibility:
+    """Verify text elements in AddAccountDialog use readable palette roles (not palette(mid))."""
+
+    def test_chooser_and_assisted_text_colors(self, db_conn):
+        dlg = AddAccountDialog(initial_page=0)
+
+        # Chooser page subtitle
+        chooser_page = dlg._stack.widget(0)
+        labels = chooser_page.findChildren(QLabel)
+        subtitle = next((lbl for lbl in labels if "How would you like" in lbl.text()), None)
+        assert subtitle is not None
+        assert "palette(placeholder-text)" in subtitle.styleSheet()
+        assert "palette(mid)" not in subtitle.styleSheet()
+
+        # Assisted page elements
+        dlg._stack.setCurrentIndex(1)
+        assert "palette(placeholder-text)" in dlg.advanced_scopes_btn.styleSheet()
+        assert "palette(mid)" not in dlg.advanced_scopes_btn.styleSheet()
+        assert "palette(placeholder-text)" in dlg.countdown_label.styleSheet()
+        assert "palette(mid)" not in dlg.countdown_label.styleSheet()
+
+        # Ensure no QLabel on assisted page has color: palette(mid)
+        assisted_page = dlg._stack.widget(1)
+        for lbl in assisted_page.findChildren(QLabel):
+            sheet = lbl.styleSheet()
+            assert (
+                "color: palette(mid)" not in sheet
+            ), f"Found unreadable color: palette(mid) on {lbl.text()}"

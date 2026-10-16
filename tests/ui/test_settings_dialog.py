@@ -168,10 +168,19 @@ def test_snapshots_page_with_active_repo(main_window, multi_commit_repo, db_conn
     page.spin_timer_min.setValue(15)
     page.chk_on_timer.setChecked(True)
 
+    # Modify untracked mode & caps
+    idx = page.combo_untracked_mode.findData("unlimited")
+    page.combo_untracked_mode.setCurrentIndex(idx)
+    page.spin_per_file_cap.setValue(25)
+    page.spin_total_cap.setValue(150)
+
     # Verify saved to database via core.snapshots
     cfg = snapshots.get_snapshot_settings(main_window._current_repo, conn=db_conn)
     assert cfg.timer_interval_minutes == 15
     assert cfg.trigger_on_timer is True
+    assert cfg.untracked_capture_mode == "unlimited"
+    assert cfg.untracked_per_file_cap_mb == 25
+    assert cfg.untracked_total_cap_mb == 150
     assert main_window._snapshot_timer.interval() == 15 * 60 * 1000
     dlg.close()
 

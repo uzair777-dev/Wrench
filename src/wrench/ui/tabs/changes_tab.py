@@ -18,8 +18,8 @@ import sqlite3
 from collections.abc import Callable
 from pathlib import Path
 
-from PySide6.QtCore import QByteArray, QEvent, QPoint, Qt, Signal
-from PySide6.QtGui import QKeySequence, QShortcut
+from PySide6.QtCore import QByteArray, QEvent, QPoint, QSize, Qt, Signal
+from PySide6.QtGui import QIcon, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -45,7 +45,7 @@ from PySide6.QtWidgets import (
 from wrench.core import engine
 from wrench.core.engine import RepoHandle, RepoStatus
 from wrench.core.exceptions import NothingToCommitError
-from wrench.storage import forge_accounts, repo_registry
+from wrench.storage import forge_accounts, repo_registry, settings
 from wrench.ui.diff_view.diff_widget import DiffView
 from wrench.ui.merge_tool.merge_dialog import MergeDialog
 from wrench.ui.theme import (
@@ -56,6 +56,7 @@ from wrench.ui.theme import (
     get_badge_colors,
     is_dark_theme,
 )
+from wrench.ui.widgets.avatar import get_avatar_loader
 from wrench.ui.widgets.branch_switcher import BranchSwitcherWidget
 
 logger = logging.getLogger(__name__)
@@ -206,6 +207,7 @@ class ChangesTab(QWidget):
         self._previous_untracked_msg: str = ""
 
         self._init_ui()
+        get_avatar_loader().avatar_ready.connect(lambda *_: self._update_account_btn())
 
     def _init_ui(self) -> None:
         main_layout = QHBoxLayout(self)
@@ -563,8 +565,10 @@ class ChangesTab(QWidget):
             self._update_conflict_banner()
             self._populate_files_list()
             self._update_commit_button()
+            self._update_account_btn()
 
             # Check MERGE_MSG prefill
+
             if self._current_status and self._current_status.merge_in_progress:
                 if not self.commit_msg_input.text().strip():
                     merge_msg_file = Path(self._repo.path) / ".git" / "MERGE_MSG"
@@ -878,6 +882,7 @@ class ChangesTab(QWidget):
         self.clean_title.setText(self.tr("No repository open"))
         self.clean_quote.setText(self.tr("Open or clone a repository to get started."))
         self.clean_author.setText("")
+        self._update_account_btn()
 
     def _show_file_diff(self, path: str) -> None:
         if not self._repo:
@@ -1180,7 +1185,44 @@ class ChangesTab(QWidget):
                     self.tr(f"Could not discard changes: {e}"),
                 )
 
+    def _update_account_btn(self) -> None:
+        """Updates commit-box account button with linked forge avatar icon or fallback."""
+        if not self._repo:
+            self.account_btn.setIcon(QIcon())
+            self.account_btn.setText("👤")
+            self.account_btn.setToolTip(self.tr("Forge Account: Local / Unlinked"))
+            return
+
+        repo_path = str(self._repo.path)
+        try:
+            row = self._conn.execute("SELECT id FROM repos WHERE path = ?", (repo_path,)).fetchone()
+            if row:
+                links = forge_accounts.list_links_for_repo(self._conn, row[0])
+                if links:
+                    link = links[0]
+                    acc = forge_accounts.get_account_full(self._conn, link.forge_account_id)
+                    label = acc.label if acc else "Account"
+                    avatar_url = settings.get_setting(
+                        self._conn, f"account.{link.forge_account_id}.avatar_url"
+                    )
+                    is_dark = is_dark_theme(self)
+                    pm = get_avatar_loader().get_avatar(avatar_url, label, size=24, is_dark=is_dark)
+                    self.account_btn.setText("")
+                    self.account_btn.setIcon(QIcon(pm))
+                    self.account_btn.setIconSize(QSize(20, 20))
+                    self.account_btn.setToolTip(
+                        self.tr(f"Forge Account: {label} ({link.remote_name})")
+                    )
+                    return
+        except Exception as e:
+            logger.debug("Failed updating account button avatar: %s", e)
+
+        self.account_btn.setIcon(QIcon())
+        self.account_btn.setText("👤")
+        self.account_btn.setToolTip(self.tr("Forge Account: Local / Unlinked"))
+
     def _show_account_menu(self) -> None:
+
         menu = QMenu(self)
         menu.addAction(self.tr("No linked forge account")).setEnabled(False)
         menu.addSeparator()

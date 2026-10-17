@@ -138,3 +138,13 @@ class TestChangesTabCommit:
         tab._on_commit_clicked()
         assert len(info_called) == 1
         assert tab.commit_msg_input.text() == ""
+
+
+def test_changes_tab_account_btn_updates_with_linked_account(db_conn):
+    from wrench.ui.tabs.changes_tab import ChangesTab
+
+    tab = ChangesTab(db_conn)
+    assert hasattr(tab, "_update_account_btn")
+    tab._update_account_btn()
+    # Unlinked initially
+    assert tab.account_btn.text() == "👤"

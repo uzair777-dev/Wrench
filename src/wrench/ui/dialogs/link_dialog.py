@@ -262,8 +262,10 @@ class LinkRepoDialog(QDialog):
                             if acct is None:
                                 return
                             adapter = create_adapter(acct)
+
                             try:
                                 email = adapter.get_primary_email()
+                                avatar_url = adapter.get_avatar_url()
                             finally:
                                 adapter.close()
                             if email:
@@ -272,6 +274,18 @@ class LinkRepoDialog(QDialog):
                                     acct.username or acct.label,
                                     email,
                                 )
+                            if avatar_url:
+                                from wrench.storage import settings as s_mod
+
+                                conn_s = db_mod.get_connection()
+                                try:
+                                    s_mod.set_setting(
+                                        conn_s,
+                                        f"account.{target_acct_id}.avatar_url",
+                                        avatar_url,
+                                    )
+                                finally:
+                                    conn_s.close()
                         except Exception:
                             pass  # best-effort, don't block linking
 

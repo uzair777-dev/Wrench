@@ -95,7 +95,10 @@ def test_list_pull_requests_state_mapping(github_adapter):
             "state": "open",
             "merged_at": None,
             "html_url": "https://github.com/org/repo/pull/1",
-            "user": {"login": "alice"},
+            "user": {
+                "login": "alice",
+                "avatar_url": "https://avatars.githubusercontent.com/u/1?v=4",
+            },
             "head": {"ref": "feat-1"},
             "base": {"ref": "main"},
             "created_at": "2026-09-23T10:00:00Z",
@@ -136,6 +139,8 @@ def test_list_pull_requests_state_mapping(github_adapter):
     assert prs[0].state == "open"
     assert prs[1].state == "merged"
     assert prs[2].state == "closed"
+    assert prs[0].author_avatar_url == "https://avatars.githubusercontent.com/u/1?v=4"
+    assert prs[1].author_avatar_url is None
 
 
 def test_list_pull_requests_pagination_and_cap(github_adapter):
@@ -306,3 +311,14 @@ def test_get_issue(github_adapter):
         assert issue.state == "open"
         assert issue.author == "bob"
         assert issue.description == "Issue description"
+
+
+def test_github_get_avatar_url(github_adapter):
+    mock_resp = httpx.Response(
+        200,
+        json={"login": "testuser", "avatar_url": "https://avatars.githubusercontent.com/u/1?v=4"},
+        request=httpx.Request("GET", "https://api.github.com/user"),
+    )
+    with patch.object(github_adapter._client, "request", return_value=mock_resp):
+        url = github_adapter.get_avatar_url()
+        assert url == "https://avatars.githubusercontent.com/u/1?v=4"

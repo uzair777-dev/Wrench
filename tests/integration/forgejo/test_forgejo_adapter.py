@@ -97,7 +97,7 @@ def test_list_pull_requests_state_mapping(forgejo_adapter):
             "state": "open",
             "merged": False,
             "html_url": "https://forgejo.example.com/o/r/pulls/1",
-            "user": {"login": "alice"},
+            "user": {"login": "alice", "avatar_url": "https://forgejo.example.com/avatar.png"},
             "head": {"ref": "f1"},
             "base": {"ref": "main"},
             "created_at": "2026-09-23T10:00:00Z",
@@ -140,6 +140,8 @@ def test_list_pull_requests_state_mapping(forgejo_adapter):
     assert prs[0].state == "open"
     assert prs[1].state == "merged"
     assert prs[2].state == "closed"
+    assert prs[0].author_avatar_url == "https://forgejo.example.com/avatar.png"
+    assert prs[1].author_avatar_url is None
 
 
 def test_list_pull_requests_pagination_and_cap(forgejo_adapter):
@@ -275,3 +277,14 @@ def test_get_issue(forgejo_adapter):
         assert issue.state == "open"
         assert issue.author == "bob"
         assert issue.description == "Issue description"
+
+
+def test_forgejo_get_avatar_url(forgejo_adapter):
+    mock_resp = httpx.Response(
+        200,
+        json={"login": "alice", "avatar_url": "https://forgejo.example.com/avatar.png"},
+        request=httpx.Request("GET", "https://forgejo.example.com/api/v1/user"),
+    )
+    with patch.object(forgejo_adapter._client, "request", return_value=mock_resp):
+        url = forgejo_adapter.get_avatar_url()
+        assert url == "https://forgejo.example.com/avatar.png"

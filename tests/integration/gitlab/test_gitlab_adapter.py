@@ -97,7 +97,7 @@ def test_list_pull_requests_state_mapping(gitlab_adapter):
             "description": "Details 1",
             "state": "opened",
             "web_url": "https://gitlab.com/group/proj/-/merge_requests/10",
-            "author": {"username": "alice"},
+            "author": {"username": "alice", "avatar_url": "https://gitlab.example.com/avatar.png"},
             "source_branch": "feat-1",
             "target_branch": "main",
             "created_at": "2026-09-23T10:00:00Z",
@@ -140,6 +140,8 @@ def test_list_pull_requests_state_mapping(gitlab_adapter):
     assert mrs[0].state == "open"
     assert mrs[1].state == "merged"
     assert mrs[2].state == "closed"
+    assert mrs[0].author_avatar_url == "https://gitlab.example.com/avatar.png"
+    assert mrs[1].author_avatar_url is None
 
 
 def test_list_pull_requests_pagination_and_cap(gitlab_adapter):
@@ -298,3 +300,14 @@ def test_get_issue(gitlab_adapter):
         assert issue.state == "open"
         assert issue.author == "bob"
         assert issue.description == "Issue description"
+
+
+def test_gitlab_get_avatar_url(gitlab_adapter):
+    mock_resp = httpx.Response(
+        200,
+        json={"username": "alice", "avatar_url": "https://gitlab.example.com/avatar.png"},
+        request=httpx.Request("GET", "https://gitlab.com/api/v4/user"),
+    )
+    with patch.object(gitlab_adapter._client, "request", return_value=mock_resp):
+        url = gitlab_adapter.get_avatar_url()
+        assert url == "https://gitlab.example.com/avatar.png"

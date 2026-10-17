@@ -76,6 +76,7 @@ class GitHubAdapter(ForgeAdapter):
                     url=item.get("html_url", ""),
                     author=item.get("user", {}).get("login", ""),
                     created_at=item.get("created_at", ""),
+                    author_avatar_url=(item.get("user") or {}).get("avatar_url"),
                 )
             )
         return prs
@@ -108,6 +109,7 @@ class GitHubAdapter(ForgeAdapter):
             url=item.get("html_url", ""),
             author=item.get("user", {}).get("login", ""),
             created_at=item.get("created_at", ""),
+            author_avatar_url=(item.get("user") or {}).get("avatar_url"),
         )
 
     def submit_review(
@@ -201,6 +203,7 @@ class GitHubAdapter(ForgeAdapter):
                     url=item.get("html_url", ""),
                     author=item.get("user", {}).get("login", ""),
                     created_at=item.get("created_at", ""),
+                    author_avatar_url=(item.get("user") or {}).get("avatar_url"),
                 )
             )
         return issues
@@ -222,6 +225,7 @@ class GitHubAdapter(ForgeAdapter):
             url=item.get("html_url", ""),
             author=item.get("user", {}).get("login", ""),
             created_at=item.get("created_at", ""),
+            author_avatar_url=(item.get("user") or {}).get("avatar_url"),
         )
 
     def get_issue(self, owner: str, repo: str, issue_id: str) -> Issue:
@@ -235,6 +239,7 @@ class GitHubAdapter(ForgeAdapter):
             url=item.get("html_url", ""),
             author=item.get("user", {}).get("login", ""),
             created_at=item.get("created_at", ""),
+            author_avatar_url=(item.get("user") or {}).get("avatar_url"),
         )
 
     def get_primary_email(self) -> str | None:
@@ -258,3 +263,12 @@ class GitHubAdapter(ForgeAdapter):
             if item.get("verified"):
                 return item.get("email")
         return None
+
+    def get_avatar_url(self) -> str | None:
+        """Fetch authenticated user's avatar URL from /user endpoint."""
+        try:
+            resp = self._request("GET", "/user")
+            data = resp.json()
+            return data.get("avatar_url")
+        except Exception:
+            return None

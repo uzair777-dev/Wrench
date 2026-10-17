@@ -115,7 +115,10 @@ def test_list_pull_requests_state_mapping(bitbucket_adapter):
             "description": "Desc 1",
             "state": "OPEN",
             "links": {"html": {"href": "https://bitbucket.org/w/r/pull-requests/1"}},
-            "author": {"display_name": "Alice"},
+            "author": {
+                "display_name": "Alice",
+                "links": {"avatar": {"href": "https://bitbucket.org/avatar.png"}},
+            },
             "source": {"branch": {"name": "f1"}},
             "destination": {"branch": {"name": "main"}},
             "created_on": "2026-09-23T10:00:00Z",
@@ -156,6 +159,8 @@ def test_list_pull_requests_state_mapping(bitbucket_adapter):
     assert prs[0].state == "open"
     assert prs[1].state == "merged"
     assert prs[2].state == "closed"
+    assert prs[0].author_avatar_url == "https://bitbucket.org/avatar.png"
+    assert prs[1].author_avatar_url is None
 
 
 def test_list_pull_requests_next_url_pagination(bitbucket_adapter):
@@ -296,3 +301,17 @@ def test_get_issue(bitbucket_adapter):
         assert issue.state == "open"
         assert issue.author == "Bob"
         assert issue.description == "Issue description"
+
+
+def test_bitbucket_get_avatar_url(bitbucket_adapter):
+    mock_resp = httpx.Response(
+        200,
+        json={
+            "display_name": "Alice",
+            "links": {"avatar": {"href": "https://bitbucket.org/avatar.png"}},
+        },
+        request=httpx.Request("GET", "https://api.bitbucket.org/2.0/user"),
+    )
+    with patch.object(bitbucket_adapter._client, "request", return_value=mock_resp):
+        url = bitbucket_adapter.get_avatar_url()
+        assert url == "https://bitbucket.org/avatar.png"

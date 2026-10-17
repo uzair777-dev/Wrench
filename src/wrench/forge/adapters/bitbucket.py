@@ -9,7 +9,14 @@ from wrench.forge.exceptions import ForgeAuthenticationError, ForgeError
 from wrench.forge.models import CIStatus, Issue, PullRequest
 
 
+def _extract_avatar_url(data: dict[str, Any] | None) -> str | None:
+    if not isinstance(data, dict):
+        return None
+    return (data.get("links") or {}).get("avatar", {}).get("href")
+
+
 class BitbucketAdapter(ForgeAdapter):
+
     provider_id = "bitbucket"
 
     @property
@@ -75,6 +82,7 @@ class BitbucketAdapter(ForgeAdapter):
                     author=item.get("author", {}).get("display_name", "")
                     or item.get("author", {}).get("nickname", ""),
                     created_at=item.get("created_on", ""),
+                    author_avatar_url=_extract_avatar_url(item.get("author")),
                 )
             )
         return prs
@@ -107,6 +115,7 @@ class BitbucketAdapter(ForgeAdapter):
             url=item.get("links", {}).get("html", {}).get("href", ""),
             author=item.get("author", {}).get("display_name", ""),
             created_at=item.get("created_on", ""),
+            author_avatar_url=_extract_avatar_url(item.get("author")),
         )
 
     def submit_review(
@@ -193,6 +202,9 @@ class BitbucketAdapter(ForgeAdapter):
                     author=item.get("reporter", {}).get("display_name", "")
                     or item.get("reporter", {}).get("nickname", ""),
                     created_at=item.get("created_on", ""),
+                    author_avatar_url=_extract_avatar_url(
+                        item.get("reporter") or item.get("author")
+                    ),
                 )
             )
         return issues
@@ -219,6 +231,7 @@ class BitbucketAdapter(ForgeAdapter):
             author=item.get("author", {}).get("display_name", "")
             or item.get("author", {}).get("nickname", ""),
             created_at=item.get("created_on", ""),
+            author_avatar_url=_extract_avatar_url(item.get("author")),
         )
 
     def get_issue(self, owner: str, repo: str, issue_id: str) -> Issue:
@@ -240,4 +253,13 @@ class BitbucketAdapter(ForgeAdapter):
             author=item.get("reporter", {}).get("display_name", "")
             or item.get("reporter", {}).get("nickname", ""),
             created_at=item.get("created_on", ""),
+            author_avatar_url=_extract_avatar_url(item.get("reporter") or item.get("author")),
         )
+
+    def get_avatar_url(self) -> str | None:
+        """Fetch authenticated user's avatar URL from /2.0/user endpoint."""
+        try:
+            resp = self._request("GET", "/user")
+            return _extract_avatar_url(resp.json())
+        except Exception:
+            return None

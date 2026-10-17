@@ -288,3 +288,11 @@ class ForgeAdapter(ABC):
         Override in provider-specific adapters.
         """
         return None
+
+    def get_avatar_url(self) -> str | None:
+        """Fetch the avatar URL of the authenticated user.
+
+        Returns None if the provider doesn't support this or if no avatar is found.
+        Override in provider-specific adapters.
+        """
+        return None

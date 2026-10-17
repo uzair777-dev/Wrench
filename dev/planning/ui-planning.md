@@ -1,13 +1,13 @@
 # UI Planning — Wrench (`dev/planning/ui-planning.md`)
 
-**Version:** 0.6 (v2 Complete UI/UX Specification: Virtualized Diff Engine, Multi-Hosting Mirror DAG, 2-Tier Help & Zero-Shortcut Security) **Status:** Authoritative UI Specification for v1 and v2 (`VP-0`–`VP-23`) **Purpose:** Detailed UI and UX specification for [Wrench](https://github.com/uzair777-dev/Wrench)'s native Linux desktop interface. Written to be deterministically executable by a lower-tier coding model — every layout, widget hierarchy, signal connection, keyboard shortcut, zero-impact disable gate, and performance optimization is spelled out explicitly so the model never improvises.
+**Version:** 0.7 (v2 Complete UI/UX Specification: 11-Forge Ecosystem UI \[Codeberg, Azure Repos, Radicle, Gerrit, SourceHut, Tangled\], Virtualized Diff Engine & Multi-Mirror DAG) **Status:** Authoritative UI Specification for v1 and v2 (`VP-0`–`VP-26`) **Purpose:** Detailed UI and UX specification for [Wrench](https://github.com/uzair777-dev/Wrench)'s native Linux desktop interface. Written to be deterministically executable by a lower-tier coding model — every layout, widget hierarchy, signal connection, keyboard shortcut, zero-impact disable gate, and performance optimization is spelled out explicitly so the model never improvises.
 
 **Companion Documents:**
 
-- [`srs.md`](https://github.com/uzair777-dev/Wrench/blob/master/dev/planning/srs.md) — source of every `(SRS FR-x.y)` and `(NFR-z)` tag; priorities (`M`/`S`/`D`) and setting keys live there.  
-- [`implementation-plan.md`](https://github.com/uzair777-dev/Wrench/blob/master/dev/planning/implementation-plan.md) — v1 phases building baseline surfaces (§5; §12 owns v1 execution order).  
-- [`v2-implementation-plan.md`](https://github.com/uzair777-dev/Wrench/blob/master/dev/planning/v2-implementation-plan.md) — v2 phases (`VP-0`..`VP-23`). Every phase in `v2-implementation-plan.md` links back to an exact `§x.y` section in this file.  
-- [`../ARCHITECTURE.md`](https://github.com/uzair777-dev/Wrench/blob/master/ARCHITECTURE.md) — as-built 3-tier architecture (`UI -> core.engine / forge.registry / storage.settings_registry -> backends`).
+- [srs.md](https://github.com/uzair777-dev/Wrench/blob/master/dev/planning/srs.md) — source of every `(SRS FR-x.y)` and `(NFR-z)` tag; priorities (`M`/`S`/`D`) and setting keys live there.  
+- [implementation-plan.md](https://github.com/uzair777-dev/Wrench/blob/master/dev/planning/implementation-plan.md) — v1 phases building baseline surfaces (§5; §12 owns v1 execution order).  
+- [v2-implementation-plan.md](https://github.com/uzair777-dev/Wrench/blob/master/dev/planning/v2-implementation-plan.md) — v2 phases (`VP-0`..`VP-26`). Every phase in `v2-implementation-plan.md` links back to an exact `§x.y` section in this file.  
+- [../ARCHITECTURE.md](https://github.com/uzair777-dev/Wrench/blob/master/ARCHITECTURE.md) — as-built 3-tier architecture (`UI -> core.engine / forge.registry / storage.settings_registry -> backends`).
 
 ## 0\. Reading Guide & Mandatory Rules for Coding Models
 
@@ -146,7 +146,7 @@ To guarantee `< 3ms` file-switch latency and locked `60fps` scrolling even on 50
 4. **Stacked Branch Connectors (`VP-20`, `stacks.enabled`):**  
    - Renders stacked branch pills in a connected vertical bracket `[stack: auth-v2 1/3 -> 2/3 -> 3/3]` so stack hierarchy is immediately visible on the graph.  
 5. **Combined Multi-Hosting Mirror DAG & Sync/Drift Pills (`VP-25`, `SRS FR-3.10`, `FR-4.6`):**  
-   - **Unified Multi-Remote Graph Walk:** When `mirrors.unified_history.enabled` is `True`, `CommitGraphWidget` displays the combined commit DAG across all configured hosting mirrors (`origin` on GitHub, `gitlab` on GitLab, `codeberg` on Forgejo/Codeberg, `bitbucket` on Bitbucket, `sf` on SourceForge) so commits pushed to any mirror appear in one unified topological timeline.  
+   - **Unified Multi-Remote Graph Walk:** When `mirrors.unified_history.enabled` is `True`, `CommitGraphWidget` displays the combined commit DAG across all configured hosting mirrors across all 11 supported platforms (`GH` GitHub, `GL` GitLab, `CB` Codeberg, `FG` Forgejo/Gitea, `BB` Bitbucket, `SF` SourceForge, `AZ` Azure Repos, `RAD` Radicle, `GR` Gerrit, `SRHT` SourceHut, and `TG` Tangled) so commits pushed to any mirror appear in one unified topological timeline.  
    - **Synced Mirror Group Pill Collapsing (`mirrors.collapse_identical_ref_pills`):** When multiple mirror remotes point to the exact same commit OID for a branch (e.g. `origin/main`, `gitlab/main`, and `codeberg/main` are all at `a1b2c3d`), `CommitGraphWidget` collapses them into a single compact pill: **`[🌐 main · GH · GL · CB ✓]`** instead of 3 separate cluttering pills.  
    - **Mirror Drift & Divergence Warning Badges (`mirrors.show_drift_warnings`):** When a mirror lags behind or diverges from the primary remote on the same branch name (e.g. `gitlab/main` is 4 commits behind `origin/main`), renders a distinct amber pill **`[⚠ GL/main ↓4]`** on the lagging commit node with a right-click context menu action **`Sync Mirror 'gitlab/main' Now`** (`git push gitlab origin/main:refs/heads/main`) and **`Push to All Mirrors`**.  
    - **Cross-Hosting CI & PR Aggregation (`mirrors.aggregate_cross_forge_ci`):** Displays combined per-forge CI status icons (`[GH ✓ | GL ✕]`) on commit rows and lists all mirror PRs/MRs and pipeline links inside the `400ms` Hover X-Ray Card.
@@ -187,8 +187,10 @@ Every coding model implementing or modifying UI and storage code in `VP-0`..`VP-
 | **OPT-4** | **SQLite WAL Mode & Prepared Statement Batching** | Enable `PRAGMA journal_mode=WAL;` and `PRAGMA synchronous=NORMAL;` on `wrench.db` connection open so UI reads never block on background worker writes. Use `executemany()` inside a single `with conn:` transaction when caching forge issues/PRs or applying presets. |
 | **OPT-5** | **Bounded Ring-Buffer Output Widgets** | For streaming log widgets (`HookOutputDrawer` `VP-17`, `CILogDrawer` `VP-6`, `ActivityLog` `§6.13`), call `QPlainTextEdit.setMaximumBlockCount(5000)` and batch incoming stdout lines into `50ms` UI flush ticks (`QTimer`) so a fast subprocess printing 20,000 lines per second never freezes the Qt event loop. |
 | **OPT-6** | **Worker Generation Tokens & Cancellation** | Every background task dispatched from a UI view (`DiffWidget`, `CommitGraphWidget`, `BlameViewerDialog`, `PRReviewOverlay`) must carry a monotonically increasing `request_id: int`. When the worker finishes, if `request_id != self._latest_request_id`, discard the result immediately without touching the DOM/widgets. |
-| **OPT-7** | **5-Stage Mirror Resolution & `blake2b` Ref-Digest Cache** | Resolve multi-hosting mirrors via: (1) `< 10µs` pre-compiled URL canonicalizer, (2) `< 0.5ms` local `.git/packed-refs` \+ `.git/refs/remotes/` `blake2b` digest lookup in SQLite `mirror_resolution_cache`, (3) cached \$O(1)\$ root-commit OID equivalence check (`git rev-list --max-parents=0`), (4) parallel `ThreadPoolExecutor(max_workers=4)` `git ls-remote --refs` \+ HTTP/2 `httpx` pooling, and (5) a `120s` per-host circuit breaker for unreachable mirrors. |
+| **OPT-7** | **5-Stage Mirror Resolution & `blake2b` Ref-Digest Cache** | Resolve multi-hosting mirrors via: (1) `< 10µs` pre-compiled URL canonicalizer, (2) `< 0.5ms` local `.git/packed-refs` \+ `.git/refs/remotes/` `blake2b` digest lookup in SQLite `mirror_resolution_cache`, (3) cached $O(1)$ root-commit OID equivalence check (`git rev-list --max-parents=0`), (4) parallel `ThreadPoolExecutor(max_workers=4)` `git ls-remote --refs` \+ HTTP/2 `httpx` pooling, and (5) a `120s` per-host circuit breaker for unreachable mirrors. |
 | **OPT-8** | **Zero-Copy Virtualized Diff Model & 512-Line LRU Cache** | Index patches into flat `array('I')` byte-offset tables (`< 3ms` for 50k lines), render only visible rows via `DiffLineModel(QAbstractListModel)` \+ `QListView(uniformItemSizes=True)`, memoize visible intra-line/syntax spans in a `512`\-entry LRU cache, and coalesce file-selection changes over a `35ms` timer. |
+
+&nbsp;
 
 ### 5.6 2-Tier Progressive Disclosure Help System (`SRS FR-8.13`, `help.tooltip_mode`)
 
@@ -213,7 +215,7 @@ Every coding model implementing or modifying UI and storage code in `VP-0`..`VP-
 - **Automatic Credential & Token Redaction (`SEC-3`):** Before appending any text to `HookOutputDrawer`, `CILogDrawer`, `ActivityLog`, `CliCommandPreviewBar`, or error dialogs, pass the string through `src/wrench/core/security_sanitizer.py:redact_secrets(text)` which scrubs `ghp_[A-Za-z0-9_]+`, `github_pat_[A-Za-z0-9_]+`, `glpat-[A-Za-z0-9\-_]+`, `Bearer\s+\S+`, and basic-auth URLs (`https://[^:/\s]+:[^@\s]+@` \-\> `https://***:***@`).  
 - **Safe `wrench://` Help URI Allowlisting (`SEC-6`):** `HelpCenterDialog` must reject any `QUrl` whose scheme is not `wrench` or whose target setting key / widget ID is not in the registered `SettingsRegistry` / `HELP_TOPICS` allowlist.
 
-## 6\. Secondary UI Surfaces (`§6.1` – `§6.24`)
+## 6\. Secondary UI Surfaces (`§6.1` – `§6.27`)
 
 ### 6.1–6.10 Core v1 Surfaces (Enhanced with v2 Toggles & Previews)
 
@@ -322,6 +324,14 @@ Every coding model implementing or modifying UI and storage code in `VP-0`..`VP-
   3. **User Custom Actions** (`VP-23`, e.g. `Run pytest on current file`)  
   4. **Settings Quick-Toggles** (type `toggle blame` or `togglelanes` to flip any `SettingsRegistry` boolean setting inline without even opening `SettingsDialog`\!).
 
+### 6.25 Searchable Offline Help & Git Concept Encyclopedia (`src/wrench/ui/dialogs/help_center_dialog.py` — `VP-24`, `SRS FR-8.13`)
+
+- Opened via `F1`, `Help -> Wrench & Git Guide`, or clicking **`[Read Full Guide (F1) →]`** inside any `RichHelpTooltip` (`§5.6`).  
+- **Left Sidebar (`260px`):** Instant keyword filter (`QLineEdit`) \+ categorized `QTreeWidget` covering 25 bundled offline topics (*Staging & Hunks*, *Reset Modes (`--soft`/`--mixed`/`--hard`)*, *Interactive Rebase*, *Stacked Branches (`--update-refs`)*, *Worktrees & Bare-Hub Mode*, *Submodules*, *Multi-Hosting Mirrors & Drift*, *Git Bisect*, *Rerere Conflict Memory*, *GPG & SSH Signing*, *Hooks & Login-Shell `PATH`*).  
+- **Right Article Viewer (`QTextBrowser`):** Renders offline Markdown articles with ASCII/SVG mental-model diagrams, equivalent CLI commands, and allowlist-validated (`SEC-6`) interactive links:  
+  - `wrench://open-setting/<key>` — opens `SettingsDialog` directly to `<key>` and pulses its row.  
+  - `wrench://highlight-ui/<widget_id>` — closes/minimizes Help and draws a 2-second animated accent ring (`UIWidgetHighlighter`) around the target toolbar/sidebar control in `MainWindow`.
+
 ### 6.26 Multi-Hosting Mirror Manager & Sync Matrix Dialog (`src/wrench/ui/dialogs/mirror_manager_dialog.py` — `VP-25`, `SRS FR-3.10`, `FR-4.6`, `FR-4.7`)
 
 - **Purpose:** Lets users manage repositories mirrored across multiple hosting sites (GitHub, GitLab, Codeberg/Forgejo, Bitbucket, SourceForge), inspect cross-mirror branch drift, and push/fetch across all mirrors in parallel.  
@@ -330,6 +340,29 @@ Every coding model implementing or modifying UI and storage code in `VP-0`..`VP-
   - **Center Mirror Sync Matrix Table (`QTableWidget`):**  
     - Columns: `Remote Name` (`origin`, `gitlab`, `codeberg`), `Hosting Forge` (icon \+ detected adapter), `Canonical URL`, `Root Lineage Match` (`✓ Verified Mirror` vs `✕ Unrelated Repo`), `Branch Sync Status` (`✓ All 6 branches synced` or `⚠ main ↓4 behind origin`), `Circuit-Breaker / Latency` (`142ms` or `⚡ Offline — circuit open 95s`), and `Quick Actions` (`[Sync Now]`, `[Open Web]`).  
   - **Bottom `CliCommandPreviewBar` (`§5.3`):** Previews the exact parallel `git push` / `git fetch --multiple` command that will run.
+
+### 6.27 Multi-Paradigm Forge Workflows: Codeberg, Azure Repos, Radicle, Gerrit, SourceHut & Tangled (`src/wrench/ui/dialogs/forge_review_push_dialog.py` — `VP-26`, `SRS FR-6.5`–`6.10`)
+
+- **Purpose:** Adapts Wrench's Push, Commit, PR/Patch Review, and Status Bar surfaces seamlessly across PR-centric forges (`Codeberg`, `Azure Repos`, `Tangled`), magic-ref / change-set review systems (`Gerrit`, `Radicle`), and GraphQL \+ email-patchset forges (`SourceHut`) — with every provider independently toggleable in `SettingsDialog -> Forges & CI`.  
+- **Per-Platform UI Surfaces & Toggle Gates:**  
+  1. **Codeberg (`forge.codeberg.enabled`, Badge `CB`):**  
+     - First-class provider card in `Settings -> Forges & CI` and `AccountRulesDialog` (`VP-8`) pre-configured for `https://codeberg.org/api/v1` and Woodpecker CI (`ci.codeberg.org`) status badges.  
+  2. **Azure Repos / Azure DevOps (`forge.azure_repos.enabled`, Badge `AZ`):**  
+     - Supports `dev.azure.com/{org}/{project}/_git/{repo}` and `{org}.visualstudio.com`.  
+     - Adds a 5-state **Azure Reviewer Vote Pill** inside `PRReviewOverlayWidget` (`§6.18`): `[✓ Approved (+10)]`, `[✓ Approved with Suggestions (+5)]`, `[⏳ Wait for Author (-5)]`, `[✕ Rejected (-10)]`, `[↺ Reset Vote (0)]`, plus `#WorkItem` autocomplete from Azure Boards in `ChangesTab`.  
+  3. **Radicle P2P Network (`forge.radicle.enabled`, Badge `RAD`):**  
+     - **Global Status Bar Node Pill:** Displays `[🌱 Radicle: Online (N peers)]` or `[🌱 Radicle: Local Offline Mode]` when a repo has a `rad://` remote (hidden if `forge.radicle.enabled == False`).  
+     - **Magic Ref Patch Push (`refs/patches`):** In `ChangesTab` and `Repository -> Push`, adds split-button action **`Propose / Update Radicle Patch (git push rad HEAD:refs/patches)`** opening `ForgeReviewPushDialog` to enter the Patch Title, Description, and Base Branch (`rad/main` or `rad/master`).  
+     - **Signed COB Badges:** Displays cryptographic peer attestation badges (`[✓ Signed COB · DID:z6Mk...]`) on patches and issues in `PRListTab` / `IssueListTab`.  
+  4. **Gerrit Code Review (`forge.gerrit.enabled`, Badge `GR`):**  
+     - **`Change-Id` Commit Box Toggle Pill (`gerrit.auto_insert_change_id`):** When a Gerrit remote is detected, `ChangesTab` shows a `[Change-Id: Auto ✓]` badge in the commit options bar that automatically generates or preserves `Change-Id: I<40-hex>` in the commit footer across `Commit` and `Amend` (preventing Gerrit's `missing Change-Id in commit message footer` rejection).  
+     - **`Push to Gerrit Review (refs/for/<branch>)` Dialog (`ForgeReviewPushDialog`):** Allows picking target branch, `Topic` (`%topic=...`), `Reviewers` (`%r=...`), `CC` (`%cc=...`), and `Work-in-Progress` (`%wip`) or `Ready` (`%ready`) flags with a live `CliCommandPreviewBar` (`$ git push gerrit HEAD:refs/for/main%topic=auth,r=alice@corp.com`).  
+     - **Patchset Selector & Label Voting Bar in `PRReviewOverlayWidget` (`§6.18`):** Adds a `Patchset: [PS1] [PS2] [PS3 (Latest)]` diff selector and Gerrit score buttons (`Code-Review: [-2] [-1] [0] [+1] [+2]`, `Verified: [-1] [0] [+1]`).  
+  5. **SourceHut (`sr.ht`) (`forge.sourcehut.enabled`, Badge `SRHT`):**  
+     - Connects to `git.sr.ht`, `todo.sr.ht`, `lists.sr.ht`, and `builds.sr.ht` via GraphQL (`https://git.sr.ht/query`).  
+     - Adds **`Submit Patchset to SourceHut Mailing List (lists.sr.ht)...`** in `ForgeReviewPushDialog` (generating `[PATCH vN M/K]` via `git format-patch` and sending via GraphQL/SMTP) and renders `builds.sr.ht` `.build.yml` matrix job logs in `CILogDrawer`.  
+  6. **Tangled (`tangled.org` / ATProtocol) (`forge.tangled.enabled`, Badge `TG`):**  
+     - Resolves `@handle/repo` and `did:plc:...` identifiers across self-hosted/federated **Knots** (`tangled.org`, `knot1.tangled.sh`), renders round-based / stacked PR diffs (`sh.tangled.repo.pull`), and streams Nix **Spindle** CI pipeline runs (`sh.tangled.pipeline`) into `CILogDrawer`.
 
 ## 7\. Complete File / Component Mapping (v1 \+ v2)
 
@@ -361,8 +394,14 @@ Every coding model implementing or modifying UI and storage code in `VP-0`..`VP-
 | `src/wrench/ui/widgets/blame_viewer.py` | **NEW (v2)** | `VP-21` (§6.23 Blame Heatmap Gutter & `git log -L` Drawer) |
 | `src/wrench/ui/widgets/skip_worktree_panel.py` | **NEW (v2)** | `VP-22` (§3.1 Locally Ignored `--skip-worktree` Drawer & Stash Split-Button) |
 | `src/wrench/ui/dialogs/command_palette.py` | **NEW (v2)** | `VP-23` (§6.24 `Ctrl+K` Fuzzy Command Palette & Custom Actions) |
+| `src/wrench/ui/widgets/rich_help_tooltip.py` | **NEW (v2)** | `VP-24` (§5.6 Singleton Contextual Beginner Hover Card & `UIWidgetHighlighter`) |
+| `src/wrench/ui/dialogs/help_center_dialog.py` | **NEW (v2)** | `VP-24` (§6.25 Lazy-Indexed Offline Help & Git Encyclopedia `F1`) |
+| `src/wrench/ui/dialogs/mirror_manager_dialog.py` | **NEW (v2)** | `VP-25` (§4.2.5, §6.26 Multi-Hosting Mirror Sync Matrix & Combined DAG Pills) |
+| `src/wrench/ui/dialogs/forge_review_push_dialog.py` | **NEW (v2)** | `VP-26` (§6.27 Gerrit `refs/for/`, Radicle `refs/patches`, SourceHut `lists.sr.ht` & Tangled/Azure Review Push Dialog) |
 
-## 8\. Sequential UI Implementation Order (v1 Steps 1–25 \+ v2 Steps 26–49)
+&nbsp;
+
+## 8\. Sequential UI Implementation Order (v1 Steps 1–25 \+ v2 Steps 26–52)
 
 - **Steps 1–25 (v1 Baseline):** As specified in v1 (`implementation-plan.md` Phases 1–7).  
 - **Step 26 (`VP-0`):** Implement `SettingsRegistry` with Delta-Only Undo Stack (`OPT-3`), WAL mode (`OPT-4`), and rewrite `settings_dialog.py` (§6.11) with Lazy Category Pages (`OPT-1`), `150ms` Debounced Auto-Save (`OPT-2`), Live Mini-Preview cards, and Quick-Settings Pinning (§1.3).  
@@ -390,4 +429,5 @@ Every coding model implementing or modifying UI and storage code in `VP-0`..`VP-
 - **Step 48 (`VP-21`):** Build `BlameViewerDialog` and `"View Line History (git log -L)"` context menu drawer (§6.23).  
 - **Step 49 (`VP-22` & `VP-23`):** Build Granular Stash split-button and `SkipWorktreePanel` (§3.1), `git rerere` banner in `MergeDialog` (§6.6), and `CommandPaletteDialog` (`Ctrl+K`, §6.24).  
 - **Step 50 (`VP-24`):** Build `RichHelpTooltipManager` (§5.6), `HelpCenterDialog` (`F1`, §6.25), `UIWidgetHighlighter`, and `help_topics.py`.  
-- **Step 51 (`VP-25`):** Build `MirrorManagerDialog` (§6.26) and multi-mirror unified ref pills, drift badges, and cross-forge CI aggregation in `CommitGraphWidget` (§4.2.5).
+- **Step 51 (`VP-25`):** Build `MirrorManagerDialog` (§6.26) and multi-mirror unified ref pills, drift badges, and cross-forge CI aggregation in `CommitGraphWidget` (§4.2.5).  
+- **Step 52 (`VP-26`):** Build `ForgeReviewPushDialog` (§6.27), Gerrit `Change-Id` pill & label-voting bar (`-2..+2`), Radicle node status pill & `refs/patches` push flow, Azure Repos 5-state vote selector & Work Item completer, SourceHut `lists.sr.ht` patchset modal, and Tangled Knot/Spindle CI badges.

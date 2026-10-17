@@ -1,8 +1,8 @@
-# Wrench v2 Implementation Plan (v0.6 — Deterministic Phased Pipeline, Diff Virtualization, Multi-Mirror DAG & Zero-Shortcut Security Edition)
+# Wrench v2 Implementation Plan (v0.7 — 11-Forge Ecosystem \[Codeberg, Azure Repos, Radicle, Gerrit, SourceHut, Tangled\], Phased Pipeline, Diff Virtualization & Zero-Shortcut Security Edition)
 
-**Scope source:** [`srs.md`](https://github.com/uzair777-dev/Wrench/blob/master/dev/planning/srs.md) v0.4 §3 rows marked **D (v2)** (`FR-1.13`–`1.18`, `FR-2.4`–`2.10`, `FR-3.4`–`3.9`, `FR-4.5`, `FR-5.10`–`5.13`, `FR-6.3`–`6.4`, `FR-7.4`, `FR-8.3`–`8.12`, `FR-9.1`–`9.5`, `FR-10.5`–`10.6`, `FR-11.3`, `FR-12.1`, `FR-12.4`, and `NFR-5`) and [`ui-planning.md`](https://github.com/uzair777-dev/Wrench/blob/master/dev/planning/ui-planning.md) v0.3 (§1–§8).
+**Scope source:** [srs.md](https://github.com/uzair777-dev/Wrench/blob/master/dev/planning/srs.md) v0.4 §3 rows marked **D (v2)** (`FR-1.13`–`1.18`, `FR-2.4`–`2.10`, `FR-3.4`–`3.9`, `FR-4.5`, `FR-5.10`–`5.13`, `FR-6.3`–`6.4`, `FR-7.4`, `FR-8.3`–`8.12`, `FR-9.1`–`9.5`, `FR-10.5`–`10.6`, `FR-11.3`, `FR-12.1`, `FR-12.4`, and `NFR-5`) and [ui-planning.md](https://github.com/uzair777-dev/Wrench/blob/master/dev/planning/ui-planning.md) v0.3 (§1–§8).
 
-**Purpose of this edition:** This document is engineered so that **any developer or automated coding model (including smaller / lower-tier models)** can execute every phase from `VP-0` through `VP-23` mechanically, step-by-step, without making architectural guesses, missing [`ui-planning.md`](https://github.com/uzair777-dev/Wrench/blob/master/dev/planning/ui-planning.md) widget specifications, forgetting user configurability, or skipping component-specific performance/memory optimizations.
+**Purpose of this edition:** This document is engineered so that **any developer or automated coding model (including smaller / lower-tier models)** can execute every phase from `VP-0` through `VP-23` mechanically, step-by-step, without making architectural guesses, missing [ui-planning.md](https://github.com/uzair777-dev/Wrench/blob/master/dev/planning/ui-planning.md) widget specifications, forgetting user configurability, or skipping component-specific performance/memory optimizations.
 
 ## 0\. Mandatory Execution Protocol for Coding Models (Read Before Writing Any Code)
 
@@ -10,7 +10,7 @@ Every executor (human or AI model) MUST obey the following 12 rules verbatim. **
 
 1. **Strict Phase Sequence (`VP-0` \-\> `VP-1` \-\> ... \-\> `VP-23`):** Never start Phase `VP-N` until Phase `VP-(N-1)`'s completion gates and acceptance checks pass 100%. `VP-0` MUST be completed first because every phase `VP-1`..`VP-23` registers its settings keys into `VP-0`'s `SettingsRegistry` and reuses `VP-0`'s UI infrastructure (`UndoToastWidget`, `LazyTabContainer`, `SettingsDialog`).  
 2. **Mandatory `ui-planning.md` Cross-Check Before Writing Any UI Code:**  
-   - Every phase below includes a **`Mandatory UI Spec & Optimization Reference`** block pointing to exact sections and step numbers in [`ui-planning.md`](https://github.com/uzair777-dev/Wrench/blob/master/dev/planning/ui-planning.md) (e.g. `ui-planning.md §6.11, §8 Step 26`).  
+   - Every phase below includes a **`Mandatory UI Spec & Optimization Reference`** block pointing to exact sections and step numbers in [ui-planning.md](https://github.com/uzair777-dev/Wrench/blob/master/dev/planning/ui-planning.md) (e.g. `ui-planning.md §6.11, §8 Step 26`).  
    - In `Step 0` of every phase, you MUST open and read the cited `ui-planning.md` sections and implement the exact widget layouts, keyboard shortcuts, `⚙` jump-to-setting header buttons, and `CliCommandPreviewBar` footers specified there.  
 3. **Mandatory Component-Specific Optimizations (`ui-planning.md §5.5 OPT-1..OPT-6`):**  
    - Every phase below contains a **`Mandatory Optimizations Reminder for Lower-Tier Models`** block. You MUST implement every optimization listed in that block:  
@@ -36,95 +36,59 @@ Every executor (human or AI model) MUST obey the following 12 rules verbatim. **
 
 ## 0.A Master 6-Stage Phased Delivery Pipeline & Dependency Architecture (Modeled on `implementation-plan.md`)
 
-To ensure lower-tier coding models never lose track of dependencies across the 26 v2 phases (`VP-0` through `VP-25`), execution is organized into **6 sequential Macro Release Stages (`Stage 1`–`Stage 6`)**. No phase in `Stage K+1` may begin until the **Stage-Gate Regression Command** for `Stage K` passes 100%:
+To ensure lower-tier coding models never lose track of dependencies across the 26 v2 phases (`VP-0` through `VP-26`), execution is organized into **6 sequential Macro Release Stages (`Stage 1`–`Stage 6`)**. No phase in `Stage K+1` may begin until the **Stage-Gate Regression Command** for `Stage K` passes 100%:
 
-\[STAGE 1: Foundation, Configurability & Zero-Shortcut Guardrails\]
-
-   └── VP-0 (SettingsRegistry, SQLite WAL, Delta-Only Settings Undo OPT-3, LazyTabContainer OPT-1, UndoToastWidget, test\_no\_shortcuts\_guard.py)
-
+```
+[STAGE 1: Foundation, Configurability & Zero-Shortcut Guardrails]
+   └── VP-0 (SettingsRegistry, SQLite WAL, Delta-Only Settings Undo OPT-3, LazyTabContainer OPT-1, UndoToastWidget, test_no_shortcuts_guard.py)
          │
-
          ▼
-
-\[STAGE 2: Core Local History Rewriting, Worktrees, Submodules & Commit Ergonomics\]
-
-   ├── VP-1 (Multi-Commit Cherry-Pick, Revert, Sequencer Banner & Visual Reset Mode Picker \+ CliCommandPreviewBar)
-
-   ├── VP-2 (Visual Interactive Rebase & GIT\_SEQUENCE\_EDITOR Helper)
-
+[STAGE 2: Core Local History Rewriting, Worktrees, Submodules & Commit Ergonomics]
+   ├── VP-1 (Multi-Commit Cherry-Pick, Revert, Sequencer Banner & Visual Reset Mode Picker + CliCommandPreviewBar)
+   ├── VP-2 (Visual Interactive Rebase & GIT_SEQUENCE_EDITOR Helper)
    ├── VP-3 (Git Worktrees UI, Path Templates, Cross-Worktree Cherry-Pick, Bare-Repo Worktree Hub & Named Sessions)
-
    ├── VP-4 (Git Submodules Lifecycle, Dirty Badges & Fast .gitmodules Short-Circuit)
-
    └── VP-5 (Commit Message Templates & Cached Co-Author Pill Completer)
-
          │
-
          ▼
-
-\[STAGE 3: Multi-Forge Collaboration, 5-Stage Mirror Resolution, Combined Mirror History & Virtualized Diff Engine\]
-
+[STAGE 3: Multi-Forge Collaboration, 5-Stage Mirror Resolution, Combined Mirror History & Virtualized Diff Engine]
    ├── VP-6 (PR Inline Code Review Overlay, ETag Caching, 1-Click PR Checkout & 5,000-Line Ring-Buffer CILogDrawer OPT-5)
-
-   ├── VP-7 (Lazy-Loaded IssueListTab OPT-1 & Zero-Latency SQLite \# IssueCompleter OPT-4)
-
-   ├── VP-8 (Multi-Account Directory Prefix Router & Per-Repo GIT\_SSH\_COMMAND Binding)
-
+   ├── VP-7 (Lazy-Loaded IssueListTab OPT-1 & Zero-Latency SQLite # IssueCompleter OPT-4)
+   ├── VP-8 (Multi-Account Directory Prefix Router & Per-Repo GIT_SSH_COMMAND Binding)
    ├── VP-9 (Custom Self-Hosted Forge Domain Mapper & SourceForge Allura Adapter)
-
+   ├── VP-26 (Extended 6-Forge Suite: Codeberg, Azure Repos, Radicle P2P, Gerrit refs/for/, SourceHut GraphQL & Tangled ATProto)
    ├── VP-25 (5-Stage Mirror Resolution Engine OPT-7, Root-Commit Fingerprinting & Combined Multi-Hosting Mirror DAG in CommitGraphWidget)
-
    ├── VP-10 (Zero-Copy Virtualized DiffLineModel OPT-8, 512-Line LRU Highlighter, Split Diff Ctrl+D, Minimap, Sticky Header & External Tools)
-
-   ├── VP-11 (Debounced Pickaxe \-S/-G Search OPT-6 & Visual Reflog Time-Travel Inspector)
-
+   ├── VP-11 (Debounced Pickaxe -S/-G Search OPT-6 & Visual Reflog Time-Travel Inspector)
    └── VP-12 (Git LFS Lock Manager & .gitattributes Pattern Editor with Fast LFS Detection)
-
          │
-
          ▼
-
-\[STAGE 4: Linux Desktop Integration, Scheduled Safety Snapshots & Distro Packaging\]
-
+[STAGE 4: Linux Desktop Integration, Scheduled Safety Snapshots & Distro Packaging]
    ├── VP-13 (Lazy QSystemTrayIcon Manager & XDG Global Shortcuts)
-
    ├── VP-14 (Mtime-Deduplicated Scheduled Safety Stash Scheduler & Snapshot Restore Browser)
-
    └── VP-15 (XDG Secret Portal Fallback, Ephemeral Memory Mode & Arch AUR / Debian / Fedora RPM Packaging)
-
          │
-
          ▼
-
-\[STAGE 5: Monorepo Scale, Hydrated Git Hooks, GPG/SSH Signing, Visual Bisect & Stacked Branches\]
-
-   ├── VP-16 (Partial Clone \--filter=blob:none, Lazy SparseCheckoutDialog, Adaptive Inotify Fallback & 100k+ Commit Graph Virtualization)
-
-   ├── VP-17 (Startup-Cached Login-Shell PATH Hook Runner, core.hooksPath Discovery, Ring-Buffer HookOutputDrawer & \--no-verify Controls)
-
+[STAGE 5: Monorepo Scale, Hydrated Git Hooks, GPG/SSH Signing, Visual Bisect & Stacked Branches]
+   ├── VP-16 (Partial Clone --filter=blob:none, Lazy SparseCheckoutDialog, Adaptive Inotify Fallback & 100k+ Commit Graph Virtualization)
+   ├── VP-17 (Startup-Cached Login-Shell PATH Hook Runner, core.hooksPath Discovery, Ring-Buffer HookOutputDrawer & --no-verify Controls)
    ├── VP-18 (GPG & SSH Commit/Tag Signing, Unix-Socket Askpass Bridge, Viewport-Batched Signature Badges & Hover X-Ray Cards)
-
    ├── VP-19 (Interactive git bisect Visual Wizard, O(1) Frozenset Graph Dimming & Async bisect run Script Controller)
-
-   └── VP-20 (Stacked Branches via Native git rebase \--update-refs, Squash-Merge \--onto Recovery, Hunk-to-Commit Routing & Stacked PR Sync)
-
+   └── VP-20 (Stacked Branches via Native git rebase --update-refs, Squash-Merge --onto Recovery, Hunk-to-Commit Routing & Stacked PR Sync)
          │
-
          ▼
-
-\[STAGE 6: Code Archaeology, Granular Stash/Skip-Worktree, Power Tools & 2-Tier Progressive Help\]
-
-   ├── VP-21 (Interactive Blame Heatmap Gutter, .git-blame-ignore-revs & Context-Menu git log \-L Line History Drawer)
-
-   ├── VP-22 (Granular Stash Modes \--staged/--keep-index, Explicit refs/stash@{n} Disambiguation & \--skip-worktree Panel)
-
-   ├── VP-23 (Conflict Resolution Memory git rerere Banner, format-patch/am Mailboxes & Pre-Indexed Ctrl+K Command Palette \+ Custom Actions)
-
+[STAGE 6: Code Archaeology, Granular Stash/Skip-Worktree, Power Tools & 2-Tier Progressive Help]
+   ├── VP-21 (Interactive Blame Heatmap Gutter, .git-blame-ignore-revs & Context-Menu git log -L Line History Drawer)
+   ├── VP-22 (Granular Stash Modes --staged/--keep-index, Explicit refs/stash@{n} Disambiguation & --skip-worktree Panel)
+   ├── VP-23 (Conflict Resolution Memory git rerere Banner, format-patch/am Mailboxes & Pre-Indexed Ctrl+K Command Palette + Custom Actions)
    └── VP-24 (2-Tier Progressive Disclosure Help System: Singleton RichHelpTooltipManager, 25 Offline Topics & Searchable HelpCenterDialog F1)
+```
+
+&nbsp;
 
 ## 0.B Mandatory 8-Gate Per-Phase Execution Pipeline (No Skipping Allowed)
 
-Every single phase (`VP-0` through `VP-25`) MUST be executed by following this exact 8-gate pipeline in order. A lower-tier model MUST NOT jump straight to writing UI code or skip security/optimization gates:
+Every single phase (`VP-0` through `VP-26`) MUST be executed by following this exact 8-gate pipeline in order. A lower-tier model MUST NOT jump straight to writing UI code or skip security/optimization gates:
 
 | Pipeline Gate | Gate Name | Exact Action Required Before Proceeding to Next Gate |
 | :---- | :---- | :---- |
@@ -137,12 +101,14 @@ Every single phase (`VP-0` through `VP-25`) MUST be executed by following this e
 | **Gate G7** | **Phase Unit & UI Pytest Gate** | Run the phase's `pytest` completion gates (`tests/core/...` and `tests/ui/...`). Fix any failures in implementation code without weakening tests. |
 | **Gate G8** | **Automated Anti-Shortcut Security & Optimization Audit** | Run `pytest tests/meta/test_no_shortcuts_guard.py` (defined in `§0.C` below) to statically verify zero security shortcuts, zero layer violations, and zero stubbed functions. |
 
+&nbsp;
+
 ## 0.C Non-Negotiable Security & Anti-Shortcut Enforcement Protocol (`SEC-1`–`SEC-7`)
 
 **CRITICAL WARNING FOR LOWER-TIER MODELS:** You are strictly forbidden from taking shortcuts on security or performance optimizations to finish a step faster. Specifically:
 
 1. **`SEC-1` (Git Argument Injection & Subprocess Safety):** Every `subprocess.run` / `Popen` call in `core/` MUST use `shell=False` and pass an explicit `list[str]`. Whenever passing user-controlled or remote-controlled branch names, tag names, commit refs, URLs, or file paths to `git`, you MUST validate that ref/option arguments do not start with `"-"` (unless they are hardcoded flags) and place `"--"` before file paths (`["git", "-C", repo_path, "checkout", "--", file_path]`) to prevent CVE-style `--upload-pack=` or `--output=` argument injection.  
-2. **`SEC-2` (Remote/Mirror URL Scheme & SSRF Guard):** `src/wrench/core/security_sanitizer.py:validate_remote_url(url, allow_local_http=False)` MUST allow only `https://`, `ssh://`, and `git@<host>:<path>` SCP-style URLs. It MUST reject `ext::` (which executes arbitrary shell commands in Git\!), `fd::`, `file://` (unless explicitly opening a local repo), and private/loopback HTTP hosts (`127.0.0.0/8`, `169.254.169.254`, `localhost`) unless `allow_local_http=True` is explicitly enabled by the user in Settings.  
+2. **`SEC-2` (Remote/Mirror URL Scheme, `rad://` RID Validation & SSRF Guard):** `src/wrench/core/security_sanitizer.py:validate_remote_url(url, allow_local_http=False)` MUST allow only `https://`, `ssh://`, `git@<host>:<path>` SCP-style URLs, and validated `rad://z[1-9A-HJ-NP-Za-km-z]{20,60}` Radicle RIDs (`VP-26`). It MUST reject `ext::` (which executes arbitrary shell commands in Git\!), `fd::`, `file://` (unless explicitly opening a local repo), and private/loopback HTTP hosts (`127.0.0.0/8`, `169.254.169.254`, `localhost`) unless `allow_local_http=True` is explicitly enabled by the user in Settings.  
 3. **`SEC-3` (Automatic Secret & Token Redaction):** Every string displayed in `HookOutputDrawer`, `CILogDrawer`, `ActivityLog`, `CliCommandPreviewBar`, or exception popups MUST pass through `redact_secrets(text: str) -> str`, which scrubs `ghp_*`, `github_pat_*`, `glpat-*`, `Bearer <token>`, and `https://user:token@host` credentials.  
 4. **`SEC-4` (`0o600` Temporary File & Socket Permissions):** Every temporary file or Unix socket created by `rebase_sequencer.py` (`VP-2`) or `signing_askpass.py` (`VP-18`) MUST be created inside a directory with mode `0o700` and file mode `0o600` (`os.chmod(path, 0o600)`) so other local users on a shared Linux machine cannot read passphrases or hijack rebase todo lists.  
 5. **`SEC-5` (100% Parameterized SQLite Queries):** Every SQL query in `src/wrench/storage/` MUST use `?` parameter binding (`cursor.execute("SELECT ... WHERE key = ?", (key,))`). String formatting (`f"SELECT ... {key}"`) in SQL is strictly banned.  
@@ -153,85 +119,54 @@ Every single phase (`VP-0` through `VP-25`) MUST be executed by following this e
 
 In `VP-0 Step 1`, create `src/wrench/core/security_sanitizer.py` and `tests/meta/test_no_shortcuts_guard.py` with the following exact verification logic, and run `pytest tests/meta/test_no_shortcuts_guard.py` at the end of **every phase**:
 
-\# tests/meta/test\_no\_shortcuts\_guard.py
-
+```py
+# tests/meta/test_no_shortcuts_guard.py
 import ast
-
 import pathlib
-
 import re
 
-SRC\_ROOT \= pathlib.Path("src/wrench")
+SRC_ROOT = pathlib.Path("src/wrench")
+UI_ROOT = SRC_ROOT / "ui"
+FORBIDDEN_UI_IMPORTS = {"pygit2", "subprocess", "sqlite3", "httpx"}
 
-UI\_ROOT \= SRC\_ROOT / "ui"
-
-FORBIDDEN\_UI\_IMPORTS \= {"pygit2", "subprocess", "sqlite3", "httpx"}
-
-def test\_ui\_layer\_never\_imports\_backends\_directly() \-\> None:
-
+def test_ui_layer_never_imports_backends_directly() -> None:
     """Enforces ARCHITECTURE.md §1.2 and Rule 5: UI never imports pygit2/subprocess/sqlite3/httpx."""
-
-    for py\_file in UI\_ROOT.rglob("\*.py"):
-
-        tree \= ast.parse(py\_file.read\_text(encoding="utf-8"), filename=str(py\_file))
-
+    for py_file in UI_ROOT.rglob("*.py"):
+        tree = ast.parse(py_file.read_text(encoding="utf-8"), filename=str(py_file))
         for node in ast.walk(tree):
-
             if isinstance(node, ast.Import):
-
                 for alias in node.names:
-
-                    root\_mod \= alias.name.split(".")\[0\]
-
-                    assert root\_mod not in FORBIDDEN\_UI\_IMPORTS, f"{py\_file}: forbidden import {alias.name}"
-
+                    root_mod = alias.name.split(".")[0]
+                    assert root_mod not in FORBIDDEN_UI_IMPORTS, f"{py_file}: forbidden import {alias.name}"
             elif isinstance(node, ast.ImportFrom) and node.module:
+                root_mod = node.module.split(".")[0]
+                assert root_mod not in FORBIDDEN_UI_IMPORTS, f"{py_file}: forbidden from-import {node.module}"
 
-                root\_mod \= node.module.split(".")\[0\]
-
-                assert root\_mod not in FORBIDDEN\_UI\_IMPORTS, f"{py\_file}: forbidden from-import {node.module}"
-
-def test\_no\_shell\_true\_or\_not\_implemented\_stubs() \-\> None:
-
+def test_no_shell_true_or_not_implemented_stubs() -> None:
     """Enforces SEC-1 and SEC-7: No shell=True in core/forge and no NotImplementedError stubs."""
-
-    for py\_file in SRC\_ROOT.rglob("\*.py"):
-
-        source \= py\_file.read\_text(encoding="utf-8")
-
-        tree \= ast.parse(source, filename=str(py\_file))
-
+    for py_file in SRC_ROOT.rglob("*.py"):
+        source = py_file.read_text(encoding="utf-8")
+        tree = ast.parse(source, filename=str(py_file))
         for node in ast.walk(tree):
-
             if isinstance(node, ast.Raise) and isinstance(node.exc, ast.Call):
-
-                if getattr(node.exc.func, "id", "") \== "NotImplementedError":
-
-                    raise AssertionError(f"{py\_file}:{node.lineno} contains NotImplementedError stub")
-
-            if isinstance(node, ast.Call) and py\_file.name \!= "custom\_actions.py":
-
+                if getattr(node.exc.func, "id", "") == "NotImplementedError":
+                    raise AssertionError(f"{py_file}:{node.lineno} contains NotImplementedError stub")
+            if isinstance(node, ast.Call) and py_file.name != "custom_actions.py":
                 for kw in node.keywords:
+                    if kw.arg == "shell" and isinstance(kw.value, ast.Constant) and kw.value.value is True:
+                        raise AssertionError(f"{py_file}:{node.lineno} uses forbidden shell=True")
 
-                    if kw.arg \== "shell" and isinstance(kw.value, ast.Constant) and kw.value.value is True:
-
-                        raise AssertionError(f"{py\_file}:{node.lineno} uses forbidden shell=True")
-
-def test\_no\_fstring\_sql\_queries\_in\_storage() \-\> None:
-
+def test_no_fstring_sql_queries_in_storage() -> None:
     """Enforces SEC-5: SQLite execute() calls must never use JoinedStr (f-strings)."""
-
-    for py\_file in (SRC\_ROOT / "storage").rglob("\*.py"):
-
-        tree \= ast.parse(py\_file.read\_text(encoding="utf-8"), filename=str(py\_file))
-
+    for py_file in (SRC_ROOT / "storage").rglob("*.py"):
+        tree = ast.parse(py_file.read_text(encoding="utf-8"), filename=str(py_file))
         for node in ast.walk(tree):
-
             if isinstance(node, ast.Call) and getattr(node.func, "attr", "") in ("execute", "executemany"):
+                if node.args and isinstance(node.args[0], ast.JoinedStr):
+                    raise AssertionError(f"{py_file}:{node.lineno} uses forbidden f-string in SQL execute()")
+```
 
-                if node.args and isinstance(node.args\[0\], ast.JoinedStr):
-
-                    raise AssertionError(f"{py\_file}:{node.lineno} uses forbidden f-string in SQL execute()")
+&nbsp;
 
 ## 0.D Complete Cross-Document Traceability Matrix (`srs.md` ↔ `ui-planning.md` ↔ `v2-implementation-plan.md`)
 
@@ -256,15 +191,18 @@ def test\_no\_fstring\_sql\_queries\_in\_storage() \-\> None:
 | **VP-16** (Stage 5\) | `FR-1.16`, `FR-1.18`, `FR-7.4`, `FR-11.3` · `§4.3`, `§6.2`, `§6.20`, `Step 43` | `core/sparse_checkout.py`, `ui/dialogs/sparse_checkout_dialog.py`, `ui/commit_graph/graph_widget.py` | Viewport-only painting \+ `QPixmapCache` badges \+ lazy tree expansion \+ `.git`\-only watch fallback | `pytest tests/core/test_sparse_checkout.py tests/ui/test_large_graph_virtualization.py tests/meta/test_no_shortcuts_guard.py` |
 | **VP-17** (Stage 5\) | `FR-2.7`, `FR-2.8` · `§3.1`, `Step 44` | `core/hook_env.py`, `ui/widgets/hook_output_drawer.py` | Startup-cached shell `PATH`, `OPT-5` `5000`\-line ring buffer, `SEC-3` log redaction | `pytest tests/core/test_hook_env.py tests/ui/test_hook_runner_ui.py tests/meta/test_no_shortcuts_guard.py` |
 | **VP-18** (Stage 5\) | `FR-2.9`, `FR-2.10` · `§4.2`, `§6.5`, `Step 45` | `core/signing_ops.py`, `credentials/signing_askpass.py`, `ui/commit_graph/graph_widget.py` | Viewport-batched `git log --no-walk` verification \+ `10000`\-entry LRU cache, `SEC-4` `0o600` socket | `pytest tests/core/test_commit_signing.py tests/ui/test_signing_badges_ui.py tests/meta/test_no_shortcuts_guard.py` |
-| **VP-19** (Stage 5\) | `FR-3.6` · `§6.21`, `Step 46` | `core/bisect_ops.py`, `ui/widgets/bisect_banner.py` | \$O(1)\$ `frozenset` candidate lookup in `paintEvent`, `OPT-6` worker tokens | `pytest tests/core/test_bisect_ops.py tests/ui/test_bisect_wizard.py tests/meta/test_no_shortcuts_guard.py` |
+| **VP-19** (Stage 5\) | `FR-3.6` · `§6.21`, `Step 46` | `core/bisect_ops.py`, `ui/widgets/bisect_banner.py` | $O(1)$ `frozenset` candidate lookup in `paintEvent`, `OPT-6` worker tokens | `pytest tests/core/test_bisect_ops.py tests/ui/test_bisect_wizard.py tests/meta/test_no_shortcuts_guard.py` |
 | **VP-20** (Stage 5\) | `FR-3.7`, `FR-3.8`, `FR-5.13` · `§6.22`, `Step 47` | `core/stacks.py`, `ui/widgets/stack_panel.py` | Single-pass `git rebase --update-refs`, non-invasive SQLite stack metadata | `pytest tests/core/test_stacked_branches.py tests/ui/test_stacked_branches_ui.py tests/meta/test_no_shortcuts_guard.py` |
 | **VP-21** (Stage 6\) | `FR-9.4`, `FR-9.5` · `§6.23`, `Step 48` | `core/blame_ops.py`, `ui/widgets/blame_viewer.py` | `(repo, path, oid)` blame cache \+ empty-email guard \+ viewport-only gutter painting | `pytest tests/core/test_blame_and_line_history.py tests/ui/test_blame_and_line_history_ui.py tests/meta/test_no_shortcuts_guard.py` |
 | **VP-22** (Stage 6\) | `FR-10.5`, `FR-10.6`, `DEC-4` · `§3.1`, `§6.1`, `Step 49` | `core/stash_ops.py`, `ui/widgets/skip_worktree_panel.py` | Explicit `refs/stash@{n}` addressing \+ `.git/index` mtime guard on `ls-files -v` | `pytest tests/core/test_granular_stash_and_skip_worktree.py tests/ui/test_granular_stash_ui.py tests/meta/test_no_shortcuts_guard.py` |
 | **VP-23** (Stage 6\) | `FR-3.9`, `FR-8.6`, `FR-8.7` · `§6.6`, `§6.24`, `Step 49` | `core/custom_actions.py`, `ui/dialogs/command_palette.py` | Pre-indexed `< 5ms` `Ctrl+K` palette, `SEC-1` `shlex.quote()` on custom action variables | `pytest tests/core/test_rerere_patches_custom_actions.py tests/ui/test_command_palette.py tests/meta/test_no_shortcuts_guard.py` |
 | **VP-24** (Stage 6\) | `FR-8.13`, `FR-14.4`, `DEC-7` · `§5.6`, `§6.25`, `Step 50` | `ui/help_topics.py`, `ui/widgets/rich_help_tooltip.py`, `ui/dialogs/help_center_dialog.py` | Singleton tooltip (`0 KB` per-widget overhead), `OPT-1` lazy topic index, `SEC-6` URI allowlist | `pytest tests/ui/test_rich_help_tooltip.py tests/ui/test_help_center_dialog.py tests/meta/test_no_shortcuts_guard.py` |
 | **VP-25** (Stage 3\) | `FR-3.10`, `FR-4.6`, `FR-4.7`, `DEC-8` · `§4.2.5`, `§5.5 OPT-7`, `§6.26`, `Step 51` | `core/mirror_ops.py`, `forge/mirror_resolver.py`, `ui/dialogs/mirror_manager_dialog.py`, `ui/commit_graph/graph_widget.py` | `OPT-7` (`blake2b` ref-digest cache `< 0.5ms`, root-OID fingerprinting, parallel `ls-remote`, `120s` circuit breaker), `SEC-2` URL guard | `pytest tests/core/test_mirror_resolution_and_dag.py tests/ui/test_mirror_manager_ui.py tests/meta/test_no_shortcuts_guard.py` |
+| **VP-26** (Stage 3\) | `FR-6.5`–`6.10`, `DEC-10` · `§6.18`, `§6.27`, `Step 52` | `forge/adapters/codeberg.py`, `azure_repos.py`, `radicle.py`, `gerrit.py`, `sourcehut.py`, `tangled.py`, `ui/dialogs/forge_review_push_dialog.py` | Gerrit zero-copy `)]}'` slice, SourceHut batched GraphQL, Radicle local COB ref cache, Tangled DID-\>Knot LRU cache, `SEC-1`/`SEC-2` | `pytest tests/forge/test_extended_forges_vp26.py tests/ui/test_forge_review_push_ui.py tests/meta/test_no_shortcuts_guard.py` |
 
-## Summary Matrix of All v2 Phases (`VP-0` – `VP-23`)
+&nbsp;
+
+## Summary Matrix of All v2 Phases (`VP-0` – `VP-26`)
 
 | Phase | Title | SRS Scope | Primary Files Created / Modified |
 | :---- | :---- | :---- | :---- |
@@ -292,6 +230,11 @@ def test\_no\_fstring\_sql\_queries\_in\_storage() \-\> None:
 | **VP-21** | Interactive Blame Gutter, `.git-blame-ignore-revs` & Line History (`git log -L`) | `FR-9.4`, `FR-9.5` | `src/wrench/core/blame_ops.py`, `src/wrench/ui/widgets/blame_viewer.py` |
 | **VP-22** | Granular Stash Modes (`--staged`, `--keep-index`) & `--skip-worktree` Panel | `FR-10.5`, `FR-10.6` | `src/wrench/core/stash_ops.py`, `src/wrench/ui/widgets/skip_worktree_panel.py` |
 | **VP-23** | Conflict Memory (`git rerere`), Patch Mailboxes (`format-patch`/`am`) & `Ctrl+K` Custom Actions | `FR-3.9`, `FR-8.6`, `FR-8.7` | `src/wrench/core/custom_actions.py`, `src/wrench/ui/dialogs/command_palette.py` |
+| **VP-24** | 2-Tier Progressive Disclosure Help System (Beginner Hover Cards \+ Offline Help `F1`) | `FR-8.13`, `DEC-7` | `src/wrench/ui/help_topics.py`, `src/wrench/ui/widgets/rich_help_tooltip.py`, `src/wrench/ui/dialogs/help_center_dialog.py` |
+| **VP-25** | 5-Stage Mirror Resolution Engine & Combined Multi-Hosting Mirror History DAG | `FR-3.10`, `FR-4.6`, `FR-4.7`, `DEC-8` | `src/wrench/core/mirror_ops.py`, `src/wrench/forge/mirror_resolver.py`, `src/wrench/ui/dialogs/mirror_manager_dialog.py` |
+| **VP-26** | Extended Multi-Forge Suite: Codeberg, Azure Repos, Radicle, Gerrit, SourceHut & Tangled | `FR-6.5`–`6.10`, `DEC-10` | `src/wrench/forge/adapters/{codeberg,azure_repos,radicle,gerrit,sourcehut,tangled}.py`, `src/wrench/ui/dialogs/forge_review_push_dialog.py` |
+
+&nbsp;
 
 ## VP-0 — Universal Settings Registry, v1 Feature Retrofits & Searchable Preferences Center (`FR-8.8`–`8.11`, `NFR-5`)
 
@@ -313,104 +256,66 @@ Run the following inspection commands to verify existing storage, engine, and UI
 
 Create `src/wrench/storage/settings_registry.py` implementing the exact schema and classes below:
 
-- **SQLite Tables (add to `wrench.db` initialization):**  
-    
-  CREATE TABLE IF NOT EXISTS global\_settings (  
-    
-      key TEXT PRIMARY KEY,  
-    
-      value\_json TEXT NOT NULL,  
-    
-      updated\_at TEXT NOT NULL DEFAULT CURRENT\_TIMESTAMP  
-    
-  );  
-    
-  CREATE TABLE IF NOT EXISTS repo\_settings\_overrides (  
-    
-      repo\_path TEXT NOT NULL,  
-    
-      key TEXT NOT NULL,  
-    
-      value\_json TEXT NOT NULL,  
-    
-      updated\_at TEXT NOT NULL DEFAULT CURRENT\_TIMESTAMP,  
-    
-      PRIMARY KEY (repo\_path, key)  
-    
-  );  
-    
-  CREATE TABLE IF NOT EXISTS settings\_undo\_log (  
-    
-      change\_id INTEGER PRIMARY KEY AUTOINCREMENT,  
-    
-      timestamp TEXT NOT NULL DEFAULT CURRENT\_TIMESTAMP,  
-    
-      repo\_path TEXT,  
-    
-      key TEXT NOT NULL,  
-    
-      old\_value\_json TEXT NOT NULL,  
-    
-      new\_value\_json TEXT NOT NULL,  
-    
-      undone INTEGER NOT NULL DEFAULT 0  
-    
-  );  
-    
-- **Exact Dataclasses & Enums:**  
-    
-  from dataclasses import dataclass  
-    
-  from enum import Enum  
-    
-  from typing import Any  
-    
-  from PySide6.QtCore import QObject, Signal  
-    
-  class SettingType(str, Enum):  
-    
-      BOOL \= "bool"  
-    
-      INT \= "int"  
-    
-      STR \= "str"  
-    
-      CHOICE \= "choice"  
-    
-      PATH \= "path"  
-    
-  class SettingScope(str, Enum):  
-    
-      GLOBAL\_ONLY \= "global\_only"  
-    
-      REPO\_OVERRIDABLE \= "repo\_overridable"  
-    
-  @dataclass(frozen=True)  
-    
-  class SettingSpec:  
-    
-      key: str  
-    
-      category: str  
-    
-      label: str  
-    
-      description: str  
-    
-      setting\_type: SettingType  
-    
-      default: Any  
-    
-      scope: SettingScope \= SettingScope.REPO\_OVERRIDABLE  
-    
-      choices: tuple\[str, ...\] \= ()  
-    
-      min\_value: int | None \= None  
-    
-      max\_value: int | None \= None  
-    
-      parent\_toggle\_key: str | None \= None  \# Disabled in UI when parent toggle is False  
-    
+- **SQLite Tables (add to `wrench.db` initialization):**
+
+```sql
+CREATE TABLE IF NOT EXISTS global_settings (
+    key TEXT PRIMARY KEY,
+    value_json TEXT NOT NULL,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS repo_settings_overrides (
+    repo_path TEXT NOT NULL,
+    key TEXT NOT NULL,
+    value_json TEXT NOT NULL,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (repo_path, key)
+);
+CREATE TABLE IF NOT EXISTS settings_undo_log (
+    change_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    repo_path TEXT,
+    key TEXT NOT NULL,
+    old_value_json TEXT NOT NULL,
+    new_value_json TEXT NOT NULL,
+    undone INTEGER NOT NULL DEFAULT 0
+);
+```
+
+- **Exact Dataclasses & Enums:**
+
+```py
+from dataclasses import dataclass
+from enum import Enum
+from typing import Any
+from PySide6.QtCore import QObject, Signal
+
+class SettingType(str, Enum):
+    BOOL = "bool"
+    INT = "int"
+    STR = "str"
+    CHOICE = "choice"
+    PATH = "path"
+
+class SettingScope(str, Enum):
+    GLOBAL_ONLY = "global_only"
+    REPO_OVERRIDABLE = "repo_overridable"
+
+@dataclass(frozen=True)
+class SettingSpec:
+    key: str
+    category: str
+    label: str
+    description: str
+    setting_type: SettingType
+    default: Any
+    scope: SettingScope = SettingScope.REPO_OVERRIDABLE
+    choices: tuple[str, ...] = ()
+    min_value: int | None = None
+    max_value: int | None = None
+    parent_toggle_key: str | None = None  # Disabled in UI when parent toggle is False
+```
+
 - **Exact `SettingsRegistry(QObject)` Methods:**  
   - Signal: `setting_changed = Signal(str, object, object)`  \# `(key, new_value, repo_path_or_none)`  
   - `register(self, spec: SettingSpec) -> None`  
@@ -485,22 +390,20 @@ Modify existing v1 modules to obey `SettingsRegistry`:
    - `graph.cherry_pick_revert.enabled` (`BOOL`, default `True`, category `"Commit Graph"`, label `"Enable Cherry-Pick and Revert context menu actions"`)  
    - `graph.cherry_pick_revert.default_no_commit` (`BOOL`, default `False`, category `"Commit Graph"`, label `"Stage cherry-pick/revert changes without committing (--no-commit)"`, parent `"graph.cherry_pick_revert.enabled"`)  
    - `graph.cherry_pick_revert.record_origin_x` (`BOOL`, default `True`, category `"Commit Graph"`, label `"Append '(cherry picked from commit ...)' line (-x)"`, parent `"graph.cherry_pick_revert.enabled"`)  
-2. In `src/wrench/core/read_ops.py`, add:  
-     
-   @dataclass(frozen=True)  
-     
-   class SequencerState:  
-     
-       active\_op: str | None  \# "cherry-pick", "revert", "rebase", "merge", "am", or None  
-     
-       current\_oid: str | None  
-     
-       todo\_remaining: int  
-     
-   def get\_sequencer\_state(repo\_path: str) \-\> SequencerState: ...  
-     
-   Check `.git/CHERRY_PICK_HEAD`, `.git/REVERT_HEAD`, `.git/rebase-merge/`, `.git/rebase-apply/`, and `.git/MERGE_HEAD` (resolving worktree gitdir via `pygit2.Repository(repo_path).path`).  
-     
+2. In `src/wrench/core/read_ops.py`, add:
+
+```py
+@dataclass(frozen=True)
+class SequencerState:
+    active_op: str | None  # "cherry-pick", "revert", "rebase", "merge", "am", or None
+    current_oid: str | None
+    todo_remaining: int
+
+def get_sequencer_state(repo_path: str) -> SequencerState: ...
+```
+
+   Check `.git/CHERRY_PICK_HEAD`, `.git/REVERT_HEAD`, `.git/rebase-merge/`, `.git/rebase-apply/`, and `.git/MERGE_HEAD` (resolving worktree gitdir via `pygit2.Repository(repo_path).path`).
+
 3. In `src/wrench/core/write_ops.py`, add exact functions:  
    - `cherry_pick_commits(repo_path: str, oids: list[str], no_commit: bool = False, record_origin: bool = True) -> None`: runs `["git", "-C", repo_path, "cherry-pick", *flags, *oids]`.  
    - `revert_commits(repo_path: str, oids: list[str], no_commit: bool = False, mainline_parent: int | None = None) -> None`: runs `["git", "-C", repo_path, "revert", "--no-edit", *flags, *oids]`.  
@@ -542,24 +445,19 @@ Modify existing v1 modules to obey `SettingsRegistry`:
    - `rebase.interactive_ui.enabled` (`BOOL`, default `True`, category `"Branches & Stacks"`, label `"Enable Visual Interactive Rebase UI"`)  
    - `rebase.autostash` (`BOOL`, default `True`, category `"Branches & Stacks"`, label `"Automatically stash and pop dirty working tree during rebase (--autostash)"`, parent `"rebase.interactive_ui.enabled"`)  
    - `rebase.autosquash` (`BOOL`, default `True`, category `"Branches & Stacks"`, label `"Automatically reorder fixup!/squash! commits (--autosquash)"`, parent `"rebase.interactive_ui.enabled"`)  
-2. Create `src/wrench/core/rebase_sequencer.py`:  
-     
-   @dataclass  
-     
-   class RebaseTodoEntry:  
-     
-       action: str  \# "pick", "reword", "edit", "squash", "fixup", "drop"  
-     
-       oid: str  
-     
-       short\_oid: str  
-     
-       summary: str  
-     
-       author: str  
-     
-       new\_message: str | None \= None  
-     
+2. Create `src/wrench/core/rebase_sequencer.py`:
+
+```py
+@dataclass
+class RebaseTodoEntry:
+    action: str  # "pick", "reword", "edit", "squash", "fixup", "drop"
+    oid: str
+    short_oid: str
+    summary: str
+    author: str
+    new_message: str | None = None
+```
+
    - Implement `list_commits_for_interactive_rebase(repo_path: str, base_oid: str) -> list[RebaseTodoEntry]` using `pygit2` topological walk in oldest-first order (`git rebase -i` order).  
    - Implement `run_interactive_rebase(repo_path: str, base_oid: str, entries: list[RebaseTodoEntry], autostash: bool = True, autosquash: bool = True) -> None`:  
      - Writes a JSON instruction file to a temporary directory and sets `GIT_SEQUENCE_EDITOR` and `GIT_EDITOR` to `sys.executable -m wrench.core.rebase_editor_helper <json_file_path>`.  
@@ -598,26 +496,20 @@ Modify existing v1 modules to obey `SettingsRegistry`:
    - `worktrees.bare_hub.enabled` (`BOOL`, default `True`, category `"Worktrees & Submodules"`, label `"Allow opening bare repositories as a Worktree Hub"`, parent `"worktrees.enabled"`)  
    - `worktrees.cross_cherry_pick.enabled` (`BOOL`, default `True`, category `"Worktrees & Submodules"`, label `"Allow cherry-picking commits directly into another worktree"`, parent `"worktrees.enabled"`)  
    - `workspace.named_sessions.enabled` (`BOOL`, default `True`, category `"General & UI"`, label `"Enable saving and restoring named multi-tab workspace sessions"`)  
-2. Create `src/wrench/core/worktrees.py` with:  
-     
-   @dataclass(frozen=True)  
-     
-   class WorktreeInfo:  
-     
-       path: str  
-     
-       head\_oid: str  
-     
-       branch\_name: str | None  
-     
-       is\_bare: bool  
-     
-       is\_locked: bool  
-     
-       lock\_reason: str | None  
-     
-       is\_prunable: bool  
-     
+2. Create `src/wrench/core/worktrees.py` with:
+
+```py
+@dataclass(frozen=True)
+class WorktreeInfo:
+    path: str
+    head_oid: str
+    branch_name: str | None
+    is_bare: bool
+    is_locked: bool
+    lock_reason: str | None
+    is_prunable: bool
+```
+
    - `list_worktrees(repo_path: str) -> list[WorktreeInfo]` parsing `git -C <repo_path> worktree list --porcelain -z`.  
    - `format_worktree_path(repo_path: str, branch_name: str, template: str) -> str` replacing `{repo_name}` and `{branch_slug}` (where `/` in branch names is replaced with `-`).  
    - `add_worktree(repo_path: str, target_path: str, branch: str, create_branch: bool = False) -> WorktreeInfo`.  
@@ -657,24 +549,19 @@ Modify existing v1 modules to obey `SettingsRegistry`:
    - `submodules.enabled` (`BOOL`, default `True`, category `"Worktrees & Submodules"`, label `"Enable Git Submodules panel and status checks"`)  
    - `submodules.auto_recurse_on_pull` (`BOOL`, default `False`, category `"Worktrees & Submodules"`, label `"Pass --recurse-submodules automatically on Pull/Fetch"`, parent `"submodules.enabled"`)  
    - `submodules.dirty_badge.enabled` (`BOOL`, default `True`, category `"Worktrees & Submodules"`, label `"Show dirty/uninitialized badges on submodules"`, parent `"submodules.enabled"`)  
-2. Create `src/wrench/core/submodules.py` with:  
-     
-   @dataclass(frozen=True)  
-     
-   class SubmoduleInfo:  
-     
-       name: str  
-     
-       path: str  
-     
-       url: str  
-     
-       head\_oid: str | None  
-     
-       index\_oid: str | None  
-     
-       status: str  \# "clean", "uninitialized", "modified", "dirty\_workdir"  
-     
+2. Create `src/wrench/core/submodules.py` with:
+
+```py
+@dataclass(frozen=True)
+class SubmoduleInfo:
+    name: str
+    path: str
+    url: str
+    head_oid: str | None
+    index_oid: str | None
+    status: str  # "clean", "uninitialized", "modified", "dirty_workdir"
+```
+
    - `list_submodules(repo_path: str) -> list[SubmoduleInfo]` (returns `[]` immediately if `not settings.get_bool("submodules.enabled", repo_path)`).  
    - `init_submodules(repo_path: str, paths: list[str] | None = None) -> None` (`git submodule update --init --recursive`).  
    - `sync_submodules(repo_path: str) -> None` (`git submodule sync --recursive`).  
@@ -747,46 +634,33 @@ Modify existing v1 modules to obey `SettingsRegistry`:
 1. In `src/wrench/storage/settings_registry.py`, register:  
    - `forge.pr_inline_comments.enabled` (`BOOL`, default `True`, category `"Forges & CI"`, label `"Show inline PR review comments inside Diff Viewer"`, parent `"forge.enabled"`)  
    - `forge.ci_log_streaming.enabled` (`BOOL`, default `True`, category `"Forges & CI"`, label `"Enable live CI/CD job log streaming and re-run controls"`, parent `"forge.enabled"`)  
-2. In `src/wrench/forge/capability.py`, add dataclasses and capability methods:  
-     
-   @dataclass(frozen=True)  
-     
-   class PRReviewComment:  
-     
-       comment\_id: str  
-     
-       thread\_id: str  
-     
-       path: str  
-     
-       line: int  
-     
-       author: str  
-     
-       body: str  
-     
-       created\_at: str  
-     
-       is\_resolved: bool  
-     
-   class SupportsPRReview(Protocol):  
-     
-       def list\_pr\_comments(self, repo\_slug: str, pr\_number: int) \-\> list\[PRReviewComment\]: ...  
-     
-       def post\_pr\_line\_comment(self, repo\_slug: str, pr\_number: int, commit\_id: str, path: str, line: int, body: str) \-\> PRReviewComment: ...  
-     
-       def resolve\_pr\_thread(self, repo\_slug: str, pr\_number: int, thread\_id: str, resolved: bool) \-\> None: ...  
-     
-       def submit\_pr\_review(self, repo\_slug: str, pr\_number: int, event: str, body: str) \-\> None: ...  \# event: "APPROVE", "REQUEST\_CHANGES", "COMMENT"  
-     
-   class SupportsCILogs(Protocol):  
-     
-       def get\_ci\_job\_log(self, repo\_slug: str, job\_id: str) \-\> str: ...  
-     
-       def rerun\_ci\_job(self, repo\_slug: str, job\_id: str) \-\> bool: ...  
-     
-   Implement these methods across `github.py`, `gitlab.py`, `forgejo.py`, and `bitbucket.py`, plus `checkout_pr_branch(repo_path: str, remote_name: str, pr_number: int, local_branch_name: str)` in `src/wrench/core/write_ops.py` (`git fetch <remote> pull/<id>/head:<branch>` or `merge-requests/<id>/head:<branch>`).  
-     
+2. In `src/wrench/forge/capability.py`, add dataclasses and capability methods:
+
+```py
+@dataclass(frozen=True)
+class PRReviewComment:
+    comment_id: str
+    thread_id: str
+    path: str
+    line: int
+    author: str
+    body: str
+    created_at: str
+    is_resolved: bool
+
+class SupportsPRReview(Protocol):
+    def list_pr_comments(self, repo_slug: str, pr_number: int) -> list[PRReviewComment]: ...
+    def post_pr_line_comment(self, repo_slug: str, pr_number: int, commit_id: str, path: str, line: int, body: str) -> PRReviewComment: ...
+    def resolve_pr_thread(self, repo_slug: str, pr_number: int, thread_id: str, resolved: bool) -> None: ...
+    def submit_pr_review(self, repo_slug: str, pr_number: int, event: str, body: str) -> None: ...  # event: "APPROVE", "REQUEST_CHANGES", "COMMENT"
+
+class SupportsCILogs(Protocol):
+    def get_ci_job_log(self, repo_slug: str, job_id: str) -> str: ...
+    def rerun_ci_job(self, repo_slug: str, job_id: str) -> bool: ...
+```
+
+   Implement these methods across `github.py`, `gitlab.py`, `forgejo.py`, and `bitbucket.py`, plus `checkout_pr_branch(repo_path: str, remote_name: str, pr_number: int, local_branch_name: str)` in `src/wrench/core/write_ops.py` (`git fetch <remote> pull/<id>/head:<branch>` or `merge-requests/<id>/head:<branch>`).
+
 - **Completion Gate:** `pytest tests/forge/test_pr_inline_review.py`
 
 ### Step 2 — Build `src/wrench/ui/widgets/pr_review_overlay.py` & CI Log Drawer
@@ -852,24 +726,19 @@ Modify existing v1 modules to obey `SettingsRegistry`:
 
 1. In `src/wrench/storage/settings_registry.py`, register:  
    - `credentials.multi_account_rules.enabled` (`BOOL`, default `True`, category `"Forges & CI"`, label `"Enable per-repository / directory multi-account & SSH key routing"`)  
-2. Create SQLite table `account_routing_rules` in `wrench.db`:  
-     
-   CREATE TABLE IF NOT EXISTS account\_routing\_rules (  
-     
-       rule\_id INTEGER PRIMARY KEY AUTOINCREMENT,  
-     
-       path\_prefix TEXT NOT NULL UNIQUE,  
-     
-       forge\_account\_id TEXT,  
-     
-       git\_user\_name TEXT,  
-     
-       git\_user\_email TEXT,  
-     
-       ssh\_key\_path TEXT  
-     
-   );  
-     
+2. Create SQLite table `account_routing_rules` in `wrench.db`:
+
+```sql
+CREATE TABLE IF NOT EXISTS account_routing_rules (
+    rule_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    path_prefix TEXT NOT NULL UNIQUE,
+    forge_account_id TEXT,
+    git_user_name TEXT,
+    git_user_email TEXT,
+    ssh_key_path TEXT
+);
+```
+
 3. Create `src/wrench/credentials/account_router.py` with `resolve_account_for_repo(repo_path: str) -> AccountRoute | None` (matching longest `path_prefix` when `credentials.multi_account_rules.enabled` is `True`).  
 4. In `src/wrench/core/write_ops.py`, if `resolve_account_for_repo(repo_path)` returns an `ssh_key_path`, pass `GIT_SSH_COMMAND="ssh -i <ssh_key_path> -o IdentitiesOnly=yes"` in the subprocess environment for `fetch`, `pull`, `push`, and `clone`.  
 - **Completion Gate:** `pytest tests/credentials/test_multi_account.py`
@@ -950,24 +819,19 @@ Modify existing v1 modules to obey `SettingsRegistry`:
    - `diff.lru_cache_lines` (`INT`, default `512`, min `128`, max `4096`, category `"Diff & Merge"`, label `"LRU cache capacity for highlighted diff lines"`)  
    - `diff.coalesce_switch_ms` (`INT`, default `35`, min `0`, max `250`, category `"Diff & Merge"`, label `"File-selection coalescing delay in milliseconds"`)  
    - `diff.fold_unchanged_context.enabled` (`BOOL`, default `True`, category `"Diff & Merge"`, label `"Collapse unchanged context regions into expandable divider rows"`)  
-2. In `src/wrench/ui/diff_view/diff_widget.py`, implement:  
-     
-   class PatchByteIndex:  
-     
-       """Indexes raw UTF-8 patch bytes into flat C-arrays in \< 3ms for 50,000 lines."""  
-     
-       raw\_bytes: bytes  
-     
-       line\_starts: array  \# array('I')  
-     
-       line\_lengths: array  \# array('H')  
-     
-       line\_flags: array    \# array('B'): 0=ctx, 1=add, 2=del, 3=hunk\_hdr, 4=folded\_divider  
-     
-       old\_linenos: array   \# array('I')  
-     
-       new\_linenos: array   \# array('I')  
-     
+2. In `src/wrench/ui/diff_view/diff_widget.py`, implement:
+
+```py
+class PatchByteIndex:
+    """Indexes raw UTF-8 patch bytes into flat C-arrays in < 3ms for 50,000 lines."""
+    raw_bytes: bytes
+    line_starts: array  # array('I')
+    line_lengths: array  # array('H')
+    line_flags: array    # array('B'): 0=ctx, 1=add, 2=del, 3=hunk_hdr, 4=folded_divider
+    old_linenos: array   # array('I')
+    new_linenos: array   # array('I')
+```
+
    - Implement `DiffLineModel(QAbstractListModel)` \+ `QListView` (`setUniformItemSizes(True)`) and `DiffRowDelegate(QStyledItemDelegate)` that decodes and highlights **only** visible rows `[first_visible_row - 20 : last_visible_row + 20]`, storing computed `(intraline_spans, syntax_tokens)` in an `lru_cache(maxsize=512)` (`OPT-8`).  
    - Implement Split/Unified toggle (`Ctrl+D`), `DiffMinimapWidget` (`12px` right gutter downsampled to `<= 200` buckets), `StickyFunctionHeaderWidget` (`24px` top banner), `Alt+W` whitespace peek, and a `35ms` single-shot `QTimer` coalescing rapid file-selection changes (`ui-planning.md §3.2–§3.3`).  
 - **Completion Gate:** `pytest tests/ui/test_diff_enhancements.py tests/meta/test_no_shortcuts_guard.py`
@@ -996,30 +860,22 @@ Modify existing v1 modules to obey `SettingsRegistry`:
    - `search.pickaxe_enabled` (`BOOL`, default `True`, category `"Blame & Search"`, label `"Enable code-change pickaxe search (-S / -G) in History"`)  
    - `reflog.inspector_ui.enabled` (`BOOL`, default `True`, category `"Safety & Backups"`, label `"Enable Visual Reflog Time-Travel Inspector"`)  
    - `reflog.max_entries` (`INT`, default `250`, min `50`, max `2000`, category `"Safety & Backups"`, label `"Maximum reflog entries to load"`, parent `"reflog.inspector_ui.enabled"`)  
-2. Create `src/wrench/core/reflog_ops.py`:  
-     
-   @dataclass(frozen=True)  
-     
-   class ReflogRecord:  
-     
-       index: int          \# e.g., 0 for HEAD@{0}  
-     
-       ref\_selector: str   \# "HEAD@{0}"  
-     
-       old\_oid: str  
-     
-       new\_oid: str  
-     
-       committer: str  
-     
-       timestamp: int  
-     
-       action: str         \# e.g., "commit", "rebase (finish)", "reset"  
-     
-       message: str  
-     
-       is\_unreachable\_from\_head: bool  
-     
+2. Create `src/wrench/core/reflog_ops.py`:
+
+```py
+@dataclass(frozen=True)
+class ReflogRecord:
+    index: int          # e.g., 0 for HEAD@{0}
+    ref_selector: str   # "HEAD@{0}"
+    old_oid: str
+    new_oid: str
+    committer: str
+    timestamp: int
+    action: str         # e.g., "commit", "rebase (finish)", "reset"
+    message: str
+    is_unreachable_from_head: bool
+```
+
    - `list_reflog(repo_path: str, ref_name: str = "HEAD", limit: int = 250) -> list[ReflogRecord]` using `pygit2.Repository(repo_path).references[ref_name].log()`.  
    - `search_commits_advanced(repo_path: str, query: str, author: str | None = None, path_filter: str | None = None, pickaxe_literal: str | None = None, pickaxe_regex: str | None = None, limit: int = 500) -> list[str]`.  
 - **Completion Gate:** `pytest tests/core/test_reflog_and_search.py`
@@ -1054,20 +910,17 @@ Modify existing v1 modules to obey `SettingsRegistry`:
 1. In `src/wrench/storage/settings_registry.py`, register:  
    - `lfs.enabled` (`BOOL`, default `True`, category `"Remotes & LFS"`, label `"Enable Git LFS integration and lock management"`)  
    - `lfs.auto_fetch_locks` (`BOOL`, default `False`, category `"Remotes & LFS"`, label `"Automatically refresh LFS locks on Fetch"`, parent `"lfs.enabled"`)  
-2. Create `src/wrench/core/lfs_ops.py` (every function checks `if not settings.get_bool("lfs.enabled", repo_path): return []`):  
-     
-   @dataclass(frozen=True)  
-     
-   class LFSLock:  
-     
-       lock\_id: str  
-     
-       path: str  
-     
-       owner\_name: str  
-     
-       locked\_at: str  
-     
+2. Create `src/wrench/core/lfs_ops.py` (every function checks `if not settings.get_bool("lfs.enabled", repo_path): return []`):
+
+```py
+@dataclass(frozen=True)
+class LFSLock:
+    lock_id: str
+    path: str
+    owner_name: str
+    locked_at: str
+```
+
    - `list_lfs_locks(repo_path: str) -> list[LFSLock]` (`git -C <repo_path> lfs locks --json`).  
    - `lock_lfs_file(repo_path: str, file_path: str) -> None` (`git -C <repo_path> lfs lock <file_path>`).  
    - `unlock_lfs_file(repo_path: str, file_path: str, force: bool = False) -> None` (`git -C <repo_path> lfs unlock ...`).  
@@ -1292,20 +1145,17 @@ Modify existing v1 modules to obey `SettingsRegistry`:
    - `signing.sign_tags_by_default` (`BOOL`, default `True`, category `"Hooks & Signing"`, label `"Sign tags by default (-s)"`, parent `"signing.enabled"`)  
    - `signing.gui_askpass_fallback.enabled` (`BOOL`, default `True`, category `"Hooks & Signing"`, label `"Prompt for GPG/SSH key passphrase in Wrench GUI if agent is locked"`)  
    - `signing.verify_badges_in_graph.enabled` (`BOOL`, default `True`, category `"Hooks & Signing"`, label `"Verify and display signature badges (Verified/Unverified) in Commit Graph"`)  
-2. Create `src/wrench/core/signing_ops.py`:  
-     
-   @dataclass(frozen=True)  
-     
-   class SignatureStatus:  
-     
-       oid: str  
-     
-       state: str  \# "verified", "unverified\_key", "bad", "unsigned"  
-     
-       signer: str | None  
-     
-       key\_fingerprint: str | None  
-     
+2. Create `src/wrench/core/signing_ops.py`:
+
+```py
+@dataclass(frozen=True)
+class SignatureStatus:
+    oid: str
+    state: str  # "verified", "unverified_key", "bad", "unsigned"
+    signer: str | None
+    key_fingerprint: str | None
+```
+
    - `verify_commit_signatures_batch(repo_path: str, oids: list[str], settings: SettingsRegistry) -> dict[str, SignatureStatus]`:  
      - Immediately returns `{}` if `not settings.get_bool("signing.verify_badges_in_graph.enabled", repo_path)`.  
      - Runs `["git", "-C", repo_path, "log", "--no-walk", "--format=%H|%G?|%GS|%GF", *oids]` in a single batch subprocess call (`G` \= good/verified, `U`/`X`/`Y` \= unverified/expired, `B` \= bad, `N` \= unsigned).  
@@ -1331,7 +1181,7 @@ Modify existing v1 modules to obey `SettingsRegistry`:
 
 **Why this position:** Provides a visual regression-hunting workflow directly on the DAG commit graph ([Lazygit \#1542](https://github.com/jesseduffield/lazygit/issues/1542), [Lazygit \#5575](https://github.com/jesseduffield/lazygit/issues/5575)). **Prerequisites:** `VP-18` acceptance check passed. **Mandatory UI Spec Reference:** MUST read and implement `ui-planning.md §6.21` (`BisectBannerWidget` & Graph Dimming Overlay) and `§8 Step 46`. **Mandatory Optimizations Reminder for Lower-Tier Models (`DO NOT SKIP`):**
 
-- Compute the set of candidate bisect OIDs asynchronously in a worker (`OPT-6`) and store them in a Python `frozenset[str]` on `CommitGraphWidget` so `paintEvent` checks `oid in self._bisect_candidates` in \$O(1)\$ time.
+- Compute the set of candidate bisect OIDs asynchronously in a worker (`OPT-6`) and store them in a Python `frozenset[str]` on `CommitGraphWidget` so `paintEvent` checks `oid in self._bisect_candidates` in $O(1)$ time.
 
 ### Step 0 — Repo-state reconciliation
 
@@ -1342,26 +1192,20 @@ Modify existing v1 modules to obey `SettingsRegistry`:
 1. In `src/wrench/storage/settings_registry.py`, register:  
    - `bisect.ui.enabled` (`BOOL`, default `True`, category `"Commit Graph"`, label `"Enable Interactive Git Bisect wizard and graph overlay"`)  
    - `bisect.auto_snapshot_before_start` (`BOOL`, default `True`, category `"Commit Graph"`, label `"Create safety snapshot before starting git bisect"`, parent `"bisect.ui.enabled"`)  
-2. Create `src/wrench/core/bisect_ops.py`:  
-     
-   @dataclass(frozen=True)  
-     
-   class BisectStatus:  
-     
-       active: bool  
-     
-       current\_oid: str | None  
-     
-       good\_oids: tuple\[str, ...\]  
-     
-       bad\_oids: tuple\[str, ...\]  
-     
-       skip\_oids: tuple\[str, ...\]  
-     
-       culprit\_oid: str | None  
-     
-       estimated\_steps\_left: int  
-     
+2. Create `src/wrench/core/bisect_ops.py`:
+
+```py
+@dataclass(frozen=True)
+class BisectStatus:
+    active: bool
+    current_oid: str | None
+    good_oids: tuple[str, ...]
+    bad_oids: tuple[str, ...]
+    skip_oids: tuple[str, ...]
+    culprit_oid: str | None
+    estimated_steps_left: int
+```
+
    - `get_bisect_status(repo_path: str) -> BisectStatus`: checks `<gitdir>/BISECT_START` and `<gitdir>/refs/bisect/*`. Returns `BisectStatus(active=False, ...)` immediately if `BISECT_START` does not exist.  
    - `bisect_start(repo_path: str, bad_oid: str, good_oid: str) -> BisectStatus`: runs `["git", "-C", repo_path, "bisect", "start", bad_oid, good_oid]`.  
    - `bisect_mark(repo_path: str, verdict: str, oid: str | None = None) -> BisectStatus`: where `verdict in ("good", "bad", "skip")`, parses stdout for `"<oid> is the first bad commit"` to populate `culprit_oid`.  
@@ -1400,26 +1244,20 @@ Modify existing v1 modules to obey `SettingsRegistry`:
    - `stacks.auto_update_refs_on_amend` (`BOOL`, default `True`, category `"Branches & Stacks"`, label `"Automatically cascade rebase child branches in stack when amending"`, parent `"stacks.enabled"`)  
    - `stacks.hunk_routing_ui.enabled` (`BOOL`, default `True`, category `"Branches & Stacks"`, label `"Enable 'Amend Hunk into Target Commit/Branch' action in Changes tab"`, parent `"stacks.enabled"`)  
    - `forge.stacked_pr_table_in_body.enabled` (`BOOL`, default `True`, category `"Forges & CI"`, label `"Insert Markdown stack navigation table into Stacked PR descriptions"`, parent `"stacks.enabled"`)  
-2. Create SQLite table `branch_stacks` in `wrench.db`:  
-     
-   CREATE TABLE IF NOT EXISTS branch\_stacks (  
-     
-       repo\_path TEXT NOT NULL,  
-     
-       stack\_name TEXT NOT NULL,  
-     
-       branch\_name TEXT NOT NULL,  
-     
-       parent\_branch TEXT NOT NULL,  
-     
-       ordinal INTEGER NOT NULL,  
-     
-       pr\_number INTEGER,  
-     
-       PRIMARY KEY (repo\_path, branch\_name)  
-     
-   );  
-     
+2. Create SQLite table `branch_stacks` in `wrench.db`:
+
+```sql
+CREATE TABLE IF NOT EXISTS branch_stacks (
+    repo_path TEXT NOT NULL,
+    stack_name TEXT NOT NULL,
+    branch_name TEXT NOT NULL,
+    parent_branch TEXT NOT NULL,
+    ordinal INTEGER NOT NULL,
+    pr_number INTEGER,
+    PRIMARY KEY (repo_path, branch_name)
+);
+```
+
 3. Create `src/wrench/core/stacks.py`:  
    - `create_stacked_branch(repo_path: str, stack_name: str, new_branch: str, parent_branch: str) -> None`  
    - `list_stack_branches(repo_path: str, stack_name: str | None = None) -> list[StackBranchNode]` (returns `[]` immediately if `not settings.get_bool("stacks.enabled", repo_path)`).  
@@ -1460,28 +1298,21 @@ Modify existing v1 modules to obey `SettingsRegistry`:
    - `blame.use_ignore_revs_file` (`BOOL`, default `True`, category `"Blame & Search"`, label `"Respect .git-blame-ignore-revs / blame.ignoreRevsFile"`, parent `"blame.ui.enabled"`)  
    - `blame.age_heatmap_colors.enabled` (`BOOL`, default `True`, category `"Blame & Search"`, label `"Colorize blame gutter by commit age heatmap"`, parent `"blame.ui.enabled"`)  
    - `line_history.ui.enabled` (`BOOL`, default `True`, category `"Blame & Search"`, label `"Enable 'View Line History (git log -L)' context menu action"`)  
-2. Create `src/wrench/core/blame_ops.py`:  
-     
-   @dataclass(frozen=True)  
-     
-   class BlameLine:  
-     
-       line\_no: int  
-     
-       oid: str  
-     
-       short\_oid: str  
-     
-       author\_name: str  
-     
-       author\_email: str  
-     
-       timestamp: int  
-     
-       summary: str  
-     
-       content: str  
-     
+2. Create `src/wrench/core/blame_ops.py`:
+
+```py
+@dataclass(frozen=True)
+class BlameLine:
+    line_no: int
+    oid: str
+    short_oid: str
+    author_name: str
+    author_email: str
+    timestamp: int
+    summary: str
+    content: str
+```
+
    - `get_file_blame(repo_path: str, file_path: str, rev: str = "HEAD", use_ignore_revs: bool = True) -> list[BlameLine]`:  
      - If `use_ignore_revs` is `True` and `.git-blame-ignore-revs` exists at `os.path.join(repo_path, ".git-blame-ignore-revs")`, pass `--ignore-revs-file=.git-blame-ignore-revs` to `git -C <repo_path> blame --line-porcelain <rev> -- <file_path>` ([Sublime Merge \#1098](https://github.com/sublimehq/sublime_merge/issues/1098)).  
      - Coalesce empty or missing `author-mail` fields to `""` so commits with empty emails never crash the parser ([Gittyup Issues](https://github.com/Murmele/gittyup/issues)).  
@@ -1584,6 +1415,38 @@ Modify existing v1 modules to obey `SettingsRegistry`:
 
 - [ ] `Ctrl+K` fuzzy searches and runs built-in commands, custom actions, and settings toggles; `format-patch` and `git am --3way` round-trip commits cleanly; `git rerere` status and forget controls work in the 3-way merge view; disabling any of `merge.rerere_ui.enabled`, `patches.ui.enabled`, `ui.command_palette.enabled`, or `custom_actions.enabled` hides its UI and short-circuits its backend logic immediately.
 
+## VP-24 — 2-Tier Progressive Disclosure Help System: Contextual Beginner Hover Cards & Searchable Offline Help (`F1`) (`FR-8.13`, `DEC-7`)
+
+**Why this position:** Wraps all v1 and v2 surfaces (`VP-0`..`VP-23`, `VP-25`) in a beginner-friendly 2-tier progressive disclosure help system without adding any per-widget memory overhead or unvalidated URI execution risks. **Prerequisites:** `VP-23` acceptance check passed. **Mandatory UI Spec Reference:** MUST read and implement `ui-planning.md §5.6` (Tier 1 `RichHelpTooltip` & Tier 2 `HelpCenterDialog`), `§5.7` (`SEC-6` URI Allowlist), `§6.25`, and `§8 Step 50`. **Mandatory Optimizations & Security Reminder for Lower-Tier Models (`DO NOT SKIP`):**
+
+- **Singleton Tooltip Instance (`0 KB` Per-Widget Overhead):** Install a single `RichHelpTooltipManager(QObject)` event filter that stores only `widget.setProperty("wrench_help_topic_id", topic_id)` on target widgets and reuses one shared `RichHelpTooltip(QFrame)` popup across the entire app.  
+- **Lazy Offline Topic Indexing (`OPT-1`):** Load and index the 25 offline help topics in `src/wrench/ui/help_topics.py` only when the user first presses `F1` or clicks `[Read Full Guide (F1) →]`.  
+- **Allowlist-Validated `wrench://` URIs (`SEC-6`):** Validate every `wrench://open-setting/<key>` link against `SettingsRegistry.has_key(key)` and every `wrench://highlight-ui/<widget_id>` link against `REGISTERED_UI_WIDGET_IDS` before executing.
+
+### Step 0 — Repo-state reconciliation
+
+- Inspect `src/wrench/ui/main_window.py`, `src/wrench/ui/dialogs/settings_dialog.py`, and `src/wrench/storage/settings_registry.py`.
+
+### Step 1 — Create `src/wrench/ui/help_topics.py` & Singleton `src/wrench/ui/widgets/rich_help_tooltip.py`
+
+1. Create `src/wrench/ui/help_topics.py` defining `@dataclass(frozen=True) class HelpTopic(topic_id, title, category, short_summary, cli_equivalent, shortcut, markdown_body, related_setting_keys, highlight_widget_id)` and a lazy getter `get_help_topics() -> dict[str, HelpTopic]` covering all 25 core & v2 Git/Wrench concepts.  
+2. Create `src/wrench/ui/widgets/rich_help_tooltip.py` implementing `RichHelpTooltipManager` with a `500ms` hover trigger timer (`help.tooltip_delay_ms`), a `150ms` cursor-grace timer so users can move the mouse into the popover to click `[Read Full Guide (F1) →]` or `[Switch to Compact Tooltips]`, and automatic fallback to native compact tooltips when `help.tooltip_mode == "compact_shortcut_only"`.  
+- **Completion Gate:** `pytest tests/ui/test_rich_help_tooltip.py tests/meta/test_no_shortcuts_guard.py`
+
+### Step 2 — Build `src/wrench/ui/dialogs/help_center_dialog.py` (`F1`) & `UIWidgetHighlighter`
+
+- Create `HelpCenterDialog(QDialog)` bound to `F1` with live keyword search, category tree, offline Markdown renderer, and `SEC-6` allowlist-checked `anchorClicked` handler for `wrench://open-setting/<key>` and `wrench://highlight-ui/<widget_id>`.  
+- **Completion Gate:** `pytest tests/ui/test_help_center_dialog.py tests/meta/test_no_shortcuts_guard.py`
+
+### Forbidden Decisions for Lower-Tier Models
+
+- DO NOT instantiate a separate `RichHelpTooltip` `QWidget` per button or row; always use the singleton `RichHelpTooltipManager`.  
+- DO NOT pass any `QUrl` from `HelpCenterDialog` to `QDesktopServices.openUrl` or `subprocess` (`SEC-6`).
+
+### Acceptance Check
+
+- [ ] Hovering any control tagged with `attach_help_topic` displays the rich beginner card in `"beginner_rich"` mode, opens `HelpCenterDialog` at that exact topic on clicking `[Read Full Guide (F1) →]`, switches globally to compact tooltips in 1 click, and passes `test_no_shortcuts_guard.py`.
+
 ## VP-25 — Multi-Hosting Mirror Resolution Engine & Combined Mirror History DAG (`FR-3.10`, `FR-4.6`, `FR-4.7`, `DEC-8`)
 
 **Why this position:** Unifies multi-remote/multi-forge workflows so repositories mirrored across GitHub, GitLab, Codeberg/Forgejo, Bitbucket, and SourceForge display a combined, de-duplicated commit history tree with instant drift detection and `< 0.5ms` cached mirror resolution. **Prerequisites:** `VP-9` and `VP-16` acceptance checks passed. **Mandatory UI Spec Reference:** MUST read and implement `ui-planning.md §4.2.5` (Combined Multi-Hosting Mirror DAG & Sync/Drift Pills), `§5.5 OPT-7` (5-Stage Mirror Resolution Pipeline), `§6.26` (`MirrorManagerDialog`), and `§8 Step 51`. **Mandatory Optimizations & Security Reminder for Lower-Tier Models (`DO NOT SKIP`):**
@@ -1611,78 +1474,70 @@ Modify existing v1 modules to obey `SettingsRegistry`:
    - `mirrors.cache_ttl_seconds` (`INT`, default `300`, min `30`, max `3600`, category `"Remotes & LFS"`, label `"Mirror resolution cache TTL in seconds"`)  
    - `mirrors.max_parallel_probes` (`INT`, default `4`, min `1`, max `8`, category `"Remotes & LFS"`, label `"Maximum parallel mirror ls-remote / API probes"`)  
    - `mirrors.probe_timeout_seconds` (`INT`, default `4`, min `1`, max `30`, category `"Remotes & LFS"`, label `"Per-mirror network probe timeout in seconds"`)  
-2. Create SQLite table `mirror_resolution_cache` in `wrench.db`:  
-     
-   CREATE TABLE IF NOT EXISTS mirror\_resolution\_cache (  
-     
-       repo\_path TEXT NOT NULL,  
-     
-       remote\_name TEXT NOT NULL,  
-     
-       canonical\_host TEXT NOT NULL,  
-     
-       canonical\_slug TEXT NOT NULL,  
-     
-       forge\_provider TEXT,  
-     
-       root\_commit\_oid TEXT NOT NULL,  
-     
-       is\_verified\_mirror INTEGER NOT NULL DEFAULT 1,  
-     
-       ref\_digest TEXT NOT NULL,  
-     
-       branch\_sync\_json TEXT NOT NULL,  
-     
-       updated\_at REAL NOT NULL,  
-     
-       PRIMARY KEY (repo\_path, remote\_name)  
-     
-   );  
-     
-3. Create `src/wrench/core/mirror_ops.py` & `src/wrench/forge/mirror_resolver.py` implementing:  
-     
-   @dataclass(frozen=True)  
-     
-   class MirrorBranchDrift:  
-     
-       branch\_name: str  
-     
-       primary\_remote: str  
-     
-       mirror\_remote: str  
-     
-       primary\_oid: str  
-     
-       mirror\_oid: str | None  
-     
-       ahead\_count: int  
-     
-       behind\_count: int  
-     
-       state: str  \# "synced", "behind", "ahead", "diverged", "missing\_on\_mirror"  
-     
-   @dataclass(frozen=True)  
-     
-   class MirrorNodeGroup:  
-     
-       commit\_oid: str  
-     
-       branch\_name: str  
-     
-       synced\_remotes: tuple\[tuple\[str, str\], ...\]  \# ((remote\_name, provider\_short\_code), ...)  
-     
-       drifted\_remotes: tuple\[MirrorBranchDrift, ...\]  
-     
-   def resolve\_repository\_mirrors(repo\_path: str, force\_network\_probe: bool \= False) \-\> list\[MirrorRemoteStatus\]: ...  
-     
-   def build\_combined\_mirror\_dag\_walker(repo\_path: str, include\_mirrors: bool \= True) \-\> list\[CommitNode\]: ...  
-     
-   def group\_mirror\_refs\_by\_commit(repo\_path: str) \-\> dict\[str, list\[MirrorNodeGroup\]\]: ...  
-     
-   def sync\_mirror\_branch(repo\_path: str, source\_ref: str, target\_mirror\_remote: str, branch\_name: str, force\_with\_lease: bool \= False) \-\> None: ...  
-     
-   def push\_to\_all\_mirrors\_parallel(repo\_path: str, branch\_name: str) \-\> dict\[str, tuple\[bool, str\]\]: ...  
-     
+2. Create SQLite table `mirror_resolution_cache` in `wrench.db`:
+
+```sql
+CREATE TABLE IF NOT EXISTS mirror_resolution_cache (
+    repo_path TEXT NOT NULL,
+    remote_name TEXT NOT NULL,
+    canonical_host TEXT NOT NULL,
+    canonical_slug TEXT NOT NULL,
+    forge_provider TEXT,
+    root_commit_oid TEXT NOT NULL,
+    is_verified_mirror INTEGER NOT NULL DEFAULT 1,
+    ref_digest TEXT NOT NULL,
+    branch_sync_json TEXT NOT NULL,
+    updated_at REAL NOT NULL,
+    PRIMARY KEY (repo_path, remote_name)
+);
+```
+
+3. Create `src/wrench/core/mirror_ops.py` & `src/wrench/forge/mirror_resolver.py` implementing:
+
+```py
+@dataclass(frozen=True)
+class MirrorBranchDrift:
+    branch_name: str
+    primary_remote: str
+    mirror_remote: str
+    primary_oid: str
+    mirror_oid: str | None
+    ahead_count: int
+    behind_count: int
+    state: str  # "synced", "behind", "ahead", "diverged", "missing_on_mirror"
+
+@dataclass(frozen=True)
+class MirrorNodeGroup:
+    commit_oid: str
+    branch_name: str
+    synced_remotes: tuple[tuple[str, str], ...]  # ((remote_name, provider_short_code), ...)
+    drifted_remotes: tuple[MirrorBranchDrift, ...]
+
+# Pre-compiled < 10us 11-Forge URL Canonicalizer (OPT-7 Stage 1)
+CANONICAL_FORGE_PATTERNS: tuple[tuple[str, str, re.Pattern[str]], ...] = (
+    ("github", "GH", re.compile(r"^(?:https://|ssh://git@|git@)github\.com[:/](?P<slug>[^/]+/[^/]+?)(?:\.git)?/?$", re.I)),
+    ("gitlab", "GL", re.compile(r"^(?:https://|ssh://git@|git@)gitlab\.com[:/](?P<slug>.+?)(?:\.git)?/?$", re.I)),
+    ("codeberg", "CB", re.compile(r"^(?:https://|ssh://git@|git@)codeberg\.org[:/](?P<slug>[^/]+/[^/]+?)(?:\.git)?/?$", re.I)),
+    ("bitbucket", "BB", re.compile(r"^(?:https://[^@]*@?|ssh://git@|git@)bitbucket\.org[:/](?P<slug>[^/]+/[^/]+?)(?:\.git)?/?$", re.I)),
+    ("sourceforge", "SF", re.compile(r"^(?:https://|ssh://[^@]+@|git://)git\.code\.sf\.net/p/(?P<slug>[^/]+/[^/]+?)(?:\.git)?/?$", re.I)),
+    ("azure_repos", "AZ", re.compile(
+        r"^(?:https://dev\.azure\.com/(?P<org>[^/]+)/(?P<proj>[^/]+)/_git/(?P<repo>[^/]+?)"
+        r"|git@ssh\.dev\.azure\.com:v3/(?P<s_org>[^/]+)/(?P<s_proj>[^/]+)/(?P<s_repo>[^/]+?)"
+        r"|https://(?P<v_org>[^.]+)\.visualstudio\.com/(?:DefaultCollection/)?(?P<v_proj>[^/]+)/_git/(?P<v_repo>[^/]+?))(?:\.git)?/?$", re.I
+    )),
+    ("radicle", "RAD", re.compile(r"^rad://(?P<slug>z[1-9A-HJ-NP-Za-km-z]{20,60})(?:/.*)?$")),
+    ("gerrit", "GR", re.compile(r"^(?:ssh://[^@]+@(?P<host>[^:/]+):29418/|https://(?P<h_host>[^/]+)/a/)(?P<slug>.+?)(?:\.git)?/?$", re.I)),
+    ("sourcehut", "SRHT", re.compile(r"^(?:https://|ssh://git@|git@)git\.sr\.ht[:/]~(?P<slug>[^/]+/[^/]+?)(?:\.git)?/?$", re.I)),
+    ("tangled", "TG", re.compile(r"^(?:https://|ssh://git@|git@)(?P<host>tangled\.(?:org|sh)|knot[^/]+)[:/]@?(?P<slug>[^/]+/[^/]+?)(?:\.git)?/?$", re.I)),
+)
+
+def resolve_repository_mirrors(repo_path: str, force_network_probe: bool = False) -> list[MirrorRemoteStatus]: ...
+def build_combined_mirror_dag_walker(repo_path: str, include_mirrors: bool = True) -> list[CommitNode]: ...
+def group_mirror_refs_by_commit(repo_path: str) -> dict[str, list[MirrorNodeGroup]]: ...
+def sync_mirror_branch(repo_path: str, source_ref: str, target_mirror_remote: str, branch_name: str, force_with_lease: bool = False) -> None: ...
+def push_to_all_mirrors_parallel(repo_path: str, branch_name: str) -> dict[str, tuple[bool, str]]: ...
+```
+
 - **Completion Gate:** `pytest tests/core/test_mirror_resolution_and_dag.py tests/meta/test_no_shortcuts_guard.py`
 
 ### Step 2 — Render Combined Mirror DAG Pills & Drift Badges in `CommitGraphWidget` & Build `MirrorManagerDialog`
@@ -1704,7 +1559,290 @@ Modify existing v1 modules to obey `SettingsRegistry`:
 
 - [ ] A repository with `origin` (GitHub), `gitlab` (GitLab), and `codeberg` (Codeberg) displays combined history in `CommitGraphWidget`, collapses synced refs into `[🌐 main · GH · GL · CB ✓]`, highlights lagging mirrors with `[⚠ CB/main ↓2]` and syncs them in 1 click, resolves cached mirror state in `< 0.5ms`, and disables cleanly when `mirrors.unified_history.enabled` is `False`.
 
-## Master Sequential Checklist (`VP-0` – `VP-23`)
+## VP-26 — Extended Multi-Forge Suite: Codeberg, Azure Repos, Radicle, Gerrit, SourceHut & Tangled (`FR-6.5`–`6.10`, `DEC-10`)
+
+**Why this position:** Expands Wrench's capability-based forge architecture (`src/wrench/forge/`) to 11 first-class platforms covering community FOSS hosting ([Codeberg / Forgejo API v1](https://forgejo.org/docs/latest/user/api/), [SourceHut sr.ht GraphQL & lists.sr.ht](https://docs.sourcehut.org/git.sr.ht/)), enterprise Git ([Azure Repos REST API v7.1](https://learn.microsoft.com/en-us/rest/api/azure/devops/git/pull-requests?view=azure-devops-rest-7.1)), patchset/change-review systems ([Gerrit Code Review refs/for/ & /a/changes/](https://gerrit-review.googlesource.com/Documentation/intro-user.html)), and next-generation decentralized protocols ([Radicle rad:// & Collaborative Objects](https://radicle.dev/guides/user/), [Tangled tangled.org ATProtocol Knots & Spindles](https://docs.tangled.org/single-page)). **Prerequisites:** `VP-9` and `VP-25` acceptance checks passed. **Mandatory UI Spec Reference:** MUST read and implement `ui-planning.md §4.2.5` (11-Forge Mirror Short Codes `GH`, `GL`, `CB`, `FG`, `BB`, `SF`, `AZ`, `RAD`, `GR`, `SRHT`, `TG`), `§6.18` (Gerrit/Azure voting bars & Radicle/SourceHut/Tangled review drawers), `§6.27` (`ForgeReviewPushDialog`), and `§8 Step 52`. **Mandatory Optimizations & Security Reminder for Lower-Tier Models (`DO NOT SKIP`):**
+
+- **Zero-Impact Per-Forge Disable (`NFR-5`):** Every adapter MUST check `if not self.settings.get_bool("forge.enabled", repo_path) or not self.settings.get_bool(f"forge.{self.provider_key}.enabled", repo_path): return []` on the first line of every method.  
+- **Gerrit Zero-Copy XSSI Prefix Slice:** Gerrit REST responses begin with a 5-byte XSSI protection prefix `)]}'\n`. Strip it via `memoryview(raw_bytes)[5:]` (when `raw_bytes.startswith(b")]}'")`) before passing to `json.loads()` rather than allocating a new decoded `str` copy.  
+- **Radicle Local COB Ref Fast-Path (`< 1ms`):** For `rad://` repositories, read patch and issue Collaborative Objects (COBs) directly from local Git refs (`refs/namespaces/*/refs/rad/id` and `refs/patches/*`) via `pygit2` or `rad patch --json` / `radicle-httpd` (`127.0.0.1:8080`) without blocking on P2P network discovery; cache parsed COB summaries by `(repo_path, cob_oid)`.  
+- **SourceHut Single-Roundtrip GraphQL Batching:** Combine repository metadata, active `todo.sr.ht` tickets, `lists.sr.ht` patchsets, and latest `builds.sr.ht` build statuses into a single GraphQL query (`POST https://git.sr.ht/query`) with cursor pagination.  
+- **Tangled DID & Knot Resolution LRU Cache:** Cache ATProtocol handle-to-DID (`@user/repo` \-\> `did:plc:...`) and PDS/Knot endpoint lookups in SQLite (`tangled_knot_cache`, TTL `3600s`) so opening a Tangled repository never blocks on repeated DNS/XRPC identity resolution.  
+- **Azure Repos Continuation-Token Pagination & ETag Caching:** Use `$top=50` and `x-ms-continuationtoken` headers on `dev.azure.com/{org}/{project}/_apis/git/repositories/{repo}/pullrequests?api-version=7.1` so large enterprise repos never fetch unbounded PR lists.  
+- **Security Hardening (`SEC-1`–`SEC-3`):**  
+  - Validate `rad://` URLs against `^rad://z[1-9A-HJ-NP-Za-km-z]{20,60}(/.*)?$` in `security_sanitizer.py` (`SEC-2`).  
+  - Validate Gerrit push option values (`topic`, `r`, `cc`) against `^[A-Za-z0-9_.@-]+$` before constructing `HEAD:refs/for/{branch}%{opts}` so a crafted topic or reviewer string can never inject Git refspec flags (`SEC-1`).  
+  - Redact Azure DevOps PATs, SourceHut `oauth2`/`personal` bearer tokens, Gerrit HTTP credentials, and ATProto session JWTs in `redact_secrets()` (`SEC-3`).
+
+### Step 0 — Repo-state reconciliation
+
+- Inspect `src/wrench/forge/capability.py`, `src/wrench/forge/registry.py`, `src/wrench/forge/mirror_resolver.py`, and `src/wrench/core/security_sanitizer.py`.
+
+### Step 1 — Register `VP-26` settings, extend `ForgeCapabilities`, and implement the 6 Forge Adapters
+
+1. In `src/wrench/storage/settings_registry.py`, register:
+
+   - **Codeberg (`FR-6.5`):**  
+     - `forge.codeberg.enabled` (`BOOL`, default `True`, category `"Forges & CI"`, label `"Enable Codeberg (codeberg.org) adapter & Woodpecker CI badges"`, parent `"forge.enabled"`)  
+   - **Azure Repos (`FR-6.6`):**  
+     - `forge.azure_repos.enabled` (`BOOL`, default `True`, category `"Forges & CI"`, label `"Enable Azure Repos (dev.azure.com / visualstudio.com) adapter"`, parent `"forge.enabled"`)  
+     - `azure_repos.link_work_items.enabled` (`BOOL`, default `True`, category `"Forges & CI"`, label `"Enable Azure Boards #WorkItem autocomplete and PR work-item linking"`, parent `"forge.azure_repos.enabled"`)  
+   - **Radicle (`FR-6.7`):**  
+     - `forge.radicle.enabled` (`BOOL`, default `True`, category `"Forges & CI"`, label `"Enable Radicle P2P forge adapter (rad://, refs/patches & COBs)"`, parent `"forge.enabled"`)  
+     - `radicle.httpd_base_url` (`STR`, default `"http://127.0.0.1:8080"`, category `"Forges & CI"`, label `"Local or seed radicle-httpd API URL"`, parent `"forge.radicle.enabled"`)  
+     - `radicle.cli_binary_path` (`PATH`, default `"rad"`, category `"Forges & CI"`, label `"Path to rad CLI binary"`, parent `"forge.radicle.enabled"`)  
+   - **Gerrit (`FR-6.8`):**  
+     - `forge.gerrit.enabled` (`BOOL`, default `True`, category `"Forges & CI"`, label `"Enable Gerrit Code Review adapter (refs/for/ & Change-Id)"`, parent `"forge.enabled"`)  
+     - `gerrit.auto_insert_change_id` (`BOOL`, default `True`, category `"Forges & CI"`, label `"Automatically generate/preserve Change-Id footer in Gerrit commits"`, parent `"forge.gerrit.enabled"`)  
+     - `gerrit.default_push_options` (`STR`, default `""`, category `"Forges & CI"`, label `"Default Gerrit push options (e.g. wip,notify=OWNER)"`, parent `"forge.gerrit.enabled"`)  
+   - **SourceHut (`FR-6.9`):**  
+     - `forge.sourcehut.enabled` (`BOOL`, default `True`, category `"Forges & CI"`, label `"Enable SourceHut (sr.ht) GraphQL, Tickets, Builds & Lists adapter"`, parent `"forge.enabled"`)  
+     - `sourcehut.instance_domain` (`STR`, default `"sr.ht"`, category `"Forges & CI"`, label `"SourceHut base domain (git.<domain>, todo.<domain>, lists.<domain>)"`, parent `"forge.sourcehut.enabled"`)  
+     - `sourcehut.mailing_list_review.enabled` (`BOOL`, default `True`, category `"Forges & CI"`, label `"Enable lists.sr.ht patchset submission and review UI"`, parent `"forge.sourcehut.enabled"`)  
+   - **Tangled (`FR-6.10`):**  
+     - `forge.tangled.enabled` (`BOOL`, default `True`, category `"Forges & CI"`, label `"Enable Tangled (tangled.org) ATProtocol Knot & Spindle CI adapter"`, parent `"forge.enabled"`)  
+     - `tangled.appview_url` (`STR`, default `"https://tangled.org"`, category `"Forges & CI"`, label `"Tangled AppView / XRPC base URL"`, parent `"forge.tangled.enabled"`)  
+     - `tangled.spindle_ci.enabled` (`BOOL`, default `True`, category `"Forges & CI"`, label `"Show Tangled Spindle Nix CI pipeline badges and logs"`, parent `"forge.tangled.enabled"`)  
+2. In `src/wrench/forge/capability.py`, add protocol interfaces for multi-paradigm review workflows:
+
+```py
+class SupportsMagicRefReviewPush(Protocol):
+    def format_review_push_refspec(
+        self, target_branch: str, topic: str = "", reviewers: list[str] = (), wip: bool = False
+    ) -> str: ...
+    def push_for_review(
+        self, repo_path: str, remote_name: str, target_branch: str, title: str = "", description: str = "",
+        topic: str = "", reviewers: list[str] = (), wip: bool = False
+    ) -> str: ...
+
+class SupportsLabelVoting(Protocol):
+    def submit_label_votes(self, repo_slug: str, change_or_pr_id: str, votes: dict[str, int], message: str = "") -> None: ...
+```
+
+3. Implement the 6 adapter modules under `src/wrench/forge/adapters/` and register them in `src/wrench/forge/registry.py` and `src/wrench/forge/mirror_resolver.py`:
+
+   - `src/wrench/forge/adapters/codeberg.py` (`CodebergAdapter(ForgejoAdapter)`): binds `codeberg.org` (`short_code="CB"`), `/api/v1/repos/{owner}/{repo}/pulls`, `/issues`, and Woodpecker CI status checks.  
+   - `src/wrench/forge/adapters/azure_repos.py` (`AzureReposAdapter`): parses `https://dev.azure.com/{org}/{project}/_git/{repo}`, `https://{org}.visualstudio.com/{project}/_git/{repo}`, and `git@ssh.dev.azure.com:v3/{org}/{project}/{repo}` (`short_code="AZ"`); implements PRs (`/pullrequests?api-version=7.1`), inline review threads (`/threads`), 5-state reviewer vote submission (`PUT .../reviewers/{id}` with `vote in (-10, -5, 0, 5, 10)`), Azure Pipelines statuses, and Azure Boards Work Item `#ID` lookup.  
+   - `src/wrench/forge/adapters/radicle.py` (`RadicleAdapter`): parses `rad://<rid>` (`short_code="RAD"`); reads/writes Patch and Issue COBs via `radicle-httpd` (`/api/v1/projects/{rid}/patches`) and `rad patch --json` / `rad issue` CLI with `shell=False`; implements `push_for_review` pushing `HEAD:refs/patches` with `-o patch.message="{title}\n\n{description}"` (`git-remote-rad`), `checkout_patch(repo_path, patch_id)` (`rad patch checkout <patch_id>`), and `get_node_status()` (`rad node status --json`).  
+   - `src/wrench/forge/adapters/gerrit.py` (`GerritAdapter`): detects Gerrit remotes (`short_code="GR"`), strips `)]}'\n` from `/a/changes/` JSON responses, implements `ensure_change_id_trailer(message: str, tree_oid: str, parent_oid: str, author: str, timestamp: int) -> str` (computing deterministic `Change-Id: I<sha1>` when missing and preserving existing `Change-Id` on amend), formats `HEAD:refs/for/{target_branch}%topic={topic},r={reviewer}` refspecs (`SEC-1` validated), fetches patchset revisions (`refs/changes/{shard}/{change_num}/{patchset}`), and submits `Code-Review` (`-2..+2`) / `Verified` (`-1..+1`) votes via `POST /a/changes/{id}/revisions/{rev}/review`.  
+   - `src/wrench/forge/adapters/sourcehut.py` (`SourceHutAdapter`): parses `git.sr.ht/~{owner}/{repo}` (`short_code="SRHT"`), executes batched GraphQL queries against `https://git.sr.ht/query`, `https://todo.sr.ht/query`, `https://lists.sr.ht/query`, and `https://builds.sr.ht/query`, and integrates with `export_format_patches` / `apply_mailbox_patches` (`VP-23`) for `lists.sr.ht` patchset review.  
+   - `src/wrench/forge/adapters/tangled.py` (`TangledAdapter`): parses `tangled.org/@{handle}/{repo}`, `tangled.sh/@{handle}/{repo}`, and custom Knot domains (`short_code="TG"`), resolves ATProtocol handles/DIDs with SQLite LRU caching (`tangled_knot_cache`), queries `sh.tangled.repo.pull` (including Jujutsu/Change-ID stacked PR rounds) and `sh.tangled.repo.issue`, and streams Nix **Spindle** CI logs (`sh.tangled.pipeline`).  
+4. **Exact Deterministic Implementation Contracts for Each of the 6 New Adapters (Zero Guessing Allowed):**
+
+   - **4.1 Codeberg Adapter (`src/wrench/forge/adapters/codeberg.py` — `FR-6.5`):**
+
+```py
+class CodebergAdapter(ForgejoAdapter):
+    provider_key = "codeberg"
+    short_code = "CB"
+    default_api_base = "https://codeberg.org/api/v1"
+    default_web_base = "https://codeberg.org"
+
+    def get_ci_statuses(self, repo_slug: str, commit_sha: str) -> list[CIStatusItem]:
+        # Short-circuit immediately if forge.enabled or forge.codeberg.enabled is False
+        if not self.is_enabled():
+            return []
+        # Queries GET https://codeberg.org/api/v1/repos/{owner}/{repo}/commits/{sha}/statuses
+        # Maps both Forgejo Actions and Woodpecker CI (ci.codeberg.org) contexts cleanly
+        ...
+```
+
+   - **4.2 Azure Repos / Azure DevOps Adapter (`src/wrench/forge/adapters/azure_repos.py` — `FR-6.6`):**
+
+```py
+class AzureReposAdapter:
+    provider_key = "azure_repos"
+    short_code = "AZ"
+    api_version = "7.1"
+
+    # Reviewer vote integer mapping mandated by Azure DevOps REST API v7.1:
+    VOTE_APPROVED = 10
+    VOTE_APPROVED_WITH_SUGGESTIONS = 5
+    VOTE_NO_VOTE = 0
+    VOTE_WAITING_FOR_AUTHOR = -5
+    VOTE_REJECTED = -10
+
+    def _auth_headers(self, pat_token: str) -> dict[str, str]:
+        # Azure DevOps PAT requires Basic base64(":<PAT>")
+        b64 = base64.b64encode(f":{pat_token}".encode("utf-8")).decode("ascii")
+        return {"Authorization": f"Basic {b64}", "Accept": "application/json"}
+
+    def list_pull_requests(self, org: str, project: str, repo: str, status: str = "active") -> list[PullRequestItem]:
+        # GET https://dev.azure.com/{org}/{project}/_apis/git/repositories/{repo}/pullrequests?searchCriteria.status={status}&$top=50&api-version=7.1
+        ...
+
+    def submit_reviewer_vote(self, org: str, project: str, repo: str, pr_id: int, reviewer_id: str, vote: int) -> None:
+        # PUT https://dev.azure.com/{org}/{project}/_apis/git/repositories/{repo}/pullRequests/{pr_id}/reviewers/{reviewer_id}?api-version=7.1
+        # Body: {"vote": vote} where vote in (-10, -5, 0, 5, 10)
+        ...
+
+    def list_work_items_for_autocomplete(self, org: str, project: str, query_text: str) -> list[IssueItem]:
+        # POST https://dev.azure.com/{org}/{project}/_apis/wit/wiql?api-version=7.1
+        # Batch-fetches top 50 recent Work Items (Bug, Task, User Story) into SQLite cached_issues for < 1ms #ID autocomplete
+        ...
+```
+
+   - **4.3 Radicle Decentralized P2P Adapter (`src/wrench/forge/adapters/radicle.py` — `FR-6.7`):**
+
+```py
+class RadicleAdapter:
+    provider_key = "radicle"
+    short_code = "RAD"
+    RID_PATTERN = re.compile(r"^rad://(?P<rid>z[1-9A-HJ-NP-Za-km-z]{20,60})(?:/.*)?$")
+
+    def list_patches(self, repo_path: str, rid: str) -> list[PullRequestItem]:
+        # Fast-path 1: Query local radicle-httpd (default http://127.0.0.1:8080/api/v1/projects/{rid}/patches)
+        # Fast-path 2 (Offline P2P COB fallback): Run [rad_bin, "patch", "list", "--json"] with cwd=repo_path, shell=False
+        # Parses signed Collaborative Object (COB) revisions, peer DID attestations, and merge state
+        ...
+
+    def push_for_review(
+        self, repo_path: str, remote_name: str = "rad", target_branch: str = "main",
+        title: str = "", description: str = "", topic: str = "", reviewers: list[str] = (), wip: bool = False
+    ) -> str:
+        # SEC-1: Validate remote_name does not start with "-"
+        # Pushes to Radicle's magic ref `refs/patches` using git push options so no interactive $EDITOR blocks the GUI:
+        cmd = [
+            "git", "-C", repo_path, "push",
+            "-o", f"patch.message={title}",
+            *([ "-o", f"patch.message={description}" ] if description else []),
+            *([ "-o", "patch.state=draft" ] if wip else []),
+            "--", remote_name, "HEAD:refs/patches",
+        ]
+        ...
+```
+
+   - **4.4 Gerrit Code Review Adapter (`src/wrench/forge/adapters/gerrit.py` — `FR-6.8`):**
+
+```py
+class GerritAdapter:
+    provider_key = "gerrit"
+    short_code = "GR"
+    XSSI_PREFIX = b")]}'\n"
+    CHANGE_ID_RE = re.compile(r"^Change-Id:\s*(I[0-9a-f]{40})\s*$", re.M)
+    SAFE_OPT_RE = re.compile(r"^[A-Za-z0-9_.@-]+$")
+
+    @staticmethod
+    def parse_gerrit_json(raw_bytes: bytes) -> Any:
+        # OPT-8 / Zero-copy slice: strip 5-byte Gerrit XSSI guard prefix without copying full buffer
+        payload = memoryview(raw_bytes)[5:] if raw_bytes.startswith(b")]}'") else memoryview(raw_bytes)
+        return json.loads(bytes(payload))
+
+    @classmethod
+    def ensure_change_id_trailer(
+        cls, message: str, tree_oid: str, parent_oid: str, author: str, timestamp: int
+    ) -> str:
+        # CRITICAL RULE: If message already contains Change-Id: I<40-hex>, preserve it verbatim for Amend!
+        if cls.CHANGE_ID_RE.search(message):
+            return message
+        seed = f"tree {tree_oid}\nparent {parent_oid}\nauthor {author} {timestamp}\n\n{message}".encode("utf-8")
+        digest = hashlib.sha1(seed).hexdigest()
+        return message.rstrip() + f"\n\nChange-Id: I{digest}\n"
+
+    @classmethod
+    def format_review_push_refspec(
+        cls, target_branch: str, topic: str = "", reviewers: list[str] = (), wip: bool = False
+    ) -> str:
+        if not cls.SAFE_OPT_RE.match(target_branch):
+            raise ValueError(f"Unsafe Gerrit target branch: {target_branch}")
+        opts: list[str] = []
+        if topic:
+            if not cls.SAFE_OPT_RE.match(topic):
+                raise ValueError(f"Unsafe Gerrit topic: {topic}")
+            opts.append(f"topic={topic}")
+        for rev in reviewers:
+            if not cls.SAFE_OPT_RE.match(rev):
+                raise ValueError(f"Unsafe Gerrit reviewer: {rev}")
+            opts.append(f"r={rev}")
+        if wip:
+            opts.append("wip")
+        suffix = ("%" + ",".join(opts)) if opts else ""
+        return f"HEAD:refs/for/{target_branch}{suffix}"
+```
+
+   - **4.5 SourceHut (`sr.ht`) GraphQL & Mailing-List Adapter (`src/wrench/forge/adapters/sourcehut.py` — `FR-6.9`):**
+
+```py
+class SourceHutAdapter:
+    provider_key = "sourcehut"
+    short_code = "SRHT"
+
+    # Single-roundtrip GraphQL query fetching repo metadata + recent build statuses in 1 HTTP call
+    REPO_DASHBOARD_GQL = """
+    query RepoDashboard($owner: String!, $name: String!) {
+      user(username: $owner) {
+        repository(name: $name) {
+          id
+          name
+          description
+          visibility
+          head { name target }
+        }
+      }
+    }
+    """
+
+    def execute_graphql(self, service: str, query: str, variables: dict[str, Any], token: str) -> dict[str, Any]:
+        # service in ("git", "todo", "lists", "builds") -> POST https://{service}.{instance_domain}/query
+        # Uses Authorization: Bearer <API-2.0-PAT>
+        ...
+```
+
+   - **4.6 Tangled (`tangled.org`) ATProtocol Adapter (`src/wrench/forge/adapters/tangled.py` — `FR-6.10`):**
+
+```py
+class TangledAdapter:
+    provider_key = "tangled"
+    short_code = "TG"
+    LEXICON_PULL = "sh.tangled.repo.pull"
+    LEXICON_ISSUE = "sh.tangled.repo.issue"
+    LEXICON_PIPELINE = "sh.tangled.pipeline"
+
+    def resolve_handle_and_knot(self, handle_or_did: str, repo_name: str) -> tuple[str, str]:
+        # 1. Check SQLite LRU table `tangled_knot_cache(handle_or_did, repo_name)` (TTL 3600s)
+        # 2. On cache miss, resolve handle -> DID via XRPC GET /xrpc/com.atproto.identity.resolveHandle
+        #    and resolve the repository's hosting Knot server URL (e.g. knot1.tangled.sh or self-hosted knot)
+        ...
+
+    def list_pull_requests(self, handle_or_did: str, repo_name: str) -> list[PullRequestItem]:
+        # Queries Tangled AppView / XRPC records for collection="sh.tangled.repo.pull"
+        # Preserves round-based patch revisions and Jujutsu/Git Change-ID stack parent links
+        ...
+
+    def list_spindle_ci_runs(self, handle_or_did: str, repo_name: str, commit_sha: str) -> list[CIStatusItem]:
+        # Queries Spindle Nix CI pipeline status records (collection="sh.tangled.pipeline") when tangled.spindle_ci.enabled is True
+        ...
+```
+
+- **Completion Gate:** `pytest tests/forge/test_extended_forges_vp26.py tests/meta/test_no_shortcuts_guard.py`
+
+### Step 2 — Build `src/wrench/ui/dialogs/forge_review_push_dialog.py` & Wire `ChangesTab`, `PRReviewOverlay`, and `CommitGraphWidget`
+
+1. Create `src/wrench/ui/dialogs/forge_review_push_dialog.py` (`ForgeReviewPushDialog(QDialog)`, `ui-planning.md §6.27`) adapting its form controls to the active remote's forge capability:  
+   - **Gerrit mode (`GR`):** Target branch combo, `Topic` input, `Reviewers` / `CC` pill completer, `WIP` checkbox, `Change-Id` verification badge, and `CliCommandPreviewBar` (`$ git push origin HEAD:refs/for/main%topic=...`).  
+   - **Radicle mode (`RAD`):** Patch Title, Patch Description, Base branch, and `CliCommandPreviewBar` (`$ git push rad -o patch.message=... HEAD:refs/patches`).  
+   - **SourceHut mode (`SRHT`):** Target mailing list (`~owner/devel@lists.sr.ht`), patch version prefix (`PATCH v2`), cover letter editor, and `Send Patch Series` action.  
+   - **Tangled / Codeberg / Azure Repos mode (`TG`, `CB`, `AZ`):** Target branch, stacked PR / round selector, Azure Work Item link picker, and 1-click `Push & Create/Update PR`.  
+2. In `src/wrench/ui/tabs/changes_tab.py`:  
+   - Add the `[Change-Id: Auto ✓]` indicator pill (visible when a Gerrit remote is active and `gerrit.auto_insert_change_id` is `True`).  
+   - Add `"Push for Review (Gerrit refs/for / Radicle Patch / SourceHut List)..."` to the Push split-button.  
+3. In `src/wrench/ui/widgets/pr_review_overlay.py` (`§6.18`):  
+   - Render the Gerrit `Code-Review (-2..+2)` / `Verified (-1..+1)` voting bar and `Patchset PS1..PSN` selector when viewing a Gerrit change, or the Azure Repos 5-state vote selector when viewing an Azure PR.  
+4. In `src/wrench/ui/commit_graph/graph_widget.py` (`§4.2.5`):  
+   - Support all 11 forge short codes (`GH`, `GL`, `CB`, `FG`, `BB`, `SF`, `AZ`, `RAD`, `GR`, `SRHT`, `TG`) in collapsed mirror pills (`[🌐 main · GH · CB · RAD · TG ✓]`).  
+- **Completion Gate:** `pytest tests/ui/test_forge_review_push_ui.py tests/meta/test_no_shortcuts_guard.py`
+
+### Forbidden Decisions for Lower-Tier Models
+
+- DO NOT push directly to `refs/heads/<branch>` on a Gerrit remote when the user clicks `"Push for Review"`; always push to `refs/for/<branch>`.  
+- DO NOT generate a brand-new `Change-Id` when amending a commit that already contains a `Change-Id: I...` line in its footer; always preserve the existing `Change-Id` so Gerrit updates the existing change with a new patchset instead of creating a duplicate change.  
+- DO NOT allow unvalidated characters in Gerrit `%topic=` or `%r=` push options (`SEC-1`).
+
+### Acceptance Check
+
+- [ ] All 6 new platforms (`Codeberg`, `Azure Repos`, `Radicle`, `Gerrit`, `SourceHut`, `Tangled`) appear in `SettingsDialog -> Forges & CI` (`Ctrl+,`), can be individually toggled off with zero background/UI overhead, resolve cleanly in the 5-stage Mirror Resolver (`VP-25`), and pass `pytest tests/forge/test_extended_forges_vp26.py tests/ui/test_forge_review_push_ui.py tests/meta/test_no_shortcuts_guard.py`.
+
+## Master Sequential Checklist (`VP-0` – `VP-26`)
 
 - [ ] **VP-0.1:** Create `src/wrench/storage/settings_registry.py` with `SettingSpec`, SQLite tables (`global_settings`, `repo_settings_overrides`), and `DEFAULT_SETTING_SPECS` for all v1 features.  
 - [ ] **VP-0.2:** Wire all v1 modules (`inotify_watcher.py`, `forge/registry.py`, `snapshots.py`, `history_tab.py`, `changes_tab.py`) to obey `SettingsRegistry` with zero-overhead short-circuiting when disabled.  
@@ -1758,4 +1896,8 @@ Modify existing v1 modules to obey `SettingsRegistry`:
 - [ ] **VP-24.2:** Build lazy-indexed `help_center_dialog.py` (`F1`, `§6.25`) with validated `wrench://open-setting` and `wrench://highlight-ui` action links.  
 - [ ] **VP-25.1:** Register `VP-25` mirror settings and implement 5-stage `mirror_ops.py` \+ `mirror_resolver.py` (`blake2b` ref-digest cache `OPT-7`, root-OID fingerprinting, parallel `ls-remote`, and `120s` circuit breaker).  
 - [ ] **VP-25.2:** Upgrade `CommitGraphWidget` (`§4.2.5`) with combined multi-mirror DAG walk, collapsed `[🌐 branch · GH · GL ✓]` pills, amber drift badges, and cross-forge CI aggregation.  
-- [ ] **VP-25.3:** Build `mirror_manager_dialog.py` (`§6.26`) Mirror Sync Matrix and parallel `push_to_all_mirrors_parallel` orchestrator.
+- [ ] **VP-25.3:** Build `mirror_manager_dialog.py` (`§6.26`) Mirror Sync Matrix and parallel `push_to_all_mirrors_parallel` orchestrator.  
+- [ ] **VP-26.1:** Register `VP-26` settings (`forge.codeberg.enabled`, `forge.azure_repos.enabled`, `forge.radicle.enabled`, `forge.gerrit.enabled`, `forge.sourcehut.enabled`, `forge.tangled.enabled`, and sub-keys) and extend `security_sanitizer.py` (`rad://` RID & Gerrit push-option validation).  
+- [ ] **VP-26.2:** Implement `codeberg.py`, `azure_repos.py` (REST v7.1 \+ 5-state votes \+ Work Items), `radicle.py` (`rad://`, `refs/patches`, signed COBs), `gerrit.py` (`/a/changes/` zero-copy XSSI slice, `refs/for/`, `Change-Id` hook, `-2..+2` label voting), `sourcehut.py` (`sr.ht` batched GraphQL \+ `lists.sr.ht` patches), and `tangled.py` (`atproto` Knots \+ Spindle Nix CI).  
+- [ ] **VP-26.3:** Register all 11 forge short codes (`GH`, `GL`, `CB`, `FG`, `BB`, `SF`, `AZ`, `RAD`, `GR`, `SRHT`, `TG`) in `mirror_resolver.py` (`VP-25`) and `CommitGraphWidget` (`§4.2.5`).  
+- [ ] **VP-26.4:** Build `forge_review_push_dialog.py` (`§6.27`), Gerrit `Change-Id` pill in `ChangesTab`, Radicle node status pill, and Gerrit/Azure voting controls in `PRReviewOverlayWidget` (`§6.18`).

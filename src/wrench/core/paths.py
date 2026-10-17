@@ -20,3 +20,8 @@ def config_dir() -> Path:
 def state_dir() -> Path:
     """Where Wrench stores runtime state (log files, etc)."""
     return Path(platformdirs.user_state_dir(APP_NAME))
+
+
+def cache_dir() -> Path:
+    """Where Wrench stores cache data (downloaded avatars, temp diffs)."""
+    return Path(platformdirs.user_cache_dir(APP_NAME))

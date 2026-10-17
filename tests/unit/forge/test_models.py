@@ -105,3 +105,57 @@ def test_forge_account_model():
 
     with pytest.raises(FrozenInstanceError):
         acc.label = "Other"  # type: ignore[misc]
+
+
+def test_pull_request_avatar_url_field():
+    pr_default = PullRequest(
+        id="1",
+        title="T",
+        description="D",
+        source_branch="b1",
+        target_branch="b2",
+        state="open",
+        url="https://example.com/pr/1",
+        author="alice",
+        created_at="2026-09-23T12:00:00Z",
+    )
+    assert pr_default.author_avatar_url is None
+
+    pr_with_avatar = PullRequest(
+        id="2",
+        title="T2",
+        description="D2",
+        source_branch="b1",
+        target_branch="b2",
+        state="open",
+        url="https://example.com/pr/2",
+        author="bob",
+        created_at="2026-09-23T12:00:00Z",
+        author_avatar_url="https://example.com/avatars/bob.png",
+    )
+    assert pr_with_avatar.author_avatar_url == "https://example.com/avatars/bob.png"
+
+
+def test_issue_avatar_url_field():
+    issue_default = Issue(
+        id="1",
+        title="I",
+        description="D",
+        state="open",
+        url="https://example.com/issue/1",
+        author="alice",
+        created_at="2026-09-23T12:00:00Z",
+    )
+    assert issue_default.author_avatar_url is None
+
+    issue_with_avatar = Issue(
+        id="2",
+        title="I2",
+        description="D2",
+        state="open",
+        url="https://example.com/issue/2",
+        author="bob",
+        created_at="2026-09-23T12:00:00Z",
+        author_avatar_url="https://example.com/avatars/bob.png",
+    )
+    assert issue_with_avatar.author_avatar_url == "https://example.com/avatars/bob.png"

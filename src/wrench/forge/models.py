@@ -16,6 +16,7 @@ class PullRequest:
     url: str  # Web URL for browser deep linking
     author: str  # Username / display name
     created_at: str  # ISO 8601 UTC timestamp
+    author_avatar_url: str | None = None  # Phase 4.4 trailing field with default
 
 
 @dataclass(frozen=True, slots=True)
@@ -29,6 +30,7 @@ class Issue:
     url: str
     author: str
     created_at: str
+    author_avatar_url: str | None = None  # Phase 4.4 trailing field with default
 
 
 @dataclass(frozen=True, slots=True)

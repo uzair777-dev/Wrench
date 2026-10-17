@@ -33,6 +33,7 @@ from wrench.storage import db, forge_accounts
 from wrench.ui.forge_panel.badges import paint_issue_state_badge
 from wrench.ui.forge_panel.error_banner import ForgeErrorBanner
 from wrench.ui.theme import is_dark_theme
+from wrench.ui.widgets.avatar import get_avatar_loader
 from wrench.ui.workers import run_in_background
 
 logger = logging.getLogger(__name__)
@@ -121,6 +122,13 @@ class IssueTableModel(QAbstractTableModel):
                 return int(Qt.AlignCenter)
             return int(Qt.AlignLeft | Qt.AlignVCenter)
 
+        if role == Qt.DecorationRole and col == 2:
+            loader = get_avatar_loader()
+            is_dark = is_dark_theme(self.parent()) if self.parent() else False
+            return loader.get_avatar(
+                issue.author_avatar_url, issue.author, size=24, is_dark=is_dark
+            )
+
         return None
 
 
@@ -192,6 +200,7 @@ class IssueListTab(QWidget):
         self.table_model = IssueTableModel(self)
         self.table_view.setModel(self.table_model)
         self.table_view.setItemDelegateForColumn(3, IssueStateDelegate(self))
+        get_avatar_loader().avatar_ready.connect(lambda *_: self.table_view.viewport().update())
 
         self.table_view.setSelectionBehavior(QTableView.SelectRows)
         self.table_view.setSelectionMode(QTableView.SingleSelection)

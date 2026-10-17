@@ -306,6 +306,8 @@ class TestPRDetailTab:
             detail.show()
 
             assert "#101: Add feature A" in detail.title_label.text()
+            assert hasattr(detail, "avatar_widget")
+            assert detail.avatar_widget._name_or_email == "bob"
             assert detail.state_badge.text() == "Open"
             assert "origin · Github" in detail.remote_badge.text()
             assert "4/4 checks passed" in detail.ci_desc_label.text()
@@ -358,6 +360,8 @@ class TestIssueTabs:
             qtbot.addWidget(detail)
             detail.show()
             assert "#1: Crash on startup" in detail.title_label.text()
+            assert hasattr(detail, "avatar_widget")
+            assert detail.avatar_widget._name_or_email == "dave"
             assert detail.state_badge.text() == "Open"
             assert "Full issue description" in detail.desc_viewer.toPlainText()
 

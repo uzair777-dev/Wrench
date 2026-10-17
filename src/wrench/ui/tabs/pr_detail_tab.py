@@ -23,6 +23,7 @@ from wrench.storage import db, forge_accounts
 from wrench.ui.forge_panel.badges import CIIconWidget, PRStateBadge, RemoteBadge
 from wrench.ui.forge_panel.review_dialog import SubmitReviewDialog
 from wrench.ui.theme import get_banner_style, is_dark_theme
+from wrench.ui.widgets.avatar import AvatarWidget
 from wrench.ui.workers import run_in_background
 
 logger = logging.getLogger(__name__)
@@ -79,8 +80,12 @@ class PRDetailTab(QWidget):
         header_layout = QHBoxLayout()
         header_layout.setSpacing(8)
 
+        self.avatar_widget = AvatarWidget(size=40, parent=self)
+        header_layout.addWidget(self.avatar_widget)
+
         self.title_label = QLabel(f"Loading Pull Request #{self.pr_id}…", self)
         self.title_label.setStyleSheet("font-size: 16px; font-weight: bold;")
+
         self.title_label.setWordWrap(True)
         header_layout.addWidget(self.title_label, 1)
 
@@ -227,7 +232,9 @@ class PRDetailTab(QWidget):
             return
 
         self._pr = target_pr
+        self.avatar_widget.set_avatar(target_pr.author_avatar_url, target_pr.author)
         self.title_label.setText(f"#{target_pr.id}: {target_pr.title}")
+
         self.state_badge.set_state(target_pr.state)
         created = target_pr.created_at[:10] if target_pr.created_at else "Unknown date"
         self.meta_label.setText(

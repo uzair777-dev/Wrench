@@ -20,6 +20,7 @@ from wrench.forge.registry import get_adapter_for_account
 from wrench.storage import db, forge_accounts
 from wrench.ui.forge_panel.badges import IssueStateBadge, RemoteBadge
 from wrench.ui.theme import get_banner_style, is_dark_theme
+from wrench.ui.widgets.avatar import AvatarWidget
 from wrench.ui.workers import run_in_background
 
 logger = logging.getLogger(__name__)
@@ -74,8 +75,12 @@ class IssueDetailTab(QWidget):
         header_layout = QHBoxLayout()
         header_layout.setSpacing(8)
 
+        self.avatar_widget = AvatarWidget(size=40, parent=self)
+        header_layout.addWidget(self.avatar_widget)
+
         self.title_label = QLabel(f"Loading Issue #{self.issue_id}…", self)
         self.title_label.setStyleSheet("font-size: 16px; font-weight: bold;")
+
         self.title_label.setWordWrap(True)
         header_layout.addWidget(self.title_label, 1)
 
@@ -178,7 +183,9 @@ class IssueDetailTab(QWidget):
 
     def _on_issue_loaded(self, issue: Issue) -> None:
         self._issue = issue
+        self.avatar_widget.set_avatar(issue.author_avatar_url, issue.author)
         self.title_label.setText(f"#{issue.id}: {issue.title}")
+
         self.state_badge.set_state(issue.state)
 
         created = issue.created_at[:10] if issue.created_at else "Unknown date"

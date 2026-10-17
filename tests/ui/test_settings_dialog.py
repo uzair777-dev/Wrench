@@ -209,3 +209,23 @@ def test_main_window_preferences_action_exists(main_window):
     assert hasattr(main_window, "act_preferences")
     assert main_window.act_preferences.text() == "&Preferences…"
     assert main_window.act_preferences.shortcut().toString() in ("Ctrl+,", "Ctrl+Comma")
+
+
+def test_appearance_page_gravatar_toggle(main_window, db_conn):
+    dlg = SettingsDialog(main_window=main_window, parent=main_window)
+    page: AppearancePage = dlg.pages[0]
+
+    # Default is unchecked / False
+    assert not page.gravatar_cb.isChecked()
+    assert not main_window._is_gravatar_enabled()
+
+    # Toggle On
+    page.gravatar_cb.setChecked(True)
+    assert main_window._is_gravatar_enabled()
+    assert settings.get_setting(db_conn, "ui.avatars_gravatar") == "true"
+
+    # Toggle Off
+    page.gravatar_cb.setChecked(False)
+    assert not main_window._is_gravatar_enabled()
+    assert settings.get_setting(db_conn, "ui.avatars_gravatar") == "false"
+    dlg.close()

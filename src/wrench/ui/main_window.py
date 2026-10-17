@@ -620,7 +620,17 @@ class MainWindow(QMainWindow):
         if hasattr(self, "history_tab"):
             self.history_tab.refresh_theme()
 
+    def _is_gravatar_enabled(self) -> bool:
+        """Returns True if user opted into gravatar commit avatars (default False)."""
+        val = settings.get_setting(self._conn, "ui.avatars_gravatar")
+        return val == "true"
+
+    def _set_avatars_gravatar(self, enabled: bool) -> None:
+        """Single-source setter for Gravatar privacy toggle."""
+        settings.set_setting(self._conn, "ui.avatars_gravatar", "true" if enabled else "false")
+
     def changeEvent(self, event: QEvent) -> None:
+
         super().changeEvent(event)
         if event.type() in (
             QEvent.PaletteChange,

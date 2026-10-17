@@ -105,6 +105,23 @@ class AppearancePage(SettingsPage):
         preview_layout.addWidget(self.preview_strip)
         layout.addWidget(preview_group)
 
+        # Gravatar privacy opt-in
+        gravatar_group = QGroupBox(self.tr("Commit Avatars"), self)
+        gravatar_layout = QVBoxLayout(gravatar_group)
+        self.gravatar_cb = QCheckBox(
+            self.tr("Fetch commit author avatars via Gravatar"), gravatar_group
+        )
+        self.gravatar_cb.setToolTip(
+            self.tr(
+                "When enabled, author emails are hashed (MD5) and sent to gravatar.com "
+                "to display profile pictures in the History detail panel. "
+                "Disabled by default for privacy."
+            )
+        )
+        self.gravatar_cb.toggled.connect(self._on_gravatar_toggled)
+        gravatar_layout.addWidget(self.gravatar_cb)
+        layout.addWidget(gravatar_group)
+
         layout.addStretch()
 
     def load(self) -> None:
@@ -117,6 +134,9 @@ class AppearancePage(SettingsPage):
         else:
             self.radio_auto.setChecked(True)
         self.radio_group.blockSignals(False)
+        self.gravatar_cb.blockSignals(True)
+        self.gravatar_cb.setChecked(self.main_window._is_gravatar_enabled())
+        self.gravatar_cb.blockSignals(False)
         self.preview_strip.update()
 
     def _on_theme_changed(self, button_id: int) -> None:
@@ -124,6 +144,9 @@ class AppearancePage(SettingsPage):
         mode = mode_map.get(button_id, "auto")
         self.main_window._set_theme(mode)
         self.preview_strip.update()
+
+    def _on_gravatar_toggled(self, checked: bool) -> None:
+        self.main_window._set_avatars_gravatar(checked)
 
 
 class TokenPreviewStrip(QWidget):

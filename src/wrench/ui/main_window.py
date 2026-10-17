@@ -140,7 +140,9 @@ class MainWindow(QMainWindow):
 
         # 2. History tab (Index 1, closable)
         self.history_tab = HistoryTab(self)
+        self.history_tab.detail_panel._conn = self._conn
         self.history_tab.rebase_requested.connect(self._on_history_rebase)
+
         self.history_tab.merge_requested.connect(self._on_history_merge)
         self.history_tab.create_branch_requested.connect(self._on_history_create_branch)
         self.history_tab.create_tag_requested.connect(self._on_history_create_tag)

@@ -19,8 +19,10 @@ from PySide6.QtWidgets import (
 
 from wrench.core import engine
 from wrench.core.engine import Commit, FileStat, RepoHandle
+from wrench.storage import settings
 from wrench.ui.diff_view.diff_widget import DiffWidget
 from wrench.ui.theme import COMMIT_STAT_COLORS, get_badge_colors, is_dark_theme
+from wrench.ui.widgets.avatar import AvatarWidget, get_gravatar_url
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +35,7 @@ class CommitDetailPanel(QWidget):
         self._repo: RepoHandle | None = None
         self._current_commit: Commit | None = None
         self._file_stats: list[FileStat] = []
+        self._conn = None
 
         self._init_ui()
 
@@ -59,6 +62,10 @@ class CommitDetailPanel(QWidget):
         meta_top.addWidget(self.copy_sha_btn)
 
         meta_top.addStretch()
+
+        self.avatar_widget = AvatarWidget(size=24, parent=self)
+        self.avatar_widget.setVisible(False)
+        meta_top.addWidget(self.avatar_widget)
 
         self.author_date_label = QLabel("-", self)
         self.author_date_label.setStyleSheet("color: palette(placeholder-text);")
@@ -164,6 +171,7 @@ class CommitDetailPanel(QWidget):
     def set_commit(self, commit: Commit | None):
         self._current_commit = commit
         if not commit or not self._repo:
+            self.avatar_widget.setVisible(False)
             self.sha_label.setText("SHA: -")
             self.author_date_label.setText("-")
             self.message_edit.clear()
@@ -173,7 +181,33 @@ class CommitDetailPanel(QWidget):
             )
             return
 
+        # Check Gravatar opt-in
+        is_gravatar_on = False
+        conn = getattr(self, "_conn", None)
+        if conn:
+            is_gravatar_on = settings.get_setting(conn, "ui.avatars_gravatar") == "true"
+        else:
+            try:
+                from wrench.storage import db
+
+                c = db.get_connection()
+                try:
+                    is_gravatar_on = settings.get_setting(c, "ui.avatars_gravatar") == "true"
+                finally:
+                    c.close()
+            except Exception:
+                is_gravatar_on = False
+
+        url = (
+            get_gravatar_url(commit.author_email, size=48)
+            if (is_gravatar_on and commit.author_email)
+            else None
+        )
+        self.avatar_widget.setVisible(True)
+        self.avatar_widget.set_avatar(url, commit.author_name or commit.author_email)
+
         self.sha_label.setText(f"SHA: {commit.sha[:8]} ({commit.sha})")
+
         self.author_date_label.setText(
             f"{commit.author_name} <{commit.author_email}> on {commit.author_date}"
         )

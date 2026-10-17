@@ -209,3 +209,45 @@ class TestHistoryTab:
         graph.horizontalScrollBar().setValue(0)
         assert graph.graph_scrollbar.x() == initial_x
         assert graph.graph_scrollbar.isVisible() is True
+
+
+def test_commit_detail_panel_gravatar_privacy_gate():
+    import sqlite3
+    from unittest.mock import MagicMock, patch
+
+    from wrench.core.engine import Commit
+    from wrench.storage import db, settings
+    from wrench.ui.commit_graph.detail_panel import CommitDetailPanel
+
+    conn = sqlite3.connect(":memory:")
+    db.run_migrations(conn)
+
+    panel = CommitDetailPanel()
+    panel._conn = conn
+    panel._repo = MagicMock()  # Satisfy repo guard in set_commit
+
+    commit = Commit(
+        sha="abc1234",
+        message="Msg",
+        author_name="Author",
+        author_email="author@example.com",
+        author_date="2026-09-23",
+        parent_shas=["p"],
+    )
+
+    with patch("wrench.core.engine.get_commit_file_stats", return_value=[]):
+        # Case 1: Gravatar OFF (default) -> url passed to avatar must be None (initials only)
+        with patch.object(panel.avatar_widget, "set_avatar") as mock_set:
+            panel.set_commit(commit)
+            assert mock_set.call_count == 1
+            args = mock_set.call_args[0]
+            assert args[0] is None  # NO Gravatar URL when setting is off
+
+        # Case 2: Gravatar ON -> url passed to avatar is gravatar URL
+        settings.set_setting(conn, "ui.avatars_gravatar", "true")
+        with patch.object(panel.avatar_widget, "set_avatar") as mock_set:
+            panel.set_commit(commit)
+            assert mock_set.call_count == 1
+            args = mock_set.call_args[0]
+            assert args[0] is not None
+            assert "gravatar.com/avatar/" in args[0]

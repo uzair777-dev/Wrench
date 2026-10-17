@@ -2762,10 +2762,10 @@ Flattened, in strict execution order, across every phase — the literal path th
 - [x] 4.3.6 **CHECK**: round-trip + menu↔dialog sync tests; both test gates green; keyboard-only page walkthrough; theme-flip retro-check with Accounts + Merge dialogs open; `phase-4.3.md` reproduces both inventories
 
 **Phase 4.4 — Forge Avatars** *(prerequisites: 4.3.6 checked)*
-- [ ] 4.4.1 avatar fields pinned from fixtures/docs; `author_avatar_url` mapped in all four adapters; zero pre-existing constructor call sites broken
-- [ ] 4.4.2 `core/paths.py::cache_dir()` + `ui/widgets/avatar.py` AvatarLoader — initials-first, sha256 disk cache (7-day TTL), in-flight dedup, silent failure, GUI-thread decode, 24/40/64 buckets
-- [ ] 4.4.3 integrations: PR/issue rows + detail headers, commit-box account button (`get_avatar_url()` optional-method pattern + `account.{id}.avatar_url` persisted at link time), history detail panel author row via gravatar behind default-OFF `ui.avatars_gravatar` with privacy tooltip
-- [ ] 4.4.4 **CHECK**: cache/TTL/dedup/corrupt tests green; gravatar-off ⇒ zero fetches; manual QA — initials→swap-in, airplane-mode initials everywhere, no error UI
+- [x] 4.4.1 avatar fields pinned from fixtures/docs; `author_avatar_url` mapped in all four adapters; zero pre-existing constructor call sites broken
+- [x] 4.4.2 `core/paths.py::cache_dir()` + `ui/widgets/avatar.py` AvatarLoader — initials-first, sha256 disk cache (7-day TTL), in-flight dedup, silent failure, GUI-thread decode, 24/40/64 buckets
+- [x] 4.4.3 integrations: PR/issue rows + detail headers, commit-box account button (`get_avatar_url()` optional-method pattern + `account.{id}.avatar_url` persisted at link time), history detail panel author row via gravatar behind default-OFF `ui.avatars_gravatar` with privacy tooltip
+- [x] 4.4.4 **CHECK**: cache/TTL/dedup/corrupt tests green; gravatar-off ⇒ zero fetches; manual QA — initials→swap-in, airplane-mode initials everywhere, no error UI
 
 **Phase 4.5 — Multi-Repository Directory Discovery** *(prerequisites: 4.4.4 checked)*
 - [ ] 4.5.1 `core/discovery.py` — bounded cancellable walk (depth 3, dot-dirs skipped, symlinks unfollowed, prune at repo roots, `.git` file-or-directory counts, permission errors skipped-and-counted); façade re-export

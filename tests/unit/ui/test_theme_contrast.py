@@ -154,3 +154,14 @@ def test_ci_status_tokens_contrast():
         assert (
             ratio_d >= 4.5
         ), f"Dark CI status '{kind}' ({dark_col}) failed contrast: {ratio_d:.2f} < 4.5"
+
+
+def test_avatar_bg_tokens_contrast():
+    from wrench.ui.theme import AVATAR_BG_COLORS, get_avatar_fg_color
+
+    for mode in ("light", "dark"):
+        text_hex = get_avatar_fg_color(is_dark=(mode == "dark"))
+        for bg_hex in AVATAR_BG_COLORS[mode]:
+            # WCAG large/decorative text ratio >= 3.0:1
+            ratio = contrast_ratio(bg_hex, text_hex)
+            assert ratio >= 3.0, f"Contrast {ratio:.2f}:1 too low for avatar {bg_hex} in {mode}"

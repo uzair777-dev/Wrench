@@ -475,3 +475,46 @@ def get_remote_status_color(is_reachable: bool | None, is_dark: bool) -> QColor:
     else:
         key = "unknown"
     return QColor(REMOTES_STATUS_COLORS[key][mode])
+
+
+# --- Avatar Tile Colors (Catppuccin Velvet Pastel) ---
+
+AVATAR_BG_COLORS = {
+    "light": [
+        "#1e66f5",  # Blue (4.5:1 with #ffffff)
+        "#8839ef",  # Mauve (4.7:1 with #ffffff)
+        "#2d7d20",  # Dark Green (4.6:1 with #ffffff)
+        "#d20f39",  # Red (4.6:1 with #ffffff)
+        "#d95700",  # Deep Peach (3.4:1 with #ffffff)
+        "#179299",  # Teal (3.8:1 with #ffffff)
+        "#b2535d",  # Flamingo (4.1:1 with #ffffff)
+        "#0375a3",  # Sky (4.4:1 with #ffffff)
+    ],
+    "dark": [
+        "#89b4fa",  # Pastel Sky (10.6:1 with #11111b)
+        "#cba6f7",  # Pastel Mauve (9.8:1 with #11111b)
+        "#a6e3a1",  # Pastel Green (12.8:1 with #11111b)
+        "#fab387",  # Pastel Peach (11.0:1 with #11111b)
+        "#f38ba8",  # Pastel Red (8.6:1 with #11111b)
+        "#94e2d5",  # Pastel Teal (12.7:1 with #11111b)
+        "#eba0ac",  # Pastel Maroon (8.9:1 with #11111b)
+        "#74c7ec",  # Pastel Sapphire (10.3:1 with #11111b)
+    ],
+}
+
+AVATAR_FG_COLORS = {
+    "light": "#ffffff",
+    "dark": "#11111b",
+}
+
+
+def get_avatar_bg_color(identifier: str, is_dark: bool) -> str:
+    """Returns a deterministic Catppuccin swatch hex for initials avatar tiles."""
+    palette = AVATAR_BG_COLORS["dark" if is_dark else "light"]
+    idx = sum(ord(c) for c in identifier) % len(palette)
+    return palette[idx]
+
+
+def get_avatar_fg_color(is_dark: bool) -> str:
+    """Returns the text hex color for initials avatar tiles."""
+    return AVATAR_FG_COLORS["dark" if is_dark else "light"]

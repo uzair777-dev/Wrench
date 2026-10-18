@@ -132,12 +132,12 @@ def test_merge_mode_tokens_contrast():
         dark_col = MERGE_MODE_COLORS["dark"][mode]
         ratio_l = contrast_ratio(light_col, light_win)
         ratio_d = contrast_ratio(dark_col, dark_win)
-        assert ratio_l >= 4.5, (
-            f"Light merge mode '{mode}' ({light_col}) failed contrast: {ratio_l:.2f} < 4.5"
-        )
-        assert ratio_d >= 4.5, (
-            f"Dark merge mode '{mode}' ({dark_col}) failed contrast: {ratio_d:.2f} < 4.5"
-        )
+        assert (
+            ratio_l >= 4.5
+        ), f"Light merge mode '{mode}' ({light_col}) failed contrast: {ratio_l:.2f} < 4.5"
+        assert (
+            ratio_d >= 4.5
+        ), f"Dark merge mode '{mode}' ({dark_col}) failed contrast: {ratio_d:.2f} < 4.5"
 
 
 def test_ci_status_tokens_contrast():
@@ -148,12 +148,12 @@ def test_ci_status_tokens_contrast():
     for kind, (_sym, light_col, dark_col, _desc) in CI_STATUS_CONFIG.items():
         ratio_l = contrast_ratio(light_col, light_win)
         ratio_d = contrast_ratio(dark_col, dark_win)
-        assert ratio_l >= 4.5, (
-            f"Light CI status '{kind}' ({light_col}) failed contrast: {ratio_l:.2f} < 4.5"
-        )
-        assert ratio_d >= 4.5, (
-            f"Dark CI status '{kind}' ({dark_col}) failed contrast: {ratio_d:.2f} < 4.5"
-        )
+        assert (
+            ratio_l >= 4.5
+        ), f"Light CI status '{kind}' ({light_col}) failed contrast: {ratio_l:.2f} < 4.5"
+        assert (
+            ratio_d >= 4.5
+        ), f"Dark CI status '{kind}' ({dark_col}) failed contrast: {ratio_d:.2f} < 4.5"
 
 
 def test_avatar_bg_tokens_contrast():
@@ -290,12 +290,12 @@ def test_merge_mode_tokens_contrast():
         dark_col = MERGE_MODE_COLORS["dark"][mode]
         ratio_l = contrast_ratio(light_col, light_win)
         ratio_d = contrast_ratio(dark_col, dark_win)
-        assert ratio_l >= 4.5, (
-            f"Light merge mode '{mode}' ({light_col}) failed contrast: {ratio_l:.2f} < 4.5"
-        )
-        assert ratio_d >= 4.5, (
-            f"Dark merge mode '{mode}' ({dark_col}) failed contrast: {ratio_d:.2f} < 4.5"
-        )
+        assert (
+            ratio_l >= 4.5
+        ), f"Light merge mode '{mode}' ({light_col}) failed contrast: {ratio_l:.2f} < 4.5"
+        assert (
+            ratio_d >= 4.5
+        ), f"Dark merge mode '{mode}' ({dark_col}) failed contrast: {ratio_d:.2f} < 4.5"
 
 
 def test_ci_status_tokens_contrast():
@@ -306,9 +306,9 @@ def test_ci_status_tokens_contrast():
     for kind, (_sym, light_col, dark_col, _desc) in CI_STATUS_CONFIG.items():
         ratio_l = contrast_ratio(light_col, light_win)
         ratio_d = contrast_ratio(dark_col, dark_win)
-        assert ratio_l >= 4.5, (
-            f"Light CI status '{kind}' ({light_col}) failed contrast: {ratio_l:.2f} < 4.5"
-        )
-        assert ratio_d >= 4.5, (
-            f"Dark CI status '{kind}' ({dark_col}) failed contrast: {ratio_d:.2f} < 4.5"
-        )
+        assert (
+            ratio_l >= 4.5
+        ), f"Light CI status '{kind}' ({light_col}) failed contrast: {ratio_l:.2f} < 4.5"
+        assert (
+            ratio_d >= 4.5
+        ), f"Dark CI status '{kind}' ({dark_col}) failed contrast: {ratio_d:.2f} < 4.5"

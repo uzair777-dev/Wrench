@@ -722,9 +722,9 @@ class TestAccountsDialogThemeLegibility:
         assisted_page = dlg._stack.widget(1)
         for lbl in assisted_page.findChildren(QLabel):
             sheet = lbl.styleSheet()
-            assert "color: palette(mid)" not in sheet, (
-                f"Found unreadable color: palette(mid) on {lbl.text()}"
-            )
+            assert (
+                "color: palette(mid)" not in sheet
+            ), f"Found unreadable color: palette(mid) on {lbl.text()}"
 
 
 class TestAccountsDialogAvatarSupport:
@@ -1451,6 +1451,6 @@ class TestAccountsDialogThemeLegibility:
         assisted_page = dlg._stack.widget(1)
         for lbl in assisted_page.findChildren(QLabel):
             sheet = lbl.styleSheet()
-            assert "color: palette(mid)" not in sheet, (
-                f"Found unreadable color: palette(mid) on {lbl.text()}"
-            )
+            assert (
+                "color: palette(mid)" not in sheet
+            ), f"Found unreadable color: palette(mid) on {lbl.text()}"

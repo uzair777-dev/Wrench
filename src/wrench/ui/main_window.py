@@ -52,11 +52,13 @@ from wrench.core.exceptions import (
     SecretScanningRejectedError,
     SignedCommitsRequiredError,
     WorkflowScopeRequiredError,
+    WrenchRepoNotFoundError,
 )
 from wrench.core.remote_urls import host_of_instance_url, parse_remote_url
 from wrench.storage import forge_accounts, repo_registry, settings
 from wrench.storage.db import get_connection
 from wrench.ui.dialogs.accounts_dialog import AccountsDialog
+from wrench.ui.dialogs.discover_repos_dialog import DiscoverReposDialog
 from wrench.ui.dialogs.link_dialog import LinkRepoDialog
 from wrench.ui.dialogs.push_recovery_dialogs import (
     FileTooLargeDialog,
@@ -1068,12 +1070,95 @@ class MainWindow(QMainWindow):
             engine.open_repo(dir_path)
             repo_registry.add_repo(self._conn, dir_path, Path(dir_path).name)
             self.changes_tab.load_repos(select_path=dir_path)
+            return
+        except WrenchRepoNotFoundError:
+            pass  # Fall through to multi-repo directory discovery
         except Exception as e:
             QMessageBox.critical(
                 self,
                 self.tr("Open Failed"),
                 self.tr(f"'{dir_path}' is not a valid Git repository: {e}"),
             )
+            return
+
+        self._start_directory_discovery(Path(dir_path))
+
+    def _start_directory_discovery(self, root_path: Path) -> None:
+        self._discovery_cancel_event = threading.Event()
+        self.statusBar().showMessage(
+            self.tr(f"Scanning for repositories in '{root_path}'..."),
+            0,
+        )
+
+        def _on_progress(n: int) -> None:
+            self.statusBar().showMessage(
+                self.tr(f"Scanning for repositories in '{root_path}'... Found {n} so far"),
+                0,
+            )
+
+        def _scan(progress_cb=None, cancel_event=None) -> list[Path]:
+            return engine.discover_repos(
+                root_path,
+                max_depth=3,
+                cancel_event=cancel_event or self._discovery_cancel_event,
+                on_progress=progress_cb,
+            )
+
+        def _on_done(found_repos: list[Path]) -> None:
+            self.statusBar().clearMessage()
+            if not found_repos:
+                QMessageBox.information(
+                    self,
+                    self.tr("No Repositories Found"),
+                    self.tr(
+                        f"No Git repositories found under '{root_path}' "
+                        "(searched up to 3 levels deep)."
+                    ),
+                )
+                return
+
+            dlg = DiscoverReposDialog(repos=found_repos, root_dir=root_path, parent=self)
+            if dlg.exec() == QDialog.DialogCode.Accepted:
+                selected = dlg.selected_repositories()
+                added_count = 0
+                known_count = 0
+                for p in selected:
+                    p_str = str(p)
+                    rec = repo_registry.get_repo_by_path(self._conn, p_str)
+                    if rec and rec.is_missing:
+                        repo_registry.clear_missing(self._conn, rec.id)
+                        known_count += 1
+                    elif rec:
+                        known_count += 1
+                    else:
+                        repo_registry.add_repo(self._conn, p_str, p.name)
+                        added_count += 1
+
+                if selected:
+                    self.changes_tab.load_repos(select_path=str(selected[0]))
+                else:
+                    self.changes_tab.load_repos()
+
+                self.statusBar().showMessage(
+                    self.tr(f"Added {added_count} repositories ({known_count} already known)"),
+                    5000,
+                )
+
+        def _on_error(exc: Exception) -> None:
+            self.statusBar().clearMessage()
+            QMessageBox.warning(
+                self,
+                self.tr("Discovery Error"),
+                self.tr(f"Error scanning '{root_path}': {exc}"),
+            )
+
+        self._discovery_worker = run_in_background(
+            _scan,
+            cancel_event=self._discovery_cancel_event,
+            on_progress=_on_progress,
+            on_finished=_on_done,
+            on_failed=_on_error,
+        )
 
     def _on_clone_repo(self) -> None:
         url, ok = QInputDialog.getText(

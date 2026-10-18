@@ -4,6 +4,8 @@ FR-4.3 / FR-4.5: Resolves credentials via Secret Service D-Bus with host and pat
 disambiguation for multi-account support.
 """
 
+__lazy_modules__ = ["secretstorage", "platformdirs", "httpx"]
+
 import sqlite3
 import sys
 import time

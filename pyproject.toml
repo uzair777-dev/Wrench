@@ -52,6 +52,8 @@ where = ["src"]
 [tool.ruff]
 line-length = 100
 target-version = "py312"
+extend-exclude = ["src/wrench/core/lazy_demo.py"]
+force-exclude = true
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B"]
@@ -59,3 +61,4 @@ select = ["E", "F", "I", "B"]
 [tool.black]
 line-length = 100
 target-version = ["py312"]
+extend-exclude = "src/wrench/core/lazy_demo\\.py"

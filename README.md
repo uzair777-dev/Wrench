@@ -4,9 +4,9 @@
 
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](LICENSE)
 ![GitHub Repo stars](https://img.shields.io/github/stars/uzair777-dev/Wrench)
-[![Python: 3.12+](https://img.shields.io/badge/Python-3.12+-green.svg)](https://www.python.org/)
+[![Python: 3.12+ (3.15 Ready)](https://img.shields.io/badge/Python-3.12+%20(3.15%20Ready)-green.svg)](https://www.python.org/)
 [![GUI: PySide6](https://img.shields.io/badge/GUI-PySide6%20%2F%20Qt%206-informational.svg)](https://www.qt.io/)
-[![Tests: 414 passed](https://img.shields.io/badge/Tests-414%20passed-brightgreen.svg)](tests/)
+[![Tests: 525+ passed](https://img.shields.io/badge/Tests-525+%20passed-brightgreen.svg)](tests/)
 ![GitHub Actions Workflow Status](https://img.shields.io/github/actions/workflow/status/uzair777-dev/Wrench/ci.yml)
 
 ---
@@ -23,6 +23,13 @@
 
 - **Hybrid Git Core**: Fast in-memory status, diffs, and log traversal via `pygit2` (libgit2), combined with system `git` CLI execution for safe, conflict-aware write and staging operations.
 - **Dynamic Tab Navigation**: Custom hybrid tab container supporting vertical (sidebar) and horizontal (top bar) modes, pinned non-closable Changes workspace, per-repo deduplication, and fast `Ctrl+1`..`Ctrl+9` keyboard switching.
+- **Multi-Repository Directory Discovery (FR-1.12)**:
+  - Bounded (depth $\le 3$) non-blocking background scanner (`discover_repos`) with cooperative cancellation and live progress counters.
+  - Automatic branching from `_on_open_repo` when a picked folder is not a Git repo.
+  - Interactive `DiscoverReposDialog` with Select All / Deselect All, tri-state selection, worktree `.git`-file detection, symlink cycle protection, and atomic batch registry import with missing-status recovery (`clear_missing`).
+- **Explicit Lazy Imports (PEP 810) & Python 3.15 Readiness**:
+  - Python 3.15 native `lazy import <mod>` compatibility and top-of-file `__lazy_modules__` declarations minimizing cold-start overhead for heavyweight modules (`secretstorage`, `watchdog`, `platformdirs`, `httpx`).
+  - Powered by high-speed `uv` and `uvx` package management and test runners.
 - **Unified Changes Workspace**:
   - Borderless repository selector with auto-recovery for missing or relocated folders.
   - Interactive branch switcher (`🌿 main ▾` / `🔗 HEAD detached at {sha}`) with search filtering and uncommitted changes protection (`Stash & Switch`).
@@ -71,7 +78,8 @@
 | **Phase 2** | Visual Commit Graph & 3-Way Merge Tool | **Completed** | [`phase-2.md`](dev/planning/phase-2.md) |
 | **Phase 3** | Remote Operations, Push/Pull & Credential Helper | **Completed** | [`phase-3.md`](dev/planning/phase-3.md) |
 | **Phase 4** | Multi-Forge Integration (GitHub, GitLab, Forgejo, Bitbucket) | **Completed** | [`phase-4.md`](dev/planning/phase-4.md) |
-| **Phase 4.5** | Multi-Repository Directory Discovery | *Next in line* | [`implementation-plan.md`](dev/planning/implementation-plan.md) |
+| **Phase 4.5** | Multi-Repository Directory Discovery & `uv` Tooling | **Completed** | [`phase-4.5.md`](dev/planning/phase-4.5.md) |
+| **Phase 4.6** | Operation Feedback & Delight (Progress, Activity Log, Humor) | *Next in line* | [`implementation-plan.md`](dev/planning/implementation-plan.md) |
 | **Phase 5** | Git LFS & Submodules | *Planned* | [`implementation-plan.md`](dev/planning/implementation-plan.md) |
 | **Phase 6** | Packaging Hardening & Flathub Submission | *Planned* | [`implementation-plan.md`](dev/planning/implementation-plan.md) |
 | **Phase 7** | v1 Polish & Final Release | *Planned* | [`implementation-plan.md`](dev/planning/implementation-plan.md) |
@@ -81,33 +89,34 @@
 
 ## Quickstart & Development
 
-### 1. Activate Environment & Aliases (Daily Development)
+### 1. Modern Package Management (`uv` & `uvx`)
 
-To initialize or activate the virtual environment with all development aliases:
+Wrench utilizes `uv` and `uvx` for fast, reproducible dependency resolution, sub-second virtual environment management, and ephemeral tool execution:
 
 ```bash
-source init-dev.sh
+# Setup virtual environment with uv
+uv venv .venv
+source .venv/bin/activate
+uv pip install -e ".[dev]"
 ```
 
-*(Note: Use `source` so the environment variables and aliases are loaded into your active shell).*
-
-### 2. Clean Setup & Verification
-
-To install dependencies in editable mode, set up git hooks, and run all tests:
+Or run the all-in-one bootstrap script:
 
 ```bash
 ./init-dev.sh
 ```
 
-### 3. Available Developer Commands
+### 2. Available Developer Commands
+
+All developer binaries in `bin/` leverage `uv run --no-sync` for fast, offline execution:
 
 | Command | Action | Direct Path Alternative |
 |---|---|---|
 | `wrench-run` | Launch the Wrench desktop application | `./bin/wrench-run` |
 | `wrench-debug` | Launch with verbose `--debug` structured logging | `./bin/wrench-debug` |
-| `wrench-test` | Run the complete pytest test suite | `./bin/wrench-test` |
-| `wrench-lint` | Run Ruff linter and Black formatting checks | `./bin/wrench-lint` |
-| `wrench-format` | Automatically fix and format code with Ruff/Black | `./bin/wrench-format` |
+| `wrench-test` | Run the complete pytest test suite via `uv run` | `./bin/wrench-test` |
+| `wrench-lint` | Run Ruff linter and Black formatting checks via `uv run` | `./bin/wrench-lint` |
+| `wrench-format` | Automatically fix and format code with Ruff/Black via `uv run` | `./bin/wrench-format` |
 | `wrench-ci-check` | Run all linters, formatters, and unit tests in one step | `./bin/wrench-ci-check` |
 
 ---
@@ -116,11 +125,13 @@ To install dependencies in editable mode, set up git hooks, and run all tests:
 
 - **GUI Framework:** PySide6 (Qt 6.8+)
 - **Git Engine:** `pygit2` (C libgit2 bindings) + System `git` CLI
+- **Tooling & Package Management:** `uv` & `uvx` 0.13+ (sub-second dependency resolution)
+- **Runtime & Optimization:** Python 3.12+ (Python 3.15 ready with PEP 810 explicit `lazy import` support & `LazyProxyModule`)
 - **HTTP Client:** `httpx` (HTTP/1.1 & HTTP/2 with custom TLS trust anchors)
 - **Credential Storage:** `secretstorage` (FreeDesktop Secret Service D-Bus specification)
 - **Local Storage:** SQLite (`~/.local/share/wrench/wrench.db` via `platformdirs`)
 - **Filesystem Watcher:** `watchdog` (Inotify) with Qt debounce event pipeline
-- **Testing:** `pytest`, `pytest-qt` (373 tests across unit, integration, and UI suites)
+- **Testing:** `pytest`, `pytest-qt` (525+ tests across unit, integration, and UI suites)
 
 For an in-depth exploration of data flows, concurrency models, and database schemas, see **[ARCHITECTURE.md](ARCHITECTURE.md)**.
 
@@ -137,6 +148,7 @@ For an in-depth exploration of data flows, concurrency models, and database sche
 - **[dev/planning/phase-2.md](dev/planning/phase-2.md)**: Phase 2 completion summary (DAG commit graph & 3-way merge tool).
 - **[dev/planning/phase-3.md](dev/planning/phase-3.md)**: Phase 3 completion summary (Remotes, sync & credential helper).
 - **[dev/planning/phase-4.md](dev/planning/phase-4.md)**: Phase 4 completion summary (Multi-forge integration layer).
+- **[dev/planning/phase-4.5.md](dev/planning/phase-4.5.md)**: Phase 4.5 completion summary (Multi-repository directory discovery & uv tooling).
 - **[dev/planning/v2-implementation-plan.md](dev/planning/v2-implementation-plan.md)**: v2 deferred roadmap and backlog specifications.
 
 ---

@@ -40,8 +40,13 @@ fi
 
 # 3. If executed directly (not sourced), ensure dependencies & pre-commit are installed
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
-    echo -e "\n${YELLOW}Checking and installing dependencies (editable dev mode)...${RESET}"
-    pip install -e ".[dev]" --no-build-isolation 2>/dev/null || pip install -e ".[dev]"
+    if command -v uv &>/dev/null; then
+        uv pip install -e ".[dev]"
+    elif [ -f ".venv/bin/uv" ]; then
+        .venv/bin/uv pip install -e ".[dev]"
+    else
+        pip install -e ".[dev]" --no-build-isolation 2>/dev/null || pip install -e ".[dev]"
+    fi
 
     echo -e "\n${YELLOW}Setting up bin/ CLI helpers in .venv/bin/...${RESET}"
     chmod +x bin/*
@@ -61,12 +66,12 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
 fi
 
 # 4. Developer Aliases (Active when sourced into the interactive shell)
-alias wrench-run="python -m wrench.app"
-alias wrench-debug="python -m wrench.app --debug"
-alias wrench-test="pytest -v"
-alias wrench-lint="ruff check . && black --check ."
-alias wrench-format="ruff check --fix . && black ."
-alias wrench-ci-check="ruff check . && black --check . && pytest -v"
+alias wrench-run="${SCRIPT_DIR}/bin/wrench-run"
+alias wrench-debug="${SCRIPT_DIR}/bin/wrench-debug"
+alias wrench-test="${SCRIPT_DIR}/bin/wrench-test"
+alias wrench-lint="${SCRIPT_DIR}/bin/wrench-lint"
+alias wrench-format="${SCRIPT_DIR}/bin/wrench-format"
+alias wrench-ci-check="${SCRIPT_DIR}/bin/wrench-ci-check"
 
 echo -e "\n${BOLD}Available Developer Commands / Aliases:${RESET}"
 echo -e "  ${CYAN}wrench-run${RESET}       : Launch Wrench application (${BOLD}python -m wrench.app${RESET})"

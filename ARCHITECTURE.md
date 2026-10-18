@@ -261,6 +261,8 @@ Wrench is engineered around four non-negotiable architectural tenets:
   - 10-color deterministic color persistence and slot recycling algorithm preventing lane explosion.
 - **`MergeDialog` (`ui/dialogs/merge_dialog.py`)**: 3-Way visual merge conflict resolution tool.
   - Side-by-side Ours, Base, and Theirs diff viewers with block-level conflict acceptance and index staging.
+- **`DiscoverReposDialog` (`ui/dialogs/discover_repos_dialog.py`)**:
+  - Multi-repository discovery review and import dialog (FR-1.12). Displays detected repositories in a checkable list with Select All / Deselect All controls, canonical path display, and theme token styling.
 - **`RecoveryDialog` (`ui/dialogs/recovery_dialog.py`)**:
   - Actionable diagnostics and recovery workflows for stale locks, interrupted rebases, detached HEADs, and reflogs.
 - **`DiffView` (`ui/diff_view/diff_widget.py`)**: Syntax-highlighted diff viewer.
@@ -304,6 +306,8 @@ Wrench is engineered around four non-negotiable architectural tenets:
 - **`reflog.py`**: Reflog inspection and branch restoration.
 - **`identity.py`**: Validates user name and email configurations (`check_identity()`), provides repo-local configuration setters (`set_identity()`), and supports automatic background synchronization from authenticated forge accounts on link creation.
 - **`paths.py`**: Standardized XDG data, config, and state directory resolution via `platformdirs`.
+- **`discovery.py`**: Multi-repository directory discovery (`discover_repos`). Performs a bounded, non-blocking scan up to depth 3, immediately pruning at repository roots (handling both standard directories and `.git`-file linked worktrees), skipping dot-directories, refusing to follow symlinks to prevent cycles, and catching permission errors without aborting. Re-exported via `core.engine.discover_repos`.
+- **`lazy_loader.py`**: Explicit lazy module loading system supporting Python 3.15 PEP 810 native `lazy import` syntax alongside backward-compatible `LazyProxyModule` and module-level `__lazy_modules__` declarations to defer heavy dependencies until first access.
 - **`crash_handler.py` & `core/recovery/`**: Local-first crash resilience framework:
   - `crash_handler.py`: Global unhandled exception hook capturing stack traces and auto-saving in-flight session drafts.
   - `process_guard.py`: Inspects `/proc` to verify whether process holding lock files is alive or defunct.
@@ -876,6 +880,9 @@ wrench/
 │   │   ├── reflog.py             # Reflog operations
 │   │   ├── identity.py           # Git author configuration
 │   │   ├── paths.py              # XDG / platformdirs path resolution
+│   │   ├── discovery.py          # FR-1.12: bounded multi-repo directory scanner
+│   │   ├── lazy_loader.py        # Explicit lazy import proxy and loader
+│   │   ├── lazy_demo.py          # Python 3.15 native lazy import demonstration
 │   │   └── recovery/             # Automatic corruption & lock recovery subsystem
 │   │       ├── actions.py        # Remediation actions (unlock, fsck, quarantine)
 │   │       ├── classifier.py     # Health diagnostics & error classification
@@ -899,7 +906,7 @@ wrench/
 │   │       └── github_device_flow.py # RFC 8628 Device Authorization Flow client
 │   ├── storage/                  # SQLite storage & repository registry
 │   │   ├── db.py                 # SQLite connection management & locks
-│   │   ├── repo_registry.py      # Repository tracking CRUD
+│   │   ├── repo_registry.py      # Repository tracking CRUD & clear_missing
 │   │   ├── settings.py           # App & repo key-value settings
 │   │   ├── forge_accounts.py     # Forge accounts, repo links & TLS settings
 │   │   └── schema.sql            # Normalized relational schema
@@ -912,6 +919,7 @@ wrench/
 │   │   │   └── graph_widget.py   # CommitGraphWidget & custom delegate
 │   │   ├── dialogs/              # Interactive dialogs & account managers
 │   │   │   ├── accounts_dialog.py# Forge accounts manager & OAuth Device Flow
+│   │   │   ├── discover_repos_dialog.py # Multi-repo discovery review & batch import
 │   │   │   ├── link_dialog.py    # Remote-to-forge account association dialog
 │   │   │   └── remotes_dialog.py # Repository remotes manager & reachability
 │   │   ├── diff_view/            # Syntax-highlighted diff viewer & staging

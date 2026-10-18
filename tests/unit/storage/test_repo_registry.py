@@ -52,6 +52,23 @@ class TestRepoRegistry:
         repo = repo_registry.get_repo_by_path(db_conn, "/tmp/repo")
         assert repo.last_opened_at is not None
 
+    def test_clear_missing(self, db_conn):
+        rid = repo_registry.add_repo(db_conn, "/tmp/missing_repo")
+        repo_registry.mark_missing(db_conn, rid)
+        assert repo_registry.get_repo_by_id(db_conn, rid).is_missing is True
+
+        repo_registry.clear_missing(db_conn, rid)
+        assert repo_registry.get_repo_by_id(db_conn, rid).is_missing is False
+
+    def test_clear_missing_by_path(self, db_conn):
+        path = "/tmp/missing_path"
+        repo_registry.add_repo(db_conn, path)
+        repo_registry.mark_missing(db_conn, path)
+        assert repo_registry.get_repo_by_path(db_conn, path).is_missing is True
+
+        repo_registry.clear_missing(db_conn, path)
+        assert repo_registry.get_repo_by_path(db_conn, path).is_missing is False
+
 
 class TestSettings:
     def test_get_set_delete_setting(self, db_conn):

@@ -1,3 +1,7 @@
+"""Secret Service credential backend."""
+
+__lazy_modules__ = ["secretstorage"]
+
 import secretstorage
 from secretstorage.exceptions import LockedException, SecretServiceNotAvailableException
 

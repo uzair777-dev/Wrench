@@ -30,13 +30,14 @@ Phases 1–5 (all feature work) are built and tested in a **plain local Python v
 
 ### 0.3 Standard commands (use these exactly)
 
-Environment setup, once:
+Environment setup, once (using `uv`):
 ```bash
-python3.12 -m venv .venv
+uv venv .venv
 source .venv/bin/activate
-pip install -e ".[dev]"
+uv pip install -e ".[dev]"
 pre-commit install
 ```
+*(Or run `./init-dev.sh` which handles `uv` and virtual environment provisioning automatically).*
 
 Every work session:
 ```bash
@@ -45,20 +46,21 @@ source .venv/bin/activate
 
 Run the app locally, outside Flatpak, for fast iteration:
 ```bash
-python -m wrench
+./bin/wrench-run
+# or: uv run --no-sync python -m wrench
 ```
 
 Run tests:
 ```bash
-pytest -v                      # everything
-pytest tests/unit -v           # unit only
-pytest tests/integration -v    # integration only
+./bin/wrench-test                      # everything via uv run --no-sync
+./bin/wrench-test tests/unit           # unit only
+./bin/wrench-test tests/integration    # integration only
 ```
 
 Lint/format — must be clean before any commit, this is what CI's `lint` job enforces (§7):
 ```bash
-ruff check .
-black --check .
+./bin/wrench-lint                      # runs ruff & black checks via uv run
+./bin/wrench-format                    # automatically formats via uv run
 ```
 
 Build and run the Flatpak, only at the points named in §0.2:
@@ -2783,10 +2785,10 @@ Flattened, in strict execution order, across every phase — the literal path th
 - [x] 4.4.4 **CHECK**: cache/TTL/dedup/corrupt tests green; gravatar-off ⇒ zero fetches; manual QA — initials→swap-in, airplane-mode initials everywhere, no error UI
 
 **Phase 4.5 — Multi-Repository Directory Discovery** *(prerequisites: 4.4.4 checked)*
-- [ ] 4.5.1 `core/discovery.py` — bounded cancellable walk (depth 3, dot-dirs skipped, symlinks unfollowed, prune at repo roots, `.git` file-or-directory counts, permission errors skipped-and-counted); façade re-export
-- [ ] 4.5.2 `storage/repo_registry.py` — `clear_missing`; registration loop semantics (missing → restore, known → skip, new → `add_repo`, resolve-canonicalized)
-- [ ] 4.5.3 `ui/dialogs/discover_repos_dialog.py` + `_on_open_repo` branch on `WrenchRepoNotFoundError` per ui-planning §6.10 — background scan with live count, checkbox results, idempotent accept, selector refresh, `tr()`/a11y
-- [ ] 4.5.4 **CHECK**: `make_repo_forest` unit suite green (symlink cycle, chmod-000, submodule-skip, `.git`-file worktree); manual QA — open a real multi-repo dir, all repos switchable, re-run is a no-op
+- [x] 4.5.1 `core/discovery.py` — bounded cancellable walk (depth 3, dot-dirs skipped, symlinks unfollowed, prune at repo roots, `.git` file-or-directory counts, permission errors skipped-and-counted); façade re-export
+- [x] 4.5.2 `storage/repo_registry.py` — `clear_missing`; registration loop semantics (missing → restore, known → skip, new → `add_repo`, resolve-canonicalized)
+- [x] 4.5.3 `ui/dialogs/discover_repos_dialog.py` + `_on_open_repo` branch on `WrenchRepoNotFoundError` per ui-planning §6.10 — background scan with live count, checkbox results, idempotent accept, selector refresh, `tr()`/a11y
+- [x] 4.5.4 **CHECK**: `make_repo_forest` unit suite green (symlink cycle, chmod-000, submodule-skip, `.git`-file worktree); manual QA — open a real multi-repo dir, all repos switchable, re-run is a no-op
 
 **Phase 4.6 — Operation Feedback & Delight** *(prerequisites: 4.5.4 checked)*
 - [ ] 4.6.1 `_parse_progress` extension + progress-type matrix (determinate = real fraction only; rebase `Rebasing (n/m)`, LFS `N of M files`, submodule countables specced for Phase 5; everything else indeterminate)

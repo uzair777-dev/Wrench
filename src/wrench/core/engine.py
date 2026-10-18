@@ -209,6 +209,7 @@ class RepoHandle:
 
 # Import read_ops, write_ops, identity, reflog after all dataclasses are defined
 from . import identity, read_ops, reflog, write_ops  # noqa: E402
+from .discovery import discover_repos  # noqa: E402, F401
 
 
 def init_repo(path: Path | str) -> RepoHandle:

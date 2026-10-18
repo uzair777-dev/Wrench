@@ -1,5 +1,7 @@
 """QApplication bootstrap and main window wiring."""
 
+__lazy_modules__ = ["watchdog", "platformdirs"]
+
 import argparse
 import logging
 import os

@@ -6,8 +6,10 @@ repos:
         entry: .venv/bin/ruff check --fix
         language: system
         types: [python]
+        exclude: ^src/wrench/core/lazy_demo\.py$
       - id: black
         name: black
         entry: .venv/bin/black
         language: system
         types: [python]
+        exclude: ^src/wrench/core/lazy_demo\.py$

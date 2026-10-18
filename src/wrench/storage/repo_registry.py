@@ -133,6 +133,16 @@ def mark_missing(conn: sqlite3.Connection, path_or_id: str | int) -> None:
         conn.commit()
 
 
+def clear_missing(conn: sqlite3.Connection, path_or_id: str | int) -> None:
+    """Clears the is_missing flag for a registered repository."""
+    with _db_lock:
+        if isinstance(path_or_id, int):
+            conn.execute("UPDATE repos SET is_missing = 0 WHERE id = ?", (path_or_id,))
+        else:
+            conn.execute("UPDATE repos SET is_missing = 0 WHERE path = ?", (str(path_or_id),))
+        conn.commit()
+
+
 def relocate_repo(conn: sqlite3.Connection, old_path_or_id: str | int, new_path: str) -> None:
     """Updates the filesystem path of a relocated repository."""
     with _db_lock:

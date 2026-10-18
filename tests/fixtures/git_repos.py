@@ -168,3 +168,76 @@ def conflict_repo(tmp_path: Path) -> RepoHandle:
     pygit2_repo.checkout_head(strategy=pygit2.GIT_CHECKOUT_FORCE)
 
     return RepoHandle(pygit2_repo, repo_path)
+
+
+def make_repo_forest(tmp_path: Path) -> tuple[Path, dict[str, set[Path] | Path]]:
+    """Creates a multi-level directory tree containing various repo configurations
+    for discovery testing.
+
+    Returns (root_path, expected_dict) where expected_dict has keys:
+    - 'valid': set of paths that MUST be discovered
+    - 'deep': path that MUST NOT be discovered (depth > 3)
+    - 'hidden': path that MUST NOT be discovered (dot-directory)
+    - 'submodule': path that MUST NOT be discovered (nested inside repo root)
+    - 'unreadable': unreadable directory path (skipped)
+    """
+    forest = tmp_path / "forest"
+    forest.mkdir(exist_ok=True)
+
+    # 1. Standard top-level repo (depth 1)
+    r1 = forest / "repo1"
+    r1.mkdir()
+    pygit2.init_repository(str(r1))
+
+    # 2. Nested repo inside one-level container (depth 2)
+    sub = forest / "nested"
+    sub.mkdir()
+    r2 = sub / "repo2"
+    r2.mkdir()
+    pygit2.init_repository(str(r2))
+
+    # 3. Worktree repo with a .git FILE (depth 1)
+    wt = forest / "worktree1"
+    wt.mkdir()
+    (wt / ".git").write_text("gitdir: /fake/path/to/main/.git/worktrees/wt1\n")
+
+    # 4. Deep repo beyond default depth cap (depth 4: forest/d1/d2/d3/repo_deep)
+    deep = forest / "d1" / "d2" / "d3" / "repo_deep"
+    deep.mkdir(parents=True)
+    pygit2.init_repository(str(deep))
+
+    # 5. Hidden directory repo (.hidden_repo)
+    hidden = forest / ".hidden_repo"
+    hidden.mkdir()
+    pygit2.init_repository(str(hidden))
+
+    # 6. Repo containing a submodule directory
+    parent = forest / "parent_with_sub"
+    parent.mkdir()
+    pygit2.init_repository(str(parent))
+    subm = parent / "submodule_repo"
+    subm.mkdir()
+    (subm / ".git").write_text("gitdir: ../.git/modules/submodule_repo\n")
+
+    # 7. Symlink loop: link pointing to root
+    try:
+        (forest / "link_to_forest").symlink_to(forest, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pass
+
+    # 8. Unreadable directory (chmod 000)
+    unreadable = forest / "unreadable_dir"
+    try:
+        unreadable.mkdir()
+        unreadable.chmod(0o000)
+    except OSError:
+        pass
+
+    valid = {r1.resolve(), r2.resolve(), wt.resolve(), parent.resolve()}
+    return forest, {
+        "valid": valid,
+        "deep": deep.resolve(),
+        "hidden": hidden.resolve(),
+        "submodule": subm.resolve(),
+        "unreadable": unreadable.resolve(),
+    }

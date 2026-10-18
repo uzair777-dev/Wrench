@@ -2,6 +2,6 @@
 set -e
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 echo "Formatting with ruff..."
-"${ROOT_DIR}/.venv/bin/ruff" check --fix "${ROOT_DIR}"
+"${ROOT_DIR}/.venv/bin/uv" run --no-sync ruff check --fix "${ROOT_DIR}"
 echo "Formatting with black..."
-"${ROOT_DIR}/.venv/bin/black" "${ROOT_DIR}"
+"${ROOT_DIR}/.venv/bin/uv" run --no-sync black "${ROOT_DIR}"

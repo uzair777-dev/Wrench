@@ -241,6 +241,45 @@ class TestLinkRepoDialog:
             handle = RepoHandle(pygit2_repo, str(repo_path))
             assert handle.pygit2_repo.config["credential.useHttpPath"] == "true"
 
+    def test_link_repo_shared_connection_not_closed(self, tmp_path: Path, db_conn):
+        repo_path = tmp_path / "shared_conn_repo"
+        repo_path.mkdir()
+        pygit2_repo = pygit2.init_repository(str(repo_path))
+        sig = pygit2.Signature("Dev", "dev@example.com")
+        tree = pygit2_repo.TreeBuilder().write()
+        pygit2_repo.create_commit("HEAD", sig, sig, "Initial", tree, [])
+        pygit2_repo.remotes.create("origin", "https://github.com/alice/coolproject.git")
+
+        repo_id = repo_registry.add_repo(db_conn, str(repo_path), "shared_conn_repo")
+
+        mock_backend = MagicMock()
+        with patch("wrench.credentials.get_backend", return_value=mock_backend):
+            acc_gh = forge_accounts.add_account(
+                db_conn,
+                provider="github",
+                instance_url="https://github.com",
+                label="GitHub Acc",
+                username="alice",
+                token="tok_gh",
+            )
+
+        # Pass shared db_conn to LinkRepoDialog (as MainWindow does)
+        dlg = LinkRepoDialog(str(repo_path), conn=db_conn)
+
+        # Verify db_conn was NOT closed during reload_data() in __init__
+        assert db_conn.execute("SELECT 1").fetchone()[0] == 1
+
+        dlg._auto_match_remotes()
+        dlg._save_links()
+
+        # Verify db_conn is STILL NOT closed after _save_links()
+        assert db_conn.execute("SELECT 1").fetchone()[0] == 1
+
+        # Verify links were written successfully
+        links = forge_accounts.list_links_for_repo(db_conn, repo_id)
+        assert len(links) == 1
+        assert links[0].forge_account_id == acc_gh
+
     def test_link_repo_auto_aligns_identity(self, tmp_path: Path, db_conn):
         db_path = db_file_path(db_conn)
         repo_path = tmp_path / "align_repo"
@@ -689,3 +728,59 @@ class TestAccountsDialogThemeLegibility:
             assert (
                 "color: palette(mid)" not in sheet
             ), f"Found unreadable color: palette(mid) on {lbl.text()}"
+
+
+class TestAccountsDialogAvatarSupport:
+    def test_validation_success_persists_avatar_url(self, db_conn, monkeypatch):
+        from wrench.storage import settings
+
+        db_path = db_file_path(db_conn)
+        mock_backend = MagicMock()
+        monkeypatch.setattr("wrench.credentials.get_backend", lambda: mock_backend)
+        monkeypatch.setattr("wrench.storage.db.get_connection", lambda: sqlite3.connect(db_path))
+
+        dlg = AddAccountDialog(initial_page=2)
+        dlg._on_validation_success(
+            provider="github",
+            instance_url="https://github.com",
+            label="Avatar User",
+            username="avataruser",
+            token="ghp_dummy",
+            ca_bundle=None,
+            insecure=False,
+            avatar_url="https://avatars.githubusercontent.com/u/12345?v=4",
+        )
+
+        accs = forge_accounts.list_accounts(db_conn)
+        assert len(accs) == 1
+        stored_avatar = settings.get_setting(db_conn, f"account.{accs[0].id}.avatar_url")
+        assert stored_avatar == "https://avatars.githubusercontent.com/u/12345?v=4"
+
+    def test_accounts_dialog_displays_avatar_icon(self, db_conn, monkeypatch):
+        from wrench.storage import settings
+
+        db_path = db_file_path(db_conn)
+        mock_backend = MagicMock()
+        monkeypatch.setattr("wrench.credentials.get_backend", lambda: mock_backend)
+        monkeypatch.setattr("wrench.storage.db.get_connection", lambda: sqlite3.connect(db_path))
+
+        acc_id = forge_accounts.add_account(
+            db_conn,
+            provider="github",
+            instance_url="https://github.com",
+            label="Avatar User",
+            username="avataruser",
+            token="ghp_dummy",
+        )
+        settings.set_setting(
+            db_conn,
+            f"account.{acc_id}.avatar_url",
+            "https://avatars.githubusercontent.com/u/12345?v=4",
+        )
+
+        dialog = AccountsDialog()
+        dialog.reload_accounts()
+
+        item = dialog.table.item(0, 2)  # Username column
+        assert item is not None
+        assert not item.icon().isNull()

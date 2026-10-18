@@ -108,7 +108,11 @@ class LinkRepoDialog(QDialog):
         layout.addLayout(btn_bar)
 
     def reload_data(self) -> None:
-        conn = self._conn if self._conn is not None else db.get_connection()
+        conn = self._conn
+        should_close = False
+        if conn is None:
+            conn = db.get_connection()
+            should_close = True
         try:
             repo_row = conn.execute(
                 "SELECT id FROM repos WHERE path = ?", (self.repo_path,)
@@ -125,7 +129,8 @@ class LinkRepoDialog(QDialog):
             links = forge_accounts.list_links_for_repo(conn, self._repo_id)
             self._existing_links = {lnk.remote_name: lnk for lnk in links}
         finally:
-            conn.close()
+            if should_close and conn:
+                conn.close()
 
         # Load git remotes
         try:
@@ -211,7 +216,11 @@ class LinkRepoDialog(QDialog):
         if self._repo_id is None:
             return
 
-        conn = self._conn if self._conn is not None else db.get_connection()
+        conn = self._conn
+        should_close = False
+        if conn is None:
+            conn = db.get_connection()
+            should_close = True
         try:
             for row, (remote_name, _host, owner, repo) in self._row_data.items():
                 combo = self._combos.get(row)
@@ -286,12 +295,23 @@ class LinkRepoDialog(QDialog):
                                     )
                                 finally:
                                     conn_s.close()
+                                return (avatar_url, acct.username or acct.label)
                         except Exception:
                             pass  # best-effort, don't block linking
+                        return None
 
-                    run_in_background(fn=_align_identity, on_finished=lambda _: None)
+                    def _on_align_done(res: tuple[str, str] | None) -> None:
+                        if res:
+                            av_url, lbl = res
+                            if av_url:
+                                from wrench.ui.widgets.avatar import get_avatar_loader
+
+                                get_avatar_loader().get_avatar(av_url, name_or_email=lbl, size=32)
+
+                    run_in_background(fn=_align_identity, on_finished=_on_align_done)
         finally:
-            conn.close()
+            if should_close and conn:
+                conn.close()
 
         # Configure local git credential.useHttpPath = true for disambiguation
         try:

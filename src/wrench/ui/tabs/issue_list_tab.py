@@ -125,9 +125,10 @@ class IssueTableModel(QAbstractTableModel):
         if role == Qt.DecorationRole and col == 2:
             loader = get_avatar_loader()
             is_dark = is_dark_theme(self.parent()) if self.parent() else False
-            return loader.get_avatar(
-                issue.author_avatar_url, issue.author, size=24, is_dark=is_dark
-            )
+            avatar_url = issue.author_avatar_url
+            if not avatar_url and issue.author:
+                avatar_url = f"https://github.com/{issue.author}.png?size=80"
+            return loader.get_avatar(avatar_url, issue.author, size=24, is_dark=is_dark)
 
         return None
 

@@ -5,7 +5,7 @@ import threading
 from typing import Any
 
 from PySide6.QtCore import Qt, QTimer, QUrl
-from PySide6.QtGui import QDesktopServices, QGuiApplication
+from PySide6.QtGui import QDesktopServices, QGuiApplication, QIcon
 from PySide6.QtWidgets import (
     QButtonGroup,
     QCheckBox,
@@ -41,8 +41,9 @@ from wrench.forge.oauth.github_device_flow import (
     request_device_code,
 )
 from wrench.forge.registry import get_adapter_class
-from wrench.storage import db, forge_accounts
+from wrench.storage import db, forge_accounts, settings
 from wrench.ui.forge_panel.info_popover import InfoButton
+from wrench.ui.widgets.avatar import get_avatar_loader
 from wrench.ui.workers import run_in_background
 
 logger = logging.getLogger(__name__)
@@ -199,7 +200,16 @@ def _validate_credentials_probe(
         inferred_user = (
             data.get("login") or data.get("username") or data.get("nickname") or username
         )
-        return {"ok": True, "inferred_user": inferred_user}
+        avatar_url = (
+            data.get("avatar_url")
+            or data.get("avatar")
+            or (
+                data.get("links", {}).get("avatar", {}).get("href")
+                if isinstance(data.get("links"), dict)
+                else None
+            )
+        )
+        return {"ok": True, "inferred_user": inferred_user, "avatar_url": avatar_url}
     finally:
         adapter.close()
 
@@ -770,13 +780,20 @@ class AddAccountDialog(QDialog):
                 "github", instance_url, token, None, None, False
             ),
             on_finished=lambda res: self._on_device_flow_save_success(
-                instance_url, res.get("inferred_user"), token
+                instance_url,
+                res.get("inferred_user"),
+                token,
+                avatar_url=res.get("avatar_url"),
             ),
             on_failed=self._on_device_flow_error,
         )
 
     def _on_device_flow_save_success(
-        self, instance_url: str, username: str | None, token: str
+        self,
+        instance_url: str,
+        username: str | None,
+        token: str,
+        avatar_url: str | None = None,
     ) -> None:
         is_enterprise = "github.com" not in instance_url.lower()
         prefix = "GitHub Enterprise" if is_enterprise else "GitHub"
@@ -810,8 +827,13 @@ class AddAccountDialog(QDialog):
                     )
                 if username and not target_acc.username:
                     forge_accounts.update_username(conn, target_acc.id, username)
+                if avatar_url:
+                    settings.set_setting(conn, f"account.{target_acc.id}.avatar_url", avatar_url)
+                    get_avatar_loader().get_avatar(
+                        avatar_url, name_or_email=username or target_acc.label, size=32
+                    )
             else:
-                forge_accounts.add_account(
+                new_id = forge_accounts.add_account(
                     conn,
                     provider="github",
                     instance_url=instance_url,
@@ -819,6 +841,11 @@ class AddAccountDialog(QDialog):
                     username=username,
                     token=token,
                 )
+                if avatar_url:
+                    settings.set_setting(conn, f"account.{new_id}.avatar_url", avatar_url)
+                    get_avatar_loader().get_avatar(
+                        avatar_url, name_or_email=username or label, size=32
+                    )
         except Exception as exc:
             self._on_device_flow_error(exc)
             return
@@ -1022,7 +1049,14 @@ class AddAccountDialog(QDialog):
         run_in_background(
             fn=lambda: _validate_credentials_probe(prov, url, token, username, ca_bundle, insecure),
             on_finished=lambda res: self._on_validation_success(
-                prov, url, label, username or res.get("inferred_user"), token, ca_bundle, insecure
+                prov,
+                url,
+                label,
+                username or res.get("inferred_user"),
+                token,
+                ca_bundle,
+                insecure,
+                avatar_url=res.get("avatar_url"),
             ),
             on_failed=self._on_validation_failure,
         )
@@ -1036,6 +1070,7 @@ class AddAccountDialog(QDialog):
         token: str,
         ca_bundle: str | None,
         insecure: bool,
+        avatar_url: str | None = None,
     ) -> None:
         if not label:
             user_suffix = f" ({username})" if username else ""
@@ -1043,7 +1078,7 @@ class AddAccountDialog(QDialog):
 
         conn = db.get_connection()
         try:
-            forge_accounts.add_account(
+            new_id = forge_accounts.add_account(
                 conn,
                 provider=provider,
                 instance_url=instance_url,
@@ -1053,6 +1088,9 @@ class AddAccountDialog(QDialog):
                 tls_ca_bundle_path=ca_bundle,
                 tls_insecure=insecure,
             )
+            if avatar_url:
+                settings.set_setting(conn, f"account.{new_id}.avatar_url", avatar_url)
+                get_avatar_loader().get_avatar(avatar_url, name_or_email=username or label, size=32)
         except Exception as exc:
             self.status_label.setStyleSheet("color: palette(bright-text); font-size: 11px;")
             self.status_label.setText(f"Failed to store account: {exc}")
@@ -1283,6 +1321,9 @@ class AccountsDialog(QDialog):
         self.resize(650, 360)
 
         self._accounts: list[forge_accounts.ForgeAccountRecord] = []
+        self._avatar_urls: dict[int, str] = {}
+        self._avatar_loader = get_avatar_loader()
+        self._avatar_loader.avatar_ready.connect(self._on_avatar_ready)
         self._init_ui()
         self.reload_accounts()
 
@@ -1333,10 +1374,27 @@ class AccountsDialog(QDialog):
 
         layout.addLayout(btn_bar)
 
+    def _on_avatar_ready(self, url: str, size: int) -> None:
+        if size != 20 and size != 0:
+            return
+        for row, acc in enumerate(self._accounts):
+            if self._avatar_urls.get(acc.id) == url:
+                user_item = self.table.item(row, 2)
+                if user_item is not None:
+                    pixmap = self._avatar_loader.get_avatar(
+                        url, name_or_email=acc.username or acc.label, size=20
+                    )
+                    if not pixmap.isNull():
+                        user_item.setIcon(QIcon(pixmap))
+
     def reload_accounts(self) -> None:
         conn = db.get_connection()
         try:
             self._accounts = forge_accounts.list_accounts(conn)
+            self._avatar_urls = {
+                acc.id: settings.get_setting(conn, f"account.{acc.id}.avatar_url")
+                for acc in self._accounts
+            }
         finally:
             conn.close()
 
@@ -1347,7 +1405,15 @@ class AccountsDialog(QDialog):
             self.table.setItem(row, 0, prov_item)
 
             self.table.setItem(row, 1, QTableWidgetItem(acc.instance_url))
-            self.table.setItem(row, 2, QTableWidgetItem(acc.username or "—"))
+            user_item = QTableWidgetItem(acc.username or "—")
+            avatar_url = self._avatar_urls.get(acc.id)
+            if avatar_url:
+                pixmap = self._avatar_loader.get_avatar(
+                    avatar_url, name_or_email=acc.username or acc.label, size=20
+                )
+                if not pixmap.isNull():
+                    user_item.setIcon(QIcon(pixmap))
+            self.table.setItem(row, 2, user_item)
             self.table.setItem(row, 3, QTableWidgetItem(acc.label))
 
             tls_desc = "Standard"

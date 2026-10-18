@@ -3,7 +3,7 @@
 import hashlib
 import os
 import time
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from PySide6.QtGui import QPixmap
@@ -121,3 +121,140 @@ def test_avatar_widget_set_avatar():
     assert widget.accessibleName() == "Jane Doe"
     assert widget.pixmap() is not None
     assert widget.pixmap().width() == 40
+
+
+def test_avatar_loader_different_sizes_single_fetch(tmp_cache):
+    loader = AvatarLoader()
+    test_url = "https://example.com/multi_size.png"
+
+    with patch("wrench.ui.widgets.avatar.run_in_background") as mock_bg:
+        _ = loader.get_avatar(test_url, "User1", size=18)
+        _ = loader.get_avatar(test_url, "User1", size=48)
+        # Different sizes for the same URL must share a single background fetch
+        assert mock_bg.call_count == 1
+
+
+def test_avatar_loader_negative_cache_on_failure(tmp_cache):
+    loader = AvatarLoader()
+    test_url = "https://example.com/fail404.png"
+
+    # Simulate fetch failure
+    loader._on_fetch_failed(test_url, Exception("404 Not Found"))
+
+    with patch("wrench.ui.widgets.avatar.run_in_background") as mock_bg:
+        # Should hit negative cache and not trigger network request
+        pm = loader.get_avatar(test_url, "User", size=40)
+        assert isinstance(pm, QPixmap)
+        assert mock_bg.call_count == 0
+
+
+def test_avatar_loader_uses_browser_headers():
+    loader = AvatarLoader()
+    test_url = "https://example.com/headers_test.png"
+
+    with patch("wrench.ui.widgets.avatar.httpx.get") as mock_get:
+        mock_resp = MagicMock()
+        mock_resp.content = b"fake_bytes"
+        mock_get.return_value = mock_resp
+        _ = loader._fetch_avatar_bytes(test_url)
+
+        assert mock_get.called
+        _, kwargs = mock_get.call_args
+        headers = kwargs.get("headers", {})
+        assert "User-Agent" in headers
+        assert "Wrench" in headers["User-Agent"]
+        assert "Accept" in headers
+
+
+def test_resolve_author_avatar_url_github_noreply():
+    from wrench.ui.widgets.avatar import resolve_author_avatar_url
+
+    url = resolve_author_avatar_url(
+        name="John Doe",
+        email="123456+johndoe@users.noreply.github.com",
+        remote_urls=["git@github.com:org/repo.git"],
+    )
+    assert url == "https://github.com/johndoe.png?size=80"
+
+    url_plain = resolve_author_avatar_url(
+        name="John Doe",
+        email="johndoe@users.noreply.github.com",
+        remote_urls=["git@github.com:org/repo.git"],
+    )
+    assert url_plain == "https://github.com/johndoe.png?size=80"
+
+
+def test_resolve_author_avatar_url_github_username_heuristic():
+    from wrench.ui.widgets.avatar import resolve_author_avatar_url
+
+    url = resolve_author_avatar_url(
+        name="torvalds",
+        email="torvalds@linux-foundation.org",
+        remote_urls=["https://github.com/torvalds/linux.git"],
+    )
+    assert url == "https://github.com/torvalds.png?size=80"
+
+
+def test_resolve_author_avatar_url_configured_account(monkeypatch):
+    import sqlite3
+    from unittest.mock import MagicMock
+
+    from wrench.storage import db, forge_accounts, settings
+    from wrench.ui.widgets.avatar import resolve_author_avatar_url
+
+    mock_backend = MagicMock()
+    monkeypatch.setattr("wrench.credentials.get_backend", lambda: mock_backend)
+
+    conn = sqlite3.connect(":memory:")
+    db.run_migrations(conn)
+
+    acc_id = forge_accounts.add_account(
+        conn,
+        provider="github",
+        instance_url="https://github.com",
+        label="Dev Account",
+        username="devguy",
+        token="ghp_test",
+    )
+    settings.set_setting(conn, f"account.{acc_id}.avatar_url", "https://cdn.example.com/devguy.jpg")
+
+    url = resolve_author_avatar_url(
+        name="devguy",
+        email="devguy@company.com",
+        remote_urls=["https://github.com/myorg/repo.git"],
+        db_conn=conn,
+    )
+    assert url == "https://cdn.example.com/devguy.jpg"
+
+
+def test_resolve_author_avatar_url_gravatar_gated():
+    import sqlite3
+
+    from wrench.storage import db, settings
+    from wrench.ui.widgets.avatar import resolve_author_avatar_url
+
+    conn = sqlite3.connect(":memory:")
+    db.run_migrations(conn)
+
+    # Gravatar disabled by default
+    url_off = resolve_author_avatar_url(
+        name="Jane Committer",
+        email="jane@example.com",
+        remote_urls=["https://gitlab.com/group/project.git"],
+        db_conn=conn,
+    )
+    assert url_off is None
+
+    # Gravatar enabled in settings
+    settings.set_setting(conn, "ui.avatars_gravatar", "true")
+    from wrench.ui.widgets.avatar import clear_author_avatar_cache
+
+    clear_author_avatar_cache()
+    url_on = resolve_author_avatar_url(
+        name="Jane Committer",
+        email="jane@example.com",
+        remote_urls=["https://gitlab.com/group/project.git"],
+        db_conn=conn,
+    )
+    assert url_on is not None
+    assert "gravatar.com/avatar/" in url_on

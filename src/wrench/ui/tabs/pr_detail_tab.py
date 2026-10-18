@@ -231,8 +231,10 @@ class PRDetailTab(QWidget):
             self.title_label.setText(f"Pull Request #{self.pr_id} not found on remote")
             return
 
-        self._pr = target_pr
-        self.avatar_widget.set_avatar(target_pr.author_avatar_url, target_pr.author)
+        avatar_url = target_pr.author_avatar_url
+        if not avatar_url and target_pr.author:
+            avatar_url = f"https://github.com/{target_pr.author}.png?size=80"
+        self.avatar_widget.set_avatar(avatar_url, target_pr.author)
         self.title_label.setText(f"#{target_pr.id}: {target_pr.title}")
 
         self.state_badge.set_state(target_pr.state)

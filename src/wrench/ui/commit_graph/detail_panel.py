@@ -19,10 +19,9 @@ from PySide6.QtWidgets import (
 
 from wrench.core import engine
 from wrench.core.engine import Commit, FileStat, RepoHandle
-from wrench.storage import settings
 from wrench.ui.diff_view.diff_widget import DiffWidget
 from wrench.ui.theme import COMMIT_STAT_COLORS, get_badge_colors, is_dark_theme
-from wrench.ui.widgets.avatar import AvatarWidget, get_gravatar_url
+from wrench.ui.widgets.avatar import AvatarWidget, resolve_author_avatar_url
 
 logger = logging.getLogger(__name__)
 
@@ -181,28 +180,39 @@ class CommitDetailPanel(QWidget):
             )
             return
 
-        # Check Gravatar opt-in
-        is_gravatar_on = False
         conn = getattr(self, "_conn", None)
-        if conn:
-            is_gravatar_on = settings.get_setting(conn, "ui.avatars_gravatar") == "true"
-        else:
+        close_conn = False
+        if not conn:
             try:
                 from wrench.storage import db
 
-                c = db.get_connection()
-                try:
-                    is_gravatar_on = settings.get_setting(c, "ui.avatars_gravatar") == "true"
-                finally:
-                    c.close()
+                conn = db.get_connection()
+                close_conn = True
             except Exception:
-                is_gravatar_on = False
+                conn = None
 
-        url = (
-            get_gravatar_url(commit.author_email, size=48)
-            if (is_gravatar_on and commit.author_email)
-            else None
-        )
+        try:
+            remote_urls = None
+            if self._repo:
+                try:
+                    remote_urls = [
+                        r.url
+                        for r in engine.list_remotes(self._repo, db_conn=conn)
+                        if hasattr(r, "url") and isinstance(r.url, str)
+                    ]
+                except Exception:
+                    remote_urls = None
+
+            url = resolve_author_avatar_url(
+                commit.author_name,
+                commit.author_email,
+                remote_urls=remote_urls,
+                db_conn=conn,
+            )
+        finally:
+            if close_conn and conn:
+                conn.close()
+
         self.avatar_widget.setVisible(True)
         self.avatar_widget.set_avatar(url, commit.author_name or commit.author_email)
 

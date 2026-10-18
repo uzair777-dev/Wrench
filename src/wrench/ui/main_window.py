@@ -102,6 +102,9 @@ class MainWindow(QMainWindow):
         self._auto_save_timer.setInterval(1000)
         self._auto_save_timer.timeout.connect(self._save_session_state)
 
+        # In-flight fetch tracking per repo to prevent concurrent ref locking collisions
+        self._fetch_in_progress: set[str] = set()
+
         # Snapshot timer (every 5 minutes / 300_000ms)
         self._snapshot_timer = QTimer(self)
         self._snapshot_timer.setInterval(300_000)
@@ -825,9 +828,9 @@ class MainWindow(QMainWindow):
             return
 
         for remote in remotes:
-            # a. Parse remote URL; skip non-https or unparseable
+            # a. Parse remote URL; skip non-supported or unparseable
             parts = parse_remote_url(remote.url)
-            if not parts or parts.protocol not in ("https", "http"):
+            if not parts or parts.protocol not in ("https", "http", "ssh", "git"):
                 continue
             if not parts.host:
                 continue
@@ -850,13 +853,22 @@ class MainWindow(QMainWindow):
             if decline_key in declined_list:
                 continue
 
-            # d. Find candidate accounts
+            # d. Find candidate accounts (with host normalization for SSH)
             try:
                 all_accounts = forge_accounts.list_accounts(conn)
             except Exception:
                 all_accounts = []
+
+            host = parts.host.lower()
+            if host.endswith("github.com"):
+                match_host = "github.com"
+            elif host.endswith("gitlab.com"):
+                match_host = "gitlab.com"
+            else:
+                match_host = host
+
             candidates = [
-                a for a in all_accounts if host_of_instance_url(a.instance_url) == parts.host
+                a for a in all_accounts if host_of_instance_url(a.instance_url) == match_host
             ]
 
             if len(candidates) == 0:
@@ -872,8 +884,24 @@ class MainWindow(QMainWindow):
                         self.tr(f"Linked {parts.owner}/{parts.repo} to {acc.label}"),
                         5000,
                     )
+                # Immediately notify ChangesTab and loaded forge tabs
+                if hasattr(self, "changes_tab"):
+                    self.changes_tab._update_account_btn()
+
+                for i in range(self.tab_container.count()):
+                    w = self.tab_container.widget(i)
+                    if (
+                        hasattr(w, "reload_links_and_data")
+                        and getattr(w, "repo_path", None) == repo_path
+                    ):
+                        w.reload_links_and_data()
+
+                # Background fetch account avatar if not cached
+                if not settings.get_setting(conn, f"account.{acc.id}.avatar_url"):
+                    self._trigger_account_avatar_fetch(acc)
             else:
                 # Multiple candidates → show non-modal banner
+
                 owner = parts.owner
                 repo = parts.repo
                 remote_name = remote.name
@@ -908,6 +936,38 @@ class MainWindow(QMainWindow):
                 )
                 break
 
+    def _trigger_account_avatar_fetch(self, acc: forge_accounts.ForgeAccountRecord) -> None:
+        """Fetch avatar URL in background for forge account and persist to settings."""
+        full_acc = forge_accounts.get_account_full(self._conn, acc.id)
+        if not full_acc:
+            return
+
+        def _fetch_fn():
+            try:
+                from wrench.forge.registry import create_adapter
+
+                adapter = create_adapter(full_acc)
+                try:
+                    return adapter.get_avatar_url()
+                finally:
+                    adapter.close()
+            except Exception:
+                return None
+
+        def _on_done(avatar_url: str | None):
+            if avatar_url:
+                settings.set_setting(self._conn, f"account.{acc.id}.avatar_url", avatar_url)
+                if hasattr(self, "changes_tab"):
+                    self.changes_tab._update_account_btn()
+                from wrench.ui.widgets.avatar import get_avatar_loader
+
+                get_avatar_loader().get_avatar(avatar_url, acc.username or acc.label)
+
+        run_in_background(
+            _fetch_fn,
+            on_finished=_on_done,
+        )
+
     def _maybe_auto_fetch(self, gen: int) -> None:
         """Phase 4.2 FR-4.7: Background auto-fetch for the default remote.
 
@@ -919,29 +979,45 @@ class MainWindow(QMainWindow):
             return
         if not self._current_repo:
             return
+        repo_key = str(self._current_repo.path)
+        if repo_key in self._fetch_in_progress:
+            logger.debug("Fetch already in progress for %s, skipping auto-fetch", repo_key)
+            return
+
         remote = self._get_default_remote()
         if remote is None:
             return
 
+        self._fetch_in_progress.add(repo_key)
         run_in_background(
             engine.fetch,
             self._current_repo,
             remote,
-            on_finished=lambda _res: self._on_auto_fetch_finished(remote, gen),
-            on_failed=lambda exc: self._on_auto_fetch_failed(exc, gen),
+            on_finished=lambda _res: self._on_auto_fetch_finished(remote, gen, repo_key),
+            on_failed=lambda exc: self._on_auto_fetch_failed(exc, gen, repo_key),
         )
 
-    def _on_auto_fetch_finished(self, remote: str, gen: int) -> None:
+    def _on_auto_fetch_finished(self, remote: str, gen: int, repo_key: str | None = None) -> None:
         """Callback for successful auto-fetch."""
+        if repo_key is not None:
+            self._fetch_in_progress.discard(repo_key)
+        elif self._current_repo:
+            self._fetch_in_progress.discard(str(self._current_repo.path))
+
         if gen != self._repo_switch_generation:
             return  # Stale switch — discard result
         self._refresh_after_git_op()
 
-    def _on_auto_fetch_failed(self, exc: Exception, gen: int) -> None:
+    def _on_auto_fetch_failed(self, exc: Exception, gen: int, repo_key: str | None = None) -> None:
         """Callback for failed auto-fetch — quiet transient status bar message only.
 
         NEVER shows a modal dialog, error banner, or retry loop.
         """
+        if repo_key is not None:
+            self._fetch_in_progress.discard(repo_key)
+        elif self._current_repo:
+            self._fetch_in_progress.discard(str(self._current_repo.path))
+
         if gen != self._repo_switch_generation:
             return  # Stale switch — discard result
         reason = str(exc)[:80] if str(exc) else type(exc).__name__
@@ -1216,6 +1292,13 @@ class MainWindow(QMainWindow):
     def _on_fetch_remote(self) -> None:
         if not self._current_repo:
             return
+        repo_key = str(self._current_repo.path)
+        if repo_key in self._fetch_in_progress:
+            self.statusBar().showMessage(
+                self.tr("Fetch already in progress for this repository..."), 3000
+            )
+            return
+
         remote = self._get_default_remote()
         if not remote:
             ret = QMessageBox.question(
@@ -1229,6 +1312,7 @@ class MainWindow(QMainWindow):
                 self._on_manage_remotes()
             return
 
+        self._fetch_in_progress.add(repo_key)
         cancel_event = threading.Event()
         busy_dlg = BusyOperationDialog(
             self.tr("Fetch"),
@@ -1238,11 +1322,13 @@ class MainWindow(QMainWindow):
         )
 
         def on_finished(_res):
+            self._fetch_in_progress.discard(repo_key)
             busy_dlg.accept()
             self._refresh_after_git_op()
             self.status_label.setText(self.tr(f"Fetched from '{remote}'."))
 
         def on_failed(exc):
+            self._fetch_in_progress.discard(repo_key)
             busy_dlg.reject()
             self._route_remote_error(exc, remote, op="fetch")
 
@@ -1260,6 +1346,13 @@ class MainWindow(QMainWindow):
     def _on_pull_remote(self) -> None:
         if not self._current_repo:
             return
+        repo_key = str(self._current_repo.path)
+        if repo_key in self._fetch_in_progress:
+            self.statusBar().showMessage(
+                self.tr("Fetch already in progress for this repository..."), 3000
+            )
+            return
+
         remote = self._get_default_remote()
         if not remote:
             self._on_manage_remotes()
@@ -1273,6 +1366,7 @@ class MainWindow(QMainWindow):
             )
             return
 
+        self._fetch_in_progress.add(repo_key)
         cancel_event = threading.Event()
         busy_dlg = BusyOperationDialog(
             self.tr("Pull"),
@@ -1282,11 +1376,13 @@ class MainWindow(QMainWindow):
         )
 
         def on_finished(_res):
+            self._fetch_in_progress.discard(repo_key)
             busy_dlg.accept()
             self._refresh_after_git_op()
             self.status_label.setText(self.tr(f"Pulled '{branch}' from '{remote}'."))
 
         def on_failed(exc):
+            self._fetch_in_progress.discard(repo_key)
             busy_dlg.reject()
             self._route_remote_error(exc, remote, branch=branch, op="pull")
 

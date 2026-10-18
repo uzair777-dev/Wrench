@@ -124,6 +124,23 @@ class TestHistoryTab:
         assert "[v1.0.0]" in tip_custom
         assert "Detailed commit description body." in tip_custom
 
+    def test_commit_table_model_author_avatar_decoration(self, multi_commit_repo):
+        from PySide6.QtCore import Qt
+        from PySide6.QtGui import QIcon, QPixmap
+
+        tab = HistoryTab()
+        tab.set_repo(multi_commit_repo)
+        model = tab.graph_widget._model
+
+        idx_author = model.index(0, 2)
+        decoration = model.data(idx_author, Qt.DecorationRole)
+        assert decoration is not None
+        assert isinstance(decoration, (QPixmap, QIcon))
+        if isinstance(decoration, QIcon):
+            assert not decoration.isNull()
+        elif isinstance(decoration, QPixmap):
+            assert not decoration.isNull()
+
     def test_commit_table_model_user_role_and_delegate_render(self, multi_commit_repo):
         from PySide6.QtCore import Qt
         from PySide6.QtGui import QImage, QPainter

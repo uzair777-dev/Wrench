@@ -121,3 +121,33 @@ class TestAutoFetchDecisionTree:
         # The status bar should contain the message (not a modal)
         msg = mw.statusBar().currentMessage()
         assert "Auto-fetch skipped" in msg
+
+    @patch("wrench.ui.main_window.run_in_background")
+    def test_fetch_concurrency_guard_prevents_duplicate_auto_fetch(self, mock_run, qapp, db_conn):
+        mw = MainWindow(conn=db_conn)
+        repo_mock = MagicMock()
+        repo_mock.path = "/fake/repo"
+        mw._current_repo = repo_mock
+        mw._get_default_remote = MagicMock(return_value="origin")
+
+        # Mark repo as having a fetch in progress
+        mw._fetch_in_progress.add("/fake/repo")
+        mw._maybe_auto_fetch(gen=1)
+        mock_run.assert_not_called()
+
+    @patch("wrench.ui.main_window.run_in_background")
+    def test_fetch_concurrency_guard_tracks_and_releases(self, mock_run, qapp, db_conn):
+        mw = MainWindow(conn=db_conn)
+        repo_mock = MagicMock()
+        repo_mock.path = "/fake/repo"
+        mw._current_repo = repo_mock
+        mw._get_default_remote = MagicMock(return_value="origin")
+
+        # Trigger auto-fetch -> path should be added to _fetch_in_progress
+        mw._maybe_auto_fetch(gen=1)
+        assert "/fake/repo" in mw._fetch_in_progress
+        mock_run.assert_called_once()
+
+        # On finish -> path should be discarded
+        mw._on_auto_fetch_finished("origin", gen=1)
+        assert "/fake/repo" not in mw._fetch_in_progress

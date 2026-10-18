@@ -146,5 +146,47 @@ def test_changes_tab_account_btn_updates_with_linked_account(db_conn):
     tab = ChangesTab(db_conn)
     assert hasattr(tab, "_update_account_btn")
     tab._update_account_btn()
-    # Unlinked initially
+    # Unlinked initially with no repo
     assert tab.account_btn.text() == "👤"
+
+
+def test_changes_tab_account_btn_unlinked_identity_avatar(simple_repo, db_conn):
+    from wrench.storage import repo_registry
+    from wrench.ui.tabs.changes_tab import ChangesTab
+
+    repo_registry.add_repo(db_conn, str(simple_repo.path))
+    tab = ChangesTab(db_conn)
+    tab._open_repo_by_path(str(simple_repo.path))
+
+    # Committer identity is resolved from simple_repo git config
+    assert tab.account_btn.text() == ""
+    assert not tab.account_btn.icon().isNull()
+    assert "Committer:" in tab.account_btn.toolTip()
+    assert "Local / Unlinked" in tab.account_btn.toolTip()
+
+
+def test_changes_tab_account_menu_actions(simple_repo, db_conn):
+    from wrench.storage import repo_registry
+    from wrench.ui.tabs.changes_tab import ChangesTab
+
+    repo_registry.add_repo(db_conn, str(simple_repo.path))
+    tab = ChangesTab(db_conn)
+    tab._open_repo_by_path(str(simple_repo.path))
+
+    link_requested = []
+    accounts_requested = []
+    tab.link_repo_requested.connect(lambda p: link_requested.append(p))
+    tab.forge_accounts_requested.connect(lambda: accounts_requested.append(True))
+
+    menu = tab._build_account_menu()
+    actions = [a.text() for a in menu.actions() if not a.isSeparator()]
+    assert any("Committer:" in a for a in actions)
+    assert any("Link Repository" in a for a in actions)
+    assert any("Manage Forge Accounts" in a for a in actions)
+
+    # Trigger manage action
+    for a in menu.actions():
+        if "Manage Forge Accounts" in a.text():
+            a.trigger()
+            break
+    assert len(accounts_requested) == 1

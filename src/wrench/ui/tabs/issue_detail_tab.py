@@ -183,7 +183,10 @@ class IssueDetailTab(QWidget):
 
     def _on_issue_loaded(self, issue: Issue) -> None:
         self._issue = issue
-        self.avatar_widget.set_avatar(issue.author_avatar_url, issue.author)
+        avatar_url = issue.author_avatar_url
+        if not avatar_url and issue.author:
+            avatar_url = f"https://github.com/{issue.author}.png?size=80"
+        self.avatar_widget.set_avatar(avatar_url, issue.author)
         self.title_label.setText(f"#{issue.id}: {issue.title}")
 
         self.state_badge.set_state(issue.state)

@@ -39,6 +39,7 @@ from wrench.ui.commit_graph.layout import (
     compute_graph_layout,
 )
 from wrench.ui.theme import get_ref_badge_qcolor, is_dark_theme
+from wrench.ui.widgets.avatar import get_avatar_loader, resolve_author_avatar_url
 
 logger = logging.getLogger(__name__)
 
@@ -256,6 +257,8 @@ class CommitTableModel(QAbstractTableModel):
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
         self._rows: list[GraphRow] = []
+        self._remote_urls: list[str] = []
+        self._conn = None
 
     def set_rows(self, rows: list[GraphRow]):
         self.beginResetModel()
@@ -311,6 +314,26 @@ class CommitTableModel(QAbstractTableModel):
             elif col == 4:
                 return f"Commit SHA: {row.commit.sha}" if row.commit.sha else None
 
+        if role == Qt.DecorationRole and col == 2:
+            is_dark = False
+            parent_widget = self.parent()
+            if parent_widget is not None:
+                is_dark = is_dark_theme(parent_widget)
+            remote_urls = getattr(self, "_remote_urls", None)
+            db_conn = getattr(self, "_conn", None)
+            url = resolve_author_avatar_url(
+                row.commit.author_name,
+                row.commit.author_email,
+                remote_urls=remote_urls,
+                db_conn=db_conn,
+            )
+            return get_avatar_loader().get_avatar(
+                url,
+                row.commit.author_name or row.commit.author_email or "?",
+                size=18,
+                is_dark=is_dark,
+            )
+
         if role == Qt.DisplayRole:
             if col == 0:
                 return ""
@@ -361,6 +384,7 @@ class CommitGraphWidget(QTableView):
         self.setItemDelegateForColumn(1, self._ref_delegate)
 
         self._init_ui()
+        get_avatar_loader().avatar_ready.connect(lambda *_: self.viewport().update())
 
     @property
     def graph_scrollbar(self) -> QScrollBar:
@@ -521,6 +545,17 @@ class CommitGraphWidget(QTableView):
 
     def set_repo(self, repo: RepoHandle | None):
         self._repo = repo
+        if repo:
+            try:
+                self._model._remote_urls = [
+                    r.url
+                    for r in engine.list_remotes(repo)
+                    if hasattr(r, "url") and isinstance(r.url, str)
+                ]
+            except Exception:
+                self._model._remote_urls = []
+        else:
+            self._model._remote_urls = []
         self.reload_commits()
 
     def set_all_refs_mode(self, all_refs: bool):

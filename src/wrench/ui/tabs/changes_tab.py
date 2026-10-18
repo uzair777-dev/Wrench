@@ -17,6 +17,7 @@ import random
 import sqlite3
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 from PySide6.QtCore import QByteArray, QEvent, QPoint, QSize, Qt, Signal
 from PySide6.QtGui import QIcon, QKeySequence, QShortcut
@@ -58,6 +59,7 @@ from wrench.ui.theme import (
 )
 from wrench.ui.widgets.avatar import get_avatar_loader
 from wrench.ui.widgets.branch_switcher import BranchSwitcherWidget
+from wrench.ui.workers import run_in_background
 
 logger = logging.getLogger(__name__)
 
@@ -205,6 +207,7 @@ class ChangesTab(QWidget):
         self._selected_file: str | None = None
         self._commit_drafts: dict[str, tuple[str, str]] = {}  # repo_path -> (msg, desc)
         self._previous_untracked_msg: str = ""
+        self._avatar_fetch_in_progress: set[int] = set()
 
         self._init_ui()
         get_avatar_loader().avatar_ready.connect(lambda *_: self._update_account_btn())
@@ -1205,6 +1208,8 @@ class ChangesTab(QWidget):
                     avatar_url = settings.get_setting(
                         self._conn, f"account.{link.forge_account_id}.avatar_url"
                     )
+                    if not avatar_url and acc:
+                        self._maybe_fetch_account_avatar(acc)
                     is_dark = is_dark_theme(self)
                     pm = get_avatar_loader().get_avatar(avatar_url, label, size=24, is_dark=is_dark)
                     self.account_btn.setText("")
@@ -1217,16 +1222,140 @@ class ChangesTab(QWidget):
         except Exception as e:
             logger.debug("Failed updating account button avatar: %s", e)
 
+        # Unlinked fallback: resolve local Git committer identity
+        committer_name, committer_email = "", ""
+        if self._repo:
+            try:
+                from wrench.core.identity import check_identity
+
+                committer_name, committer_email = check_identity(self._repo.path)
+            except Exception:
+                pass
+
+        if committer_name or committer_email:
+            remote_urls = None
+            if self._repo:
+                try:
+                    remote_urls = [
+                        r.url
+                        for r in engine.list_remotes(self._repo, db_conn=self._conn)
+                        if hasattr(r, "url") and isinstance(r.url, str)
+                    ]
+                except Exception:
+                    remote_urls = None
+
+            from wrench.ui.widgets.avatar import resolve_author_avatar_url
+
+            url = resolve_author_avatar_url(
+                committer_name,
+                committer_email,
+                remote_urls=remote_urls,
+                db_conn=self._conn,
+            )
+            is_dark = is_dark_theme(self)
+            pm = get_avatar_loader().get_avatar(
+                url, committer_name or committer_email, size=24, is_dark=is_dark
+            )
+            self.account_btn.setText("")
+            self.account_btn.setIcon(QIcon(pm))
+            self.account_btn.setIconSize(QSize(20, 20))
+            self.account_btn.setToolTip(
+                self.tr(f"Committer: {committer_name} <{committer_email}> (Local / Unlinked)")
+            )
+            return
+
         self.account_btn.setIcon(QIcon())
         self.account_btn.setText("👤")
         self.account_btn.setToolTip(self.tr("Forge Account: Local / Unlinked"))
 
-    def _show_account_menu(self) -> None:
+    def _maybe_fetch_account_avatar(self, acc: Any) -> None:
+        if acc.id in self._avatar_fetch_in_progress:
+            return
+        self._avatar_fetch_in_progress.add(acc.id)
 
+        def _fetch() -> str | None:
+            from wrench.forge.registry import create_adapter
+
+            adapter = create_adapter(acc)
+            try:
+                user = adapter.get_authenticated_user()
+                return user.avatar_url
+            except Exception:
+                return None
+            finally:
+                adapter.close()
+
+        def _on_done(fetched_avatar_url: str | None) -> None:
+            self._avatar_fetch_in_progress.discard(acc.id)
+            if fetched_avatar_url:
+                try:
+                    settings.set_setting(
+                        self._conn, f"account.{acc.id}.avatar_url", fetched_avatar_url
+                    )
+                    get_avatar_loader().get_avatar(
+                        fetched_avatar_url, name_or_email=acc.label, size=24
+                    )
+                    self._update_account_btn()
+                except Exception:
+                    pass
+
+        run_in_background(fn=_fetch, on_finished=_on_done)
+
+    def _build_account_menu(self) -> QMenu:
         menu = QMenu(self)
-        menu.addAction(self.tr("No linked forge account")).setEnabled(False)
+
+        # Check if currently linked
+        link = None
+        acc = None
+        if self._repo:
+            try:
+                row = self._conn.execute(
+                    "SELECT id FROM repos WHERE path = ?", (str(self._repo.path),)
+                ).fetchone()
+                if row:
+                    links = forge_accounts.list_links_for_repo(self._conn, row[0])
+                    if links:
+                        link = links[0]
+                        acc = forge_accounts.get_account_full(self._conn, link.forge_account_id)
+            except Exception:
+                pass
+
+        if link and acc:
+            header_text = f"{acc.label} ({acc.username or acc.provider})"
+            menu.addAction(header_text).setEnabled(False)
+            switch_act = menu.addAction(self.tr("Switch Forge Link…"))
+            switch_act.triggered.connect(
+                lambda: self.link_repo_requested.emit(str(self._repo.path))
+            )
+        else:
+            committer_name, committer_email = "", ""
+            if self._repo:
+                try:
+                    from wrench.core.identity import check_identity
+
+                    committer_name, committer_email = check_identity(self._repo.path)
+                except Exception:
+                    pass
+            if committer_name or committer_email:
+                header_text = f"Committer: {committer_name} <{committer_email}>"
+            else:
+                header_text = self.tr("No linked forge account")
+            menu.addAction(header_text).setEnabled(False)
+            link_act = menu.addAction(self.tr("Link Repository to Forge Account…"))
+            if self._repo:
+                link_act.triggered.connect(
+                    lambda: self.link_repo_requested.emit(str(self._repo.path))
+                )
+            else:
+                link_act.setEnabled(False)
+
         menu.addSeparator()
-        menu.addAction(self.tr("Add Forge Account…"))
+        manage_act = menu.addAction(self.tr("Manage Forge Accounts…"))
+        manage_act.triggered.connect(self.forge_accounts_requested.emit)
+        return menu
+
+    def _show_account_menu(self) -> None:
+        menu = self._build_account_menu()
         menu.exec(self.account_btn.mapToGlobal(QPoint(0, self.account_btn.height())))
 
     def has_unsaved_commit_text(self) -> bool:

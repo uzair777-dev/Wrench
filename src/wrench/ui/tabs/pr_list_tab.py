@@ -133,7 +133,10 @@ class PRTableModel(QAbstractTableModel):
         if role == Qt.DecorationRole and col == 3:
             loader = get_avatar_loader()
             is_dark = is_dark_theme(self.parent()) if self.parent() else False
-            return loader.get_avatar(pr.author_avatar_url, pr.author, size=24, is_dark=is_dark)
+            avatar_url = pr.author_avatar_url
+            if not avatar_url and pr.author:
+                avatar_url = f"https://github.com/{pr.author}.png?size=80"
+            return loader.get_avatar(avatar_url, pr.author, size=24, is_dark=is_dark)
 
         return None
 

@@ -428,8 +428,8 @@ class ForgeAccountRecord:
     label: str
     username: str | None
     tls_ca_bundle_path: str | None  # per-account TLS policy (schema comment, §3.1)
-    tls_insecure: int               # raw 0/1 from SQLite, kept as int so
-                                    # dataclass(**dict(row)) stays field-name-exact
+    tls_insecure: int  # raw 0/1 from SQLite, kept as int so
+    # dataclass(**dict(row)) stays field-name-exact
     created_at: str
     # secret_service_key is deliberately excluded from this record — callers that
     # need it (the credential helper, account removal) read it directly from the
@@ -795,6 +795,7 @@ class CloneAbortedError(WrenchGitError):
     normal outcome of pressing Cancel, distinguished from failure precisely so
     the UI can tell the two apart."""
 
+
 class AuthRequiredError(WrenchGitError):
     """Git asked for credentials and the credential helper produced none —
     either no matching account exists in `forge_accounts`, or the Secret
@@ -804,11 +805,13 @@ class AuthRequiredError(WrenchGitError):
     AuthRequired means 'no credential on file', AuthFailed means 'credential
     on file was rejected'."""
 
+
 class AuthFailedError(WrenchGitError):
     """The credential helper DID supply a credential and the server rejected it
     (HTTP 401/403 from a forge host, or 'Permission denied (publickey)' over
     SSH). The credential is almost certainly expired/revoked — the UI response
     is 'edit this account's token', NOT 'try again'. Carries `host: str`."""
+
 
 class PushRejectedError(GitCommandError):
     """`git push` exited non-zero with 'rejected' in stderr — non-fast-forward,
@@ -817,24 +820,29 @@ class PushRejectedError(GitCommandError):
     'fetch and retry' as the default corrective action, or force-with-lease
     behind a confirmation."""
 
+
 class MergeRequiredError(GitCommandError):
     """`git pull --ff-only` failed because the branches diverged — git refuses
     rather than creating an implicit merge (see §5 Phase 3 step 3). The UI's
     response is a merge-vs-rebase choice, wired to the Phase 2 machinery."""
 
+
 class RemoteExistsError(WrenchGitError):
     """add_remote was asked to create a remote whose name is already configured.
     Raised BEFORE invoking git so the git-level error string never leaks."""
 
+
 class RemoteNotFoundError(WrenchGitError):
     """fetch/pull/push/add_remote probe referenced a remote name with no
     configured URL. UI turns this into 'add a remote first' guidance."""
+
 
 class CLITimeoutError(GitCommandError):
     """The git subprocess exceeded its timeout (§5 Phase 3 step 3's per-op
     timeout table, not the generic 30s default). Distinct from a network
     failure: the process may still be alive server-side, so this message must
     not pretend to know the remote state."""
+
 
 class LfsUnavailableError(WrenchGitError):
     """Any `git lfs ...` operation while the git-lfs extension is absent: the
@@ -919,7 +927,7 @@ class ForgeAccount:
     label: str
     username: str | None
     tls_ca_bundle_path: str | None  # CA bundle to verify against, or None = system store
-    tls_insecure: bool              # True = skip TLS verification (schema stores 0/1;
+    tls_insecure: bool  # True = skip TLS verification (schema stores 0/1;
     # this rich type converts at the row→dataclass seam; adapters read it in
     # _client construction, §5 Phase 4 step 2)
     secret_service_key: str  # unlike ForgeAccountRecord (§3.1) — this full ForgeAccount type,
@@ -993,6 +1001,7 @@ class ForgeAdapter(ABC):
         action: str,  # normalized: 'approve' | 'request_changes' | 'comment'
         body: str = "",
     ) -> None: ...
+
     """Submit a PR review. The action vocabulary is the three values above and
     nothing else; each provider maps it to its own endpoint shape (§5 Phase 4
     step 5). Per-user review threads stay view-in-browser for v1 — this method
@@ -1398,11 +1407,13 @@ class WorkerThread(threading.Thread):
     loop, no moveToThread, no cross-thread deleteLater — the old failure trio.
     Create a new instance per operation; never reuse one across calls."""
 
+
 class _Dispatcher(QObject):
     """Main-thread singleton holding the Qt side: finished/failed/progress
     Signals delivered via Qt.QueuedConnection, so callbacks ALWAYS execute on
     the GUI thread regardless of which WorkerThread emitted them. This is the
     only part of the worker machinery that touches Qt types at all."""
+
 
 def run_in_background(
     fn, *args, on_finished=None, on_failed=None, on_progress=None, **kwargs
@@ -2023,22 +2034,26 @@ Each phase should be independently shippable/testable — don't let phases bleed
 - Step 1's walk skeleton — transcribe this shape; the two `dirnames[:]` mutations ARE the correctness story:
 
   ```python
-  for dirpath, dirnames, _files in os.walk(root, followlinks=False,
-                                           onerror=lambda e: skipped.append(e)):
+  for dirpath, dirnames, _files in os.walk(
+      root, followlinks=False, onerror=lambda e: skipped.append(e)
+  ):
       if cancel_event is not None and cancel_event.is_set():
           break
       current = Path(dirpath)
-      if (current / ".git").exists():        # file OR directory (worktree)
+      if (current / ".git").exists():  # file OR directory (worktree)
           found.add(current.resolve())
-          dirnames[:] = []                   # never descend into a repo root
+          dirnames[:] = []  # never descend into a repo root
           if on_progress:
               on_progress(len(found))
           continue
       depth = len(current.relative_to(root).parts)
-      dirnames[:] = [d for d in dirnames
-                     if not d.startswith(".")     # hides .git itself too
-                     and not (current / d).is_symlink()
-                     and depth < max_depth]
+      dirnames[:] = [
+          d
+          for d in dirnames
+          if not d.startswith(".")  # hides .git itself too
+          and not (current / d).is_symlink()
+          and depth < max_depth
+      ]
   return sorted(found)
   ```
 - Per-step gates: 1) `pytest tests/unit/core/test_discovery.py -x -q` covering every `make_repo_forest` case (symlink cycle terminates, chmod-000 skipped, submodule not discovered, `.git`-file worktree discovered); 2) `pytest tests/unit/storage/test_repo_registry.py -x -q` with the `clear_missing` round-trip; 3) `pytest tests/ui/ -x -q -k discover` green, plus a manual File ▸ Open run on a throwaway two-repo fixture dir before moving on.

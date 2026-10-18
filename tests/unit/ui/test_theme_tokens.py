@@ -37,8 +37,7 @@ def test_no_hardcoded_hex_colors_outside_theme():
                     f"{file_path}:{line_no}: Found hardcoded hex {matches} in line: {line.strip()}"
                 )
 
-    assert (
-        not violations
-    ), f"Found {len(violations)} hardcoded hex color literal(s) outside theme.py:\n" + "\n".join(
-        violations[:50]
+    assert not violations, (
+        f"Found {len(violations)} hardcoded hex color literal(s) outside theme.py:\n"
+        + "\n".join(violations[:50])
     )

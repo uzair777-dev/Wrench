@@ -923,7 +923,7 @@ class AddAccountDialog(QDialog):
                 "color: palette(bright-text); font-size: 12px; font-weight: bold;"
             )
             self.waiting_status_label.setText(
-                "GitHub is experiencing issues. " "Check status.github.com and try again later."
+                "GitHub is experiencing issues. Check status.github.com and try again later."
             )
         else:
             self.waiting_status_label.setStyleSheet(

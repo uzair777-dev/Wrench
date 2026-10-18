@@ -100,7 +100,7 @@ def request_device_code(
         )
     if resp.status_code != 200:
         raise ForgeError(
-            f"GitHub device code request failed ({resp.status_code}): " f"{resp.text[:300]}"
+            f"GitHub device code request failed ({resp.status_code}): {resp.text[:300]}"
         )
 
     body = resp.json()

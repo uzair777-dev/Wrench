@@ -128,7 +128,6 @@ class TestGraphLayout:
 
 
 class TestMatchesFilter:
-
     def test_matches_author_and_message(self):
         c = _make_commit(
             "c1", [], msg="Fix login issue", author="Uzair", date="2026-08-30T10:00:00Z"

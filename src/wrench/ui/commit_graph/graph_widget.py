@@ -287,7 +287,6 @@ class CommitTableModel(QAbstractTableModel):
             return row
 
         if role == Qt.ToolTipRole:
-
             if col == 0:
                 msg_first = row.commit.message.splitlines()[0] if row.commit.message else ""
                 return (

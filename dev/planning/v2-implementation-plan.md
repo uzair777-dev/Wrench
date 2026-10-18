@@ -129,6 +129,7 @@ SRC_ROOT = pathlib.Path("src/wrench")
 UI_ROOT = SRC_ROOT / "ui"
 FORBIDDEN_UI_IMPORTS = {"pygit2", "subprocess", "sqlite3", "httpx"}
 
+
 def test_ui_layer_never_imports_backends_directly() -> None:
     """Enforces ARCHITECTURE.md §1.2 and Rule 5: UI never imports pygit2/subprocess/sqlite3/httpx."""
     for py_file in UI_ROOT.rglob("*.py"):
@@ -137,10 +138,15 @@ def test_ui_layer_never_imports_backends_directly() -> None:
             if isinstance(node, ast.Import):
                 for alias in node.names:
                     root_mod = alias.name.split(".")[0]
-                    assert root_mod not in FORBIDDEN_UI_IMPORTS, f"{py_file}: forbidden import {alias.name}"
+                    assert root_mod not in FORBIDDEN_UI_IMPORTS, (
+                        f"{py_file}: forbidden import {alias.name}"
+                    )
             elif isinstance(node, ast.ImportFrom) and node.module:
                 root_mod = node.module.split(".")[0]
-                assert root_mod not in FORBIDDEN_UI_IMPORTS, f"{py_file}: forbidden from-import {node.module}"
+                assert root_mod not in FORBIDDEN_UI_IMPORTS, (
+                    f"{py_file}: forbidden from-import {node.module}"
+                )
+
 
 def test_no_shell_true_or_not_implemented_stubs() -> None:
     """Enforces SEC-1 and SEC-7: No shell=True in core/forge and no NotImplementedError stubs."""
@@ -150,20 +156,32 @@ def test_no_shell_true_or_not_implemented_stubs() -> None:
         for node in ast.walk(tree):
             if isinstance(node, ast.Raise) and isinstance(node.exc, ast.Call):
                 if getattr(node.exc.func, "id", "") == "NotImplementedError":
-                    raise AssertionError(f"{py_file}:{node.lineno} contains NotImplementedError stub")
+                    raise AssertionError(
+                        f"{py_file}:{node.lineno} contains NotImplementedError stub"
+                    )
             if isinstance(node, ast.Call) and py_file.name != "custom_actions.py":
                 for kw in node.keywords:
-                    if kw.arg == "shell" and isinstance(kw.value, ast.Constant) and kw.value.value is True:
+                    if (
+                        kw.arg == "shell"
+                        and isinstance(kw.value, ast.Constant)
+                        and kw.value.value is True
+                    ):
                         raise AssertionError(f"{py_file}:{node.lineno} uses forbidden shell=True")
+
 
 def test_no_fstring_sql_queries_in_storage() -> None:
     """Enforces SEC-5: SQLite execute() calls must never use JoinedStr (f-strings)."""
     for py_file in (SRC_ROOT / "storage").rglob("*.py"):
         tree = ast.parse(py_file.read_text(encoding="utf-8"), filename=str(py_file))
         for node in ast.walk(tree):
-            if isinstance(node, ast.Call) and getattr(node.func, "attr", "") in ("execute", "executemany"):
+            if isinstance(node, ast.Call) and getattr(node.func, "attr", "") in (
+                "execute",
+                "executemany",
+            ):
                 if node.args and isinstance(node.args[0], ast.JoinedStr):
-                    raise AssertionError(f"{py_file}:{node.lineno} uses forbidden f-string in SQL execute()")
+                    raise AssertionError(
+                        f"{py_file}:{node.lineno} uses forbidden f-string in SQL execute()"
+                    )
 ```
 
 &nbsp;
@@ -290,6 +308,7 @@ from enum import Enum
 from typing import Any
 from PySide6.QtCore import QObject, Signal
 
+
 class SettingType(str, Enum):
     BOOL = "bool"
     INT = "int"
@@ -297,9 +316,11 @@ class SettingType(str, Enum):
     CHOICE = "choice"
     PATH = "path"
 
+
 class SettingScope(str, Enum):
     GLOBAL_ONLY = "global_only"
     REPO_OVERRIDABLE = "repo_overridable"
+
 
 @dataclass(frozen=True)
 class SettingSpec:
@@ -398,6 +419,7 @@ class SequencerState:
     active_op: str | None  # "cherry-pick", "revert", "rebase", "merge", "am", or None
     current_oid: str | None
     todo_remaining: int
+
 
 def get_sequencer_state(repo_path: str) -> SequencerState: ...
 ```
@@ -648,11 +670,19 @@ class PRReviewComment:
     created_at: str
     is_resolved: bool
 
+
 class SupportsPRReview(Protocol):
     def list_pr_comments(self, repo_slug: str, pr_number: int) -> list[PRReviewComment]: ...
-    def post_pr_line_comment(self, repo_slug: str, pr_number: int, commit_id: str, path: str, line: int, body: str) -> PRReviewComment: ...
-    def resolve_pr_thread(self, repo_slug: str, pr_number: int, thread_id: str, resolved: bool) -> None: ...
-    def submit_pr_review(self, repo_slug: str, pr_number: int, event: str, body: str) -> None: ...  # event: "APPROVE", "REQUEST_CHANGES", "COMMENT"
+    def post_pr_line_comment(
+        self, repo_slug: str, pr_number: int, commit_id: str, path: str, line: int, body: str
+    ) -> PRReviewComment: ...
+    def resolve_pr_thread(
+        self, repo_slug: str, pr_number: int, thread_id: str, resolved: bool
+    ) -> None: ...
+    def submit_pr_review(
+        self, repo_slug: str, pr_number: int, event: str, body: str
+    ) -> None: ...  # event: "APPROVE", "REQUEST_CHANGES", "COMMENT"
+
 
 class SupportsCILogs(Protocol):
     def get_ci_job_log(self, repo_slug: str, job_id: str) -> str: ...
@@ -824,12 +854,13 @@ CREATE TABLE IF NOT EXISTS account_routing_rules (
 ```py
 class PatchByteIndex:
     """Indexes raw UTF-8 patch bytes into flat C-arrays in < 3ms for 50,000 lines."""
+
     raw_bytes: bytes
     line_starts: array  # array('I')
     line_lengths: array  # array('H')
-    line_flags: array    # array('B'): 0=ctx, 1=add, 2=del, 3=hunk_hdr, 4=folded_divider
-    old_linenos: array   # array('I')
-    new_linenos: array   # array('I')
+    line_flags: array  # array('B'): 0=ctx, 1=add, 2=del, 3=hunk_hdr, 4=folded_divider
+    old_linenos: array  # array('I')
+    new_linenos: array  # array('I')
 ```
 
    - Implement `DiffLineModel(QAbstractListModel)` \+ `QListView` (`setUniformItemSizes(True)`) and `DiffRowDelegate(QStyledItemDelegate)` that decodes and highlights **only** visible rows `[first_visible_row - 20 : last_visible_row + 20]`, storing computed `(intraline_spans, syntax_tokens)` in an `lru_cache(maxsize=512)` (`OPT-8`).  
@@ -865,13 +896,13 @@ class PatchByteIndex:
 ```py
 @dataclass(frozen=True)
 class ReflogRecord:
-    index: int          # e.g., 0 for HEAD@{0}
-    ref_selector: str   # "HEAD@{0}"
+    index: int  # e.g., 0 for HEAD@{0}
+    ref_selector: str  # "HEAD@{0}"
     old_oid: str
     new_oid: str
     committer: str
     timestamp: int
-    action: str         # e.g., "commit", "rebase (finish)", "reset"
+    action: str  # e.g., "commit", "rebase (finish)", "reset"
     message: str
     is_unreachable_from_head: bool
 ```
@@ -1506,6 +1537,7 @@ class MirrorBranchDrift:
     behind_count: int
     state: str  # "synced", "behind", "ahead", "diverged", "missing_on_mirror"
 
+
 @dataclass(frozen=True)
 class MirrorNodeGroup:
     commit_oid: str
@@ -1513,29 +1545,100 @@ class MirrorNodeGroup:
     synced_remotes: tuple[tuple[str, str], ...]  # ((remote_name, provider_short_code), ...)
     drifted_remotes: tuple[MirrorBranchDrift, ...]
 
+
 # Pre-compiled < 10us 11-Forge URL Canonicalizer (OPT-7 Stage 1)
 CANONICAL_FORGE_PATTERNS: tuple[tuple[str, str, re.Pattern[str]], ...] = (
-    ("github", "GH", re.compile(r"^(?:https://|ssh://git@|git@)github\.com[:/](?P<slug>[^/]+/[^/]+?)(?:\.git)?/?$", re.I)),
-    ("gitlab", "GL", re.compile(r"^(?:https://|ssh://git@|git@)gitlab\.com[:/](?P<slug>.+?)(?:\.git)?/?$", re.I)),
-    ("codeberg", "CB", re.compile(r"^(?:https://|ssh://git@|git@)codeberg\.org[:/](?P<slug>[^/]+/[^/]+?)(?:\.git)?/?$", re.I)),
-    ("bitbucket", "BB", re.compile(r"^(?:https://[^@]*@?|ssh://git@|git@)bitbucket\.org[:/](?P<slug>[^/]+/[^/]+?)(?:\.git)?/?$", re.I)),
-    ("sourceforge", "SF", re.compile(r"^(?:https://|ssh://[^@]+@|git://)git\.code\.sf\.net/p/(?P<slug>[^/]+/[^/]+?)(?:\.git)?/?$", re.I)),
-    ("azure_repos", "AZ", re.compile(
-        r"^(?:https://dev\.azure\.com/(?P<org>[^/]+)/(?P<proj>[^/]+)/_git/(?P<repo>[^/]+?)"
-        r"|git@ssh\.dev\.azure\.com:v3/(?P<s_org>[^/]+)/(?P<s_proj>[^/]+)/(?P<s_repo>[^/]+?)"
-        r"|https://(?P<v_org>[^.]+)\.visualstudio\.com/(?:DefaultCollection/)?(?P<v_proj>[^/]+)/_git/(?P<v_repo>[^/]+?))(?:\.git)?/?$", re.I
-    )),
+    (
+        "github",
+        "GH",
+        re.compile(
+            r"^(?:https://|ssh://git@|git@)github\.com[:/](?P<slug>[^/]+/[^/]+?)(?:\.git)?/?$", re.I
+        ),
+    ),
+    (
+        "gitlab",
+        "GL",
+        re.compile(r"^(?:https://|ssh://git@|git@)gitlab\.com[:/](?P<slug>.+?)(?:\.git)?/?$", re.I),
+    ),
+    (
+        "codeberg",
+        "CB",
+        re.compile(
+            r"^(?:https://|ssh://git@|git@)codeberg\.org[:/](?P<slug>[^/]+/[^/]+?)(?:\.git)?/?$",
+            re.I,
+        ),
+    ),
+    (
+        "bitbucket",
+        "BB",
+        re.compile(
+            r"^(?:https://[^@]*@?|ssh://git@|git@)bitbucket\.org[:/](?P<slug>[^/]+/[^/]+?)(?:\.git)?/?$",
+            re.I,
+        ),
+    ),
+    (
+        "sourceforge",
+        "SF",
+        re.compile(
+            r"^(?:https://|ssh://[^@]+@|git://)git\.code\.sf\.net/p/(?P<slug>[^/]+/[^/]+?)(?:\.git)?/?$",
+            re.I,
+        ),
+    ),
+    (
+        "azure_repos",
+        "AZ",
+        re.compile(
+            r"^(?:https://dev\.azure\.com/(?P<org>[^/]+)/(?P<proj>[^/]+)/_git/(?P<repo>[^/]+?)"
+            r"|git@ssh\.dev\.azure\.com:v3/(?P<s_org>[^/]+)/(?P<s_proj>[^/]+)/(?P<s_repo>[^/]+?)"
+            r"|https://(?P<v_org>[^.]+)\.visualstudio\.com/(?:DefaultCollection/)?(?P<v_proj>[^/]+)/_git/(?P<v_repo>[^/]+?))(?:\.git)?/?$",
+            re.I,
+        ),
+    ),
     ("radicle", "RAD", re.compile(r"^rad://(?P<slug>z[1-9A-HJ-NP-Za-km-z]{20,60})(?:/.*)?$")),
-    ("gerrit", "GR", re.compile(r"^(?:ssh://[^@]+@(?P<host>[^:/]+):29418/|https://(?P<h_host>[^/]+)/a/)(?P<slug>.+?)(?:\.git)?/?$", re.I)),
-    ("sourcehut", "SRHT", re.compile(r"^(?:https://|ssh://git@|git@)git\.sr\.ht[:/]~(?P<slug>[^/]+/[^/]+?)(?:\.git)?/?$", re.I)),
-    ("tangled", "TG", re.compile(r"^(?:https://|ssh://git@|git@)(?P<host>tangled\.(?:org|sh)|knot[^/]+)[:/]@?(?P<slug>[^/]+/[^/]+?)(?:\.git)?/?$", re.I)),
+    (
+        "gerrit",
+        "GR",
+        re.compile(
+            r"^(?:ssh://[^@]+@(?P<host>[^:/]+):29418/|https://(?P<h_host>[^/]+)/a/)(?P<slug>.+?)(?:\.git)?/?$",
+            re.I,
+        ),
+    ),
+    (
+        "sourcehut",
+        "SRHT",
+        re.compile(
+            r"^(?:https://|ssh://git@|git@)git\.sr\.ht[:/]~(?P<slug>[^/]+/[^/]+?)(?:\.git)?/?$",
+            re.I,
+        ),
+    ),
+    (
+        "tangled",
+        "TG",
+        re.compile(
+            r"^(?:https://|ssh://git@|git@)(?P<host>tangled\.(?:org|sh)|knot[^/]+)[:/]@?(?P<slug>[^/]+/[^/]+?)(?:\.git)?/?$",
+            re.I,
+        ),
+    ),
 )
 
-def resolve_repository_mirrors(repo_path: str, force_network_probe: bool = False) -> list[MirrorRemoteStatus]: ...
-def build_combined_mirror_dag_walker(repo_path: str, include_mirrors: bool = True) -> list[CommitNode]: ...
+
+def resolve_repository_mirrors(
+    repo_path: str, force_network_probe: bool = False
+) -> list[MirrorRemoteStatus]: ...
+def build_combined_mirror_dag_walker(
+    repo_path: str, include_mirrors: bool = True
+) -> list[CommitNode]: ...
 def group_mirror_refs_by_commit(repo_path: str) -> dict[str, list[MirrorNodeGroup]]: ...
-def sync_mirror_branch(repo_path: str, source_ref: str, target_mirror_remote: str, branch_name: str, force_with_lease: bool = False) -> None: ...
-def push_to_all_mirrors_parallel(repo_path: str, branch_name: str) -> dict[str, tuple[bool, str]]: ...
+def sync_mirror_branch(
+    repo_path: str,
+    source_ref: str,
+    target_mirror_remote: str,
+    branch_name: str,
+    force_with_lease: bool = False,
+) -> None: ...
+def push_to_all_mirrors_parallel(
+    repo_path: str, branch_name: str
+) -> dict[str, tuple[bool, str]]: ...
 ```
 
 - **Completion Gate:** `pytest tests/core/test_mirror_resolution_and_dag.py tests/meta/test_no_shortcuts_guard.py`
@@ -1611,12 +1714,22 @@ class SupportsMagicRefReviewPush(Protocol):
         self, target_branch: str, topic: str = "", reviewers: list[str] = (), wip: bool = False
     ) -> str: ...
     def push_for_review(
-        self, repo_path: str, remote_name: str, target_branch: str, title: str = "", description: str = "",
-        topic: str = "", reviewers: list[str] = (), wip: bool = False
+        self,
+        repo_path: str,
+        remote_name: str,
+        target_branch: str,
+        title: str = "",
+        description: str = "",
+        topic: str = "",
+        reviewers: list[str] = (),
+        wip: bool = False,
     ) -> str: ...
 
+
 class SupportsLabelVoting(Protocol):
-    def submit_label_votes(self, repo_slug: str, change_or_pr_id: str, votes: dict[str, int], message: str = "") -> None: ...
+    def submit_label_votes(
+        self, repo_slug: str, change_or_pr_id: str, votes: dict[str, int], message: str = ""
+    ) -> None: ...
 ```
 
 3. Implement the 6 adapter modules under `src/wrench/forge/adapters/` and register them in `src/wrench/forge/registry.py` and `src/wrench/forge/mirror_resolver.py`:
@@ -1667,16 +1780,22 @@ class AzureReposAdapter:
         b64 = base64.b64encode(f":{pat_token}".encode("utf-8")).decode("ascii")
         return {"Authorization": f"Basic {b64}", "Accept": "application/json"}
 
-    def list_pull_requests(self, org: str, project: str, repo: str, status: str = "active") -> list[PullRequestItem]:
+    def list_pull_requests(
+        self, org: str, project: str, repo: str, status: str = "active"
+    ) -> list[PullRequestItem]:
         # GET https://dev.azure.com/{org}/{project}/_apis/git/repositories/{repo}/pullrequests?searchCriteria.status={status}&$top=50&api-version=7.1
         ...
 
-    def submit_reviewer_vote(self, org: str, project: str, repo: str, pr_id: int, reviewer_id: str, vote: int) -> None:
+    def submit_reviewer_vote(
+        self, org: str, project: str, repo: str, pr_id: int, reviewer_id: str, vote: int
+    ) -> None:
         # PUT https://dev.azure.com/{org}/{project}/_apis/git/repositories/{repo}/pullRequests/{pr_id}/reviewers/{reviewer_id}?api-version=7.1
         # Body: {"vote": vote} where vote in (-10, -5, 0, 5, 10)
         ...
 
-    def list_work_items_for_autocomplete(self, org: str, project: str, query_text: str) -> list[IssueItem]:
+    def list_work_items_for_autocomplete(
+        self, org: str, project: str, query_text: str
+    ) -> list[IssueItem]:
         # POST https://dev.azure.com/{org}/{project}/_apis/wit/wiql?api-version=7.1
         # Batch-fetches top 50 recent Work Items (Bug, Task, User Story) into SQLite cached_issues for < 1ms #ID autocomplete
         ...
@@ -1697,17 +1816,30 @@ class RadicleAdapter:
         ...
 
     def push_for_review(
-        self, repo_path: str, remote_name: str = "rad", target_branch: str = "main",
-        title: str = "", description: str = "", topic: str = "", reviewers: list[str] = (), wip: bool = False
+        self,
+        repo_path: str,
+        remote_name: str = "rad",
+        target_branch: str = "main",
+        title: str = "",
+        description: str = "",
+        topic: str = "",
+        reviewers: list[str] = (),
+        wip: bool = False,
     ) -> str:
         # SEC-1: Validate remote_name does not start with "-"
         # Pushes to Radicle's magic ref `refs/patches` using git push options so no interactive $EDITOR blocks the GUI:
         cmd = [
-            "git", "-C", repo_path, "push",
-            "-o", f"patch.message={title}",
-            *([ "-o", f"patch.message={description}" ] if description else []),
-            *([ "-o", "patch.state=draft" ] if wip else []),
-            "--", remote_name, "HEAD:refs/patches",
+            "git",
+            "-C",
+            repo_path,
+            "push",
+            "-o",
+            f"patch.message={title}",
+            *(["-o", f"patch.message={description}"] if description else []),
+            *(["-o", "patch.state=draft"] if wip else []),
+            "--",
+            remote_name,
+            "HEAD:refs/patches",
         ]
         ...
 ```
@@ -1725,7 +1857,9 @@ class GerritAdapter:
     @staticmethod
     def parse_gerrit_json(raw_bytes: bytes) -> Any:
         # OPT-8 / Zero-copy slice: strip 5-byte Gerrit XSSI guard prefix without copying full buffer
-        payload = memoryview(raw_bytes)[5:] if raw_bytes.startswith(b")]}'") else memoryview(raw_bytes)
+        payload = (
+            memoryview(raw_bytes)[5:] if raw_bytes.startswith(b")]}'") else memoryview(raw_bytes)
+        )
         return json.loads(bytes(payload))
 
     @classmethod
@@ -1735,7 +1869,9 @@ class GerritAdapter:
         # CRITICAL RULE: If message already contains Change-Id: I<40-hex>, preserve it verbatim for Amend!
         if cls.CHANGE_ID_RE.search(message):
             return message
-        seed = f"tree {tree_oid}\nparent {parent_oid}\nauthor {author} {timestamp}\n\n{message}".encode("utf-8")
+        seed = f"tree {tree_oid}\nparent {parent_oid}\nauthor {author} {timestamp}\n\n{message}".encode(
+            "utf-8"
+        )
         digest = hashlib.sha1(seed).hexdigest()
         return message.rstrip() + f"\n\nChange-Id: I{digest}\n"
 
@@ -1782,7 +1918,9 @@ class SourceHutAdapter:
     }
     """
 
-    def execute_graphql(self, service: str, query: str, variables: dict[str, Any], token: str) -> dict[str, Any]:
+    def execute_graphql(
+        self, service: str, query: str, variables: dict[str, Any], token: str
+    ) -> dict[str, Any]:
         # service in ("git", "todo", "lists", "builds") -> POST https://{service}.{instance_domain}/query
         # Uses Authorization: Bearer <API-2.0-PAT>
         ...
@@ -1809,7 +1947,9 @@ class TangledAdapter:
         # Preserves round-based patch revisions and Jujutsu/Git Change-ID stack parent links
         ...
 
-    def list_spindle_ci_runs(self, handle_or_did: str, repo_name: str, commit_sha: str) -> list[CIStatusItem]:
+    def list_spindle_ci_runs(
+        self, handle_or_did: str, repo_name: str, commit_sha: str
+    ) -> list[CIStatusItem]:
         # Queries Spindle Nix CI pipeline status records (collection="sh.tangled.pipeline") when tangled.spindle_ci.enabled is True
         ...
 ```

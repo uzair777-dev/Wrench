@@ -16,7 +16,6 @@ def _extract_avatar_url(data: dict[str, Any] | None) -> str | None:
 
 
 class BitbucketAdapter(ForgeAdapter):
-
     provider_id = "bitbucket"
 
     @property

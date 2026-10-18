@@ -60,9 +60,7 @@ class TestProgressParsing:
 class TestFailureClassification:
     def test_push_rejected(self):
         stderr = (
-            "To github.com:repo\n"
-            " ! [rejected] main -> main (fetch first)\n"
-            "error: failed to push"
+            "To github.com:repo\n ! [rejected] main -> main (fetch first)\nerror: failed to push"
         )
         err = _classify_git_error(["push", "origin", "main"], 1, stderr)
         assert isinstance(err, PushRejectedError)
@@ -112,7 +110,7 @@ class TestFailureClassification:
 
     def test_auth_required_terminal_prompts_disabled(self):
         stderr = (
-            "fatal: could not read Username for 'https://github.com': " "terminal prompts disabled"
+            "fatal: could not read Username for 'https://github.com': terminal prompts disabled"
         )
         err = _classify_git_error(
             ["fetch", "origin"], 128, stderr, remote_url="https://github.com/user/repo.git"
@@ -201,9 +199,7 @@ class TestFailureClassification:
     def test_generic_push_rejected_still_works(self):
         """Existing non-fast-forward rejections must still raise generic PushRejectedError."""
         stderr = (
-            "To github.com:repo\n"
-            " ! [rejected] main -> main (fetch first)\n"
-            "error: failed to push"
+            "To github.com:repo\n ! [rejected] main -> main (fetch first)\nerror: failed to push"
         )
         err = _classify_git_error(["push", "origin", "main"], 1, stderr)
         assert isinstance(err, PushRejectedError)

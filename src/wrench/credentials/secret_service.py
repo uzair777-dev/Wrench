@@ -2,8 +2,7 @@
 
 __lazy_modules__ = ["secretstorage"]
 
-import secretstorage
-from secretstorage.exceptions import LockedException, SecretServiceNotAvailableException
+lazy import secretstorage
 
 from .backend import CredentialBackend, CredentialBackendUnavailableError
 
@@ -15,13 +14,13 @@ class SecretServiceBackend(CredentialBackend):
         try:
             bus = secretstorage.dbus_init()
             collection = secretstorage.get_default_collection(bus)
-        except SecretServiceNotAvailableException as e:
+        except secretstorage.exceptions.SecretServiceNotAvailableException as e:
             raise CredentialBackendUnavailableError(self.unavailable_help_text()) from e
 
         if collection.is_locked():
             try:
                 collection.unlock()
-            except LockedException as e:
+            except secretstorage.exceptions.LockedException as e:
                 raise CredentialBackendUnavailableError(self.unavailable_help_text()) from e
         return collection
 

@@ -59,3 +59,36 @@ def test_lazy_modules_declarations():
 
     assert hasattr(app, "__lazy_modules__")
     assert "watchdog" in app.__lazy_modules__
+
+
+def test_native_lazy_imports_deferral():
+    """Verify that native `lazy import` does not load the module into sys.modules immediately."""
+    code = """
+import sys
+import wrench.core.paths
+assert 'platformdirs' not in sys.modules, 'platformdirs was loaded prematurely'
+
+import wrench.credentials.secret_service
+assert 'secretstorage' not in sys.modules, 'secretstorage was loaded prematurely'
+
+import wrench.forge.capability
+assert 'httpx' not in sys.modules, 'httpx was loaded prematurely'
+
+# Attribute access triggers resolution
+_ = wrench.core.paths.data_dir()
+assert 'platformdirs' in sys.modules, 'platformdirs was not loaded on attribute access'
+print('LAZY_VERIFIED_SUCCESS')
+"""
+    repo_root = Path(__file__).resolve().parents[3]
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(repo_root / "src")
+
+    proc = subprocess.run(
+        [sys.executable, "-c", code],
+        cwd=str(repo_root),
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode == 0, f"Lazy import deferral check failed: {proc.stderr}\n{proc.stdout}"
+    assert "LAZY_VERIFIED_SUCCESS" in proc.stdout

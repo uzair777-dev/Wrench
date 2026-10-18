@@ -1,11 +1,13 @@
 """ForgeCapability enum and ForgeAdapter ABC."""
 
+from __future__ import annotations
+
 import logging
 from abc import ABC, abstractmethod
 from enum import Flag, auto
 from typing import Any
 
-import httpx
+lazy import httpx
 
 from wrench import credentials
 from wrench.forge.exceptions import (

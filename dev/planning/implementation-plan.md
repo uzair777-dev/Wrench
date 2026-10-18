@@ -2784,11 +2784,12 @@ Flattened, in strict execution order, across every phase — the literal path th
 - [x] 4.4.3 integrations: PR/issue rows + detail headers, commit-box account button (`get_avatar_url()` optional-method pattern + `account.{id}.avatar_url` persisted at link time), history detail panel author row via gravatar behind default-OFF `ui.avatars_gravatar` with privacy tooltip
 - [x] 4.4.4 **CHECK**: cache/TTL/dedup/corrupt tests green; gravatar-off ⇒ zero fetches; manual QA — initials→swap-in, airplane-mode initials everywhere, no error UI
 
-**Phase 4.5 — Multi-Repository Directory Discovery** *(prerequisites: 4.4.4 checked)*
+**Phase 4.5 — Multi-Repository Directory Discovery & Python 3.15 Tooling** *(prerequisites: 4.4.4 checked)*
 - [x] 4.5.1 `core/discovery.py` — bounded cancellable walk (depth 3, dot-dirs skipped, symlinks unfollowed, prune at repo roots, `.git` file-or-directory counts, permission errors skipped-and-counted); façade re-export
 - [x] 4.5.2 `storage/repo_registry.py` — `clear_missing`; registration loop semantics (missing → restore, known → skip, new → `add_repo`, resolve-canonicalized)
 - [x] 4.5.3 `ui/dialogs/discover_repos_dialog.py` + `_on_open_repo` branch on `WrenchRepoNotFoundError` per ui-planning §6.10 — background scan with live count, checkbox results, idempotent accept, selector refresh, `tr()`/a11y
-- [x] 4.5.4 **CHECK**: `make_repo_forest` unit suite green (symlink cycle, chmod-000, submodule-skip, `.git`-file worktree); manual QA — open a real multi-repo dir, all repos switchable, re-run is a no-op
+- [x] 4.5.4 Tooling & Python 3.15 Migration — Developer binaries (`bin/wrench-*`) and `init-dev.sh` wired to `uv` and `uvx`; CPython 3.15 runtime environment with native C-extension compilation (`pygit2`, `cffi`) and dynamic linker guards; PEP 810 native `lazy import` on heavy modules (`secretstorage`, `platformdirs`, `httpx`); Ruff/Black `py315` alignment; `dev/planning/python-315-migration.md`
+- [x] 4.5.5 **CHECK**: `make_repo_forest` unit suite green; lazy import deferral tests green; full 534 pytest suite passing under Python 3.15; `./bin/wrench-ci-check` clean
 
 **Phase 4.6 — Operation Feedback & Delight** *(prerequisites: 4.5.4 checked)*
 - [ ] 4.6.1 `_parse_progress` extension + progress-type matrix (determinate = real fraction only; rebase `Rebasing (n/m)`, LFS `N of M files`, submodule countables specced for Phase 5; everything else indeterminate)

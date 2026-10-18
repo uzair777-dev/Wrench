@@ -6,6 +6,8 @@ __pycache__/
 
 # Build outputs — generated, never committed; see packaging/build-all.sh
 build-dir/
+.build/
+.uv_python/
 .flatpak-builder/
 dist/
 linux/               # Briefcase's generated AppImage build tree (§6.3)

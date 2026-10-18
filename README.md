@@ -4,9 +4,9 @@
 
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](LICENSE)
 ![GitHub Repo stars](https://img.shields.io/github/stars/uzair777-dev/Wrench)
-[![Python: 3.12+ (3.15 Ready)](https://img.shields.io/badge/Python-3.12+%20(3.15%20Ready)-green.svg)](https://www.python.org/)
+[![Python: 3.15 Primary (3.12+ Compatible)](https://img.shields.io/badge/Python-3.15%20Primary%20(3.12+%20Compatible)-blue.svg)](https://www.python.org/)
 [![GUI: PySide6](https://img.shields.io/badge/GUI-PySide6%20%2F%20Qt%206-informational.svg)](https://www.qt.io/)
-[![Tests: 525+ passed](https://img.shields.io/badge/Tests-525+%20passed-brightgreen.svg)](tests/)
+[![Tests: 534 passed](https://img.shields.io/badge/Tests-534%20passed-brightgreen.svg)](tests/)
 ![GitHub Actions Workflow Status](https://img.shields.io/github/actions/workflow/status/uzair777-dev/Wrench/ci.yml)
 
 ---
@@ -27,9 +27,10 @@
   - Bounded (depth $\le 3$) non-blocking background scanner (`discover_repos`) with cooperative cancellation and live progress counters.
   - Automatic branching from `_on_open_repo` when a picked folder is not a Git repo.
   - Interactive `DiscoverReposDialog` with Select All / Deselect All, tri-state selection, worktree `.git`-file detection, symlink cycle protection, and atomic batch registry import with missing-status recovery (`clear_missing`).
-- **Explicit Lazy Imports (PEP 810) & Python 3.15 Readiness**:
-  - Python 3.15 native `lazy import <mod>` compatibility and top-of-file `__lazy_modules__` declarations minimizing cold-start overhead for heavyweight modules (`secretstorage`, `watchdog`, `platformdirs`, `httpx`).
-  - Powered by high-speed `uv` and `uvx` package management and test runners.
+- **Python 3.15 Engine & Native Explicit Lazy Imports (PEP 810)**:
+  - Primary development runtime powered by Python 3.15 with backwards-compatible support for Python 3.12+.
+  - Native `lazy import <mod>` syntax deferring heavyweight startup modules (`secretstorage`, `platformdirs`, `httpx`, `watchdog`), eliminating cold-start latency.
+  - Fully integrated with high-speed `uv` and `uvx` package management, offline test runners, and automated C-extension compilation.
 - **Unified Changes Workspace**:
   - Borderless repository selector with auto-recovery for missing or relocated folders.
   - Interactive branch switcher (`🌿 main ▾` / `🔗 HEAD detached at {sha}`) with search filtering and uncommitted changes protection (`Stash & Switch`).
@@ -89,22 +90,33 @@
 
 ## Quickstart & Development
 
-### 1. Modern Package Management (`uv` & `uvx`)
+### 1. Modern Package Management (`uv` & `uvx`) & Python 3.15
 
-Wrench utilizes `uv` and `uvx` for fast, reproducible dependency resolution, sub-second virtual environment management, and ephemeral tool execution:
+Wrench utilizes `uv` and `uvx` for fast, reproducible dependency resolution, sub-second virtual environment management, and ephemeral tool execution under Python 3.15:
 
 ```bash
-# Setup virtual environment with uv
-uv venv .venv
+# Clone the repository
+git clone https://github.com/uzair777-dev/Wrench.git
+cd Wrench
+
+# All-in-one bootstrap script (handles Python 3.15, uv, and C-extension compilation):
+./init-dev.sh
+
+# Or activate into your terminal:
+source init-dev.sh
+```
+
+#### Manual Virtual Environment Creation (Python 3.15):
+```bash
+# Provision Python 3.15 virtual environment with uv
+uv venv .venv --python 3.15
 source .venv/bin/activate
+
+# Install dependencies (C_INCLUDE_PATH / LIBRARY_PATH are automatically configured by init-dev.sh)
 uv pip install -e ".[dev]"
 ```
 
-Or run the all-in-one bootstrap script:
-
-```bash
-./init-dev.sh
-```
+For complete details on building native C extensions (`pygit2`, `cffi`) and dynamic linker configuration, see **[dev/planning/python-315-migration.md](dev/planning/python-315-migration.md)**.
 
 ### 2. Available Developer Commands
 
@@ -123,15 +135,15 @@ All developer binaries in `bin/` leverage `uv run --no-sync` for fast, offline e
 
 ## Architecture & Tech Stack
 
-- **GUI Framework:** PySide6 (Qt 6.8+)
+- **GUI Framework:** PySide6 (Qt 6.8+ / Qt 6.12 via Python Stable ABI `abi3`)
 - **Git Engine:** `pygit2` (C libgit2 bindings) + System `git` CLI
 - **Tooling & Package Management:** `uv` & `uvx` 0.13+ (sub-second dependency resolution)
-- **Runtime & Optimization:** Python 3.12+ (Python 3.15 ready with PEP 810 explicit `lazy import` support & `LazyProxyModule`)
-- **HTTP Client:** `httpx` (HTTP/1.1 & HTTP/2 with custom TLS trust anchors)
-- **Credential Storage:** `secretstorage` (FreeDesktop Secret Service D-Bus specification)
-- **Local Storage:** SQLite (`~/.local/share/wrench/wrench.db` via `platformdirs`)
+- **Runtime & Optimization:** Python 3.15.0 primary runtime (PEP 810 native `lazy import` support & `LazyProxyModule` fallback, `requires-python = ">=3.12"`)
+- **HTTP Client:** `httpx` (HTTP/1.1 & HTTP/2 with custom TLS trust anchors, lazily imported)
+- **Credential Storage:** `secretstorage` (FreeDesktop Secret Service D-Bus specification, lazily imported)
+- **Local Storage:** SQLite (`~/.local/share/wrench/wrench.db` via `platformdirs`, lazily imported)
 - **Filesystem Watcher:** `watchdog` (Inotify) with Qt debounce event pipeline
-- **Testing:** `pytest`, `pytest-qt` (525+ tests across unit, integration, and UI suites)
+- **Testing:** `pytest`, `pytest-qt` (534 passed tests across unit, integration, and UI suites)
 
 For an in-depth exploration of data flows, concurrency models, and database schemas, see **[ARCHITECTURE.md](ARCHITECTURE.md)**.
 
@@ -140,6 +152,7 @@ For an in-depth exploration of data flows, concurrency models, and database sche
 ## Documentation
 
 - **[ARCHITECTURE.md](ARCHITECTURE.md)**: Architectural design principles, data flow, and directory structure.
+- **[dev/planning/python-315-migration.md](dev/planning/python-315-migration.md)**: Python 3.15 migration guide, PEP 810 lazy imports, and C-extension compilation.
 - **[dev/planning/ui-planning.md](dev/planning/ui-planning.md)**: Comprehensive UI layout, wireframes, and secondary surface specifications.
 - **[dev/planning/implementation-plan.md](dev/planning/implementation-plan.md)**: Phased master checklist and technical implementation plan.
 - **[dev/planning/srs.md](dev/planning/srs.md)**: Software Requirements Specification (FR-1 through FR-11).
@@ -148,7 +161,7 @@ For an in-depth exploration of data flows, concurrency models, and database sche
 - **[dev/planning/phase-2.md](dev/planning/phase-2.md)**: Phase 2 completion summary (DAG commit graph & 3-way merge tool).
 - **[dev/planning/phase-3.md](dev/planning/phase-3.md)**: Phase 3 completion summary (Remotes, sync & credential helper).
 - **[dev/planning/phase-4.md](dev/planning/phase-4.md)**: Phase 4 completion summary (Multi-forge integration layer).
-- **[dev/planning/phase-4.5.md](dev/planning/phase-4.5.md)**: Phase 4.5 completion summary (Multi-repository directory discovery & uv tooling).
+- **[dev/planning/phase-4.5.md](dev/planning/phase-4.5.md)**: Phase 4.5 completion summary (Multi-repository directory discovery, uv tooling & Python 3.15 migration).
 - **[dev/planning/v2-implementation-plan.md](dev/planning/v2-implementation-plan.md)**: v2 deferred roadmap and backlog specifications.
 
 ---

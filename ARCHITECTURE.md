@@ -949,3 +949,37 @@ wrench/
 │   └── watcher/                  # Inotify filesystem watching & debouncing
 └── tests/                        # Comprehensive test suite (unit, integration, UI)
 ```
+
+---
+
+## 10. Python 3.15 Runtime & PEP 810 Native Lazy Imports
+
+### 10.1 Execution Model & Dual-Tier Version Policy
+Wrench adopts a dual-tier version policy:
+- **Primary Runtime (Developer & Test Environment)**: CPython 3.15.0 with PySide6 6.12.0 (Stable ABI `abi3`), pygit2 1.20+ (compiled C-extension against libgit2), and `uv` 0.13+.
+- **Compatibility Floor**: `requires-python = ">=3.12"` in `pyproject.toml`, preserving packaging portability across enterprise Linux distributions.
+
+### 10.2 PEP 810 Native Explicit Lazy Imports
+Python 3.15 introduces native `lazy import <module>` syntax. Rather than eagerly executing a module's bytecode and registering its symbols into `sys.modules` at startup, Python 3.15 instantiates a lightweight deferred stub. Bytecode execution is suspended until first attribute access.
+
+```text
+Application Launch (python -m wrench.app)
+  │
+  ├─► lazy import secretstorage ───► Stub created (sys.modules untouched)
+  ├─► lazy import platformdirs  ───► Stub created (sys.modules untouched)
+  ├─► lazy import httpx         ───► Stub created (sys.modules untouched)
+  │
+  ├─► MainWindow Initialization (instantaneous UI render)
+  │
+  ▼
+On User Interaction / Background Action:
+  ├─► User clicks "Fetch/Pull" ──► httpx resolved & initialized on-demand
+  └─► Credential lookup        ──► secretstorage resolved & D-Bus connected on-demand
+```
+
+### 10.3 Native C-Extension Build System & Linker Guard
+For compiled extensions on Python 3.15 (where prebuilt PyPI wheels are not yet available):
+1. **User-Space Development Prefix (`.build/`)**: Official `libgit2-devel` and `libffi-devel` headers are vendored inside the workspace, eliminating `sudo` requirements.
+2. **Environment Exports**: `init-dev.sh` exports `C_INCLUDE_PATH`, `LIBRARY_PATH`, and `PKG_CONFIG_PATH` to enable seamless `uv pip install -e ".[dev]"`.
+3. **Runtime Linker Path**: All developer binaries (`bin/wrench-*`) prepend `.build/libgit2/usr/lib64` to `LD_LIBRARY_PATH` ensuring `libgit2.so.1.9` is resolved dynamically at runtime.
+

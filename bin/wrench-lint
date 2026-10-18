@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -e
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+if [ -d "${ROOT_DIR}/.build/libgit2/usr/lib64" ]; then
+    export LD_LIBRARY_PATH="${ROOT_DIR}/.build/libgit2/usr/lib64:${LD_LIBRARY_PATH}"
+fi
 echo "Checking ruff linting..."
 "${ROOT_DIR}/.venv/bin/uv" run --no-sync ruff check "${ROOT_DIR}"
 echo "Checking black formatting..."

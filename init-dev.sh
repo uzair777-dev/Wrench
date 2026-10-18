@@ -25,10 +25,40 @@ RESET="\033[0m"
 echo -e "${BOLD}${BLUE}🔧 Wrench Developer Environment${RESET}"
 echo -e "Project root: ${CYAN}${SCRIPT_DIR}${RESET}\n"
 
+# Configure libgit2 and libffi search paths if vendored/local build exists
+if [ -d "${SCRIPT_DIR}/.build/libgit2/usr/lib64" ]; then
+    export LD_LIBRARY_PATH="${SCRIPT_DIR}/.build/libgit2/usr/lib64:${LD_LIBRARY_PATH}"
+    export C_INCLUDE_PATH="${SCRIPT_DIR}/.build/libgit2/usr/include:${SCRIPT_DIR}/.build/libffi/usr/include:${C_INCLUDE_PATH}"
+    export LIBRARY_PATH="${SCRIPT_DIR}/.build/libgit2/usr/lib64:${SCRIPT_DIR}/.build/libffi/usr/lib64:${LIBRARY_PATH}"
+    export PKG_CONFIG_PATH="${SCRIPT_DIR}/.build/libgit2/usr/lib64/pkgconfig:${SCRIPT_DIR}/.build/libffi/usr/lib64/pkgconfig:${PKG_CONFIG_PATH}"
+    export LIBGIT2="${SCRIPT_DIR}/.build/libgit2/usr"
+fi
+
 # 1. Virtual Environment Setup
 if [ ! -d ".venv" ]; then
     echo -e "${YELLOW}Creating Python virtual environment (.venv)...${RESET}"
-    python3 -m venv .venv
+    PYTHON_315_BIN=""
+    if [ -x "${SCRIPT_DIR}/.uv_python/cpython-3.15.0-linux-x86_64-gnu/bin/python3.15" ]; then
+        PYTHON_315_BIN="${SCRIPT_DIR}/.uv_python/cpython-3.15.0-linux-x86_64-gnu/bin/python3.15"
+    elif command -v python3.15 &>/dev/null; then
+        PYTHON_315_BIN="$(command -v python3.15)"
+    fi
+
+    UV_BIN=""
+    if command -v uv &>/dev/null; then
+        UV_BIN="$(command -v uv)"
+    elif [ -x "${SCRIPT_DIR}/.build/bin/uv" ]; then
+        UV_BIN="${SCRIPT_DIR}/.build/bin/uv"
+    fi
+
+    if [ -n "${UV_BIN}" ] && [ -n "${PYTHON_315_BIN}" ]; then
+        "${UV_BIN}" venv .venv --python "${PYTHON_315_BIN}"
+        cp "${UV_BIN%/*}/uv"* .venv/bin/ 2>/dev/null || true
+    elif [ -n "${PYTHON_315_BIN}" ]; then
+        "${PYTHON_315_BIN}" -m venv .venv
+    else
+        python3 -m venv .venv
+    fi
 fi
 
 # 2. Activate virtual environment
@@ -40,10 +70,10 @@ fi
 
 # 3. If executed directly (not sourced), ensure dependencies & pre-commit are installed
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
-    if command -v uv &>/dev/null; then
-        uv pip install -e ".[dev]"
-    elif [ -f ".venv/bin/uv" ]; then
+    if [ -f ".venv/bin/uv" ]; then
         .venv/bin/uv pip install -e ".[dev]"
+    elif command -v uv &>/dev/null; then
+        uv pip install -e ".[dev]"
     else
         pip install -e ".[dev]" --no-build-isolation 2>/dev/null || pip install -e ".[dev]"
     fi

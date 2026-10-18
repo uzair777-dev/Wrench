@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-import platformdirs
+lazy import platformdirs
 
 APP_NAME = "wrench"
 

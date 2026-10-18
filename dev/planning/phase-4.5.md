@@ -580,11 +580,21 @@ Expected: `2 passed`.
 ## Phase 4.5 Completion Status: COMPLETED ✅
 
 - **Tooling Modernization:** `uv` and `uvx` installed and integrated into all developer binaries (`bin/wrench-*`).
+- **Python 3.15 Migration & Compilation:** Fully migrated `.venv` to CPython 3.15.0; compiled native C extensions (`pygit2 1.20.1`, `cffi 2.1.1`) against vendored/system headers (`.build/libgit2`, `.build/libffi`); PySide6 6.12.0 verified running via Python Stable ABI (`abi3`).
+- **Dynamic Linker & Linker Guard:** `LD_LIBRARY_PATH` automatically managed in `bin/wrench-*` and `init-dev.sh`.
 - **Core Engine:** `src/wrench/core/discovery.py` implements bounded, non-blocking discovery with depth limit, cycle-proof symlink handling, `.git`-file worktree support, permission error tolerance, and cooperative cancellation.
 - **Storage Layer:** `src/wrench/storage/repo_registry.py:clear_missing()` implemented under mutex lock.
 - **UI Layer:** `DiscoverReposDialog` implemented with checkable list, Select/Deselect All, theme tokens, and 0 hardcoded colors. `MainWindow._on_open_repo` seamlessly branches on `WrenchRepoNotFoundError`.
-- **Explicit Lazy Imports:** Python 3.15 native `lazy import` demo verified; `LazyProxyModule` and `__lazy_modules__` implemented on top of modules.
+- **Native Explicit Lazy Imports (PEP 810):**
+  - Converted `src/wrench/credentials/secret_service.py` to `lazy import secretstorage`.
+  - Converted `src/wrench/core/paths.py` to `lazy import platformdirs`.
+  - Converted `src/wrench/forge/capability.py` to `lazy import httpx`.
+  - Verified deferred loading in `tests/unit/core/test_lazy_imports.py:test_native_lazy_imports_deferral`.
+- **Linter & Formatter Alignment:** Ruff 0.17+ and Black 26.10+ configured for `py315` in `pyproject.toml`; pre-commit hooks passing without exclusions.
 - **Verification Gates:**
-  - `wrench-lint`: 0 ruff errors, 0 black formatting deviations.
+  - `wrench-lint`: 0 ruff errors, 0 black formatting deviations across all 170 files.
   - Theme contrast & tokens: 9 passed, 0 hardcoded colors outside theme, 100% WCAG 2.1 compliance.
   - Discovery & Dialog tests: 100% passing across unit and UI suites.
+  - Full pytest suite: 534 passed tests on Python 3.15.0.
+  - `wrench-ci-check`: 100% clean exit.
+

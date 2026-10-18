@@ -268,3 +268,17 @@ def test_commit_detail_panel_gravatar_privacy_gate():
             args = mock_set.call_args[0]
             assert args[0] is not None
             assert "gravatar.com/avatar/" in args[0]
+
+
+def test_commit_graph_widget_avatar_ready_after_deletion():
+    import shiboken6
+
+    from wrench.ui.commit_graph.graph_widget import CommitGraphWidget
+    from wrench.ui.widgets.avatar import get_avatar_loader
+
+    loader = get_avatar_loader()
+    widget = CommitGraphWidget()
+    shiboken6.delete(widget)
+
+    # Emitting avatar_ready when widget is deleted must not raise RuntimeError
+    loader.avatar_ready.emit("https://example.com/avatar.png", 18)

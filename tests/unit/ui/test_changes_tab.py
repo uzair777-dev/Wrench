@@ -190,3 +190,17 @@ def test_changes_tab_account_menu_actions(simple_repo, db_conn):
             a.trigger()
             break
     assert len(accounts_requested) == 1
+
+
+def test_changes_tab_avatar_ready_after_deletion(db_conn):
+    import shiboken6
+
+    from wrench.ui.tabs.changes_tab import ChangesTab
+    from wrench.ui.widgets.avatar import get_avatar_loader
+
+    loader = get_avatar_loader()
+    tab = ChangesTab(db_conn)
+    shiboken6.delete(tab)
+
+    # Emitting avatar_ready when ChangesTab is deleted must not raise RuntimeError
+    loader.avatar_ready.emit("https://example.com/avatar.png", 32)

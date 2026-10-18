@@ -434,3 +434,37 @@ def test_issue_table_model_fallback_avatar_resolution():
     icon = model.data(idx, Qt.DecorationRole)
     assert isinstance(icon, QPixmap)
     assert icon.width() == 24
+
+
+def test_pr_list_tab_avatar_ready_after_deletion(repo_fixture):
+    import shiboken6
+
+    from wrench.ui.tabs.pr_list_tab import PRListTab
+    from wrench.ui.widgets.avatar import get_avatar_loader
+
+    repo_path, _, _, db_path = repo_fixture
+    loader = get_avatar_loader()
+
+    with patch("wrench.storage.db.get_connection", side_effect=lambda: sqlite3.connect(db_path)):
+        tab = PRListTab(repo_path)
+    shiboken6.delete(tab)
+
+    # Emitting avatar_ready when PRListTab is deleted must not raise RuntimeError
+    loader.avatar_ready.emit("https://example.com/avatar.png", 24)
+
+
+def test_issue_list_tab_avatar_ready_after_deletion(repo_fixture):
+    import shiboken6
+
+    from wrench.ui.tabs.issue_list_tab import IssueListTab
+    from wrench.ui.widgets.avatar import get_avatar_loader
+
+    repo_path, _, _, db_path = repo_fixture
+    loader = get_avatar_loader()
+
+    with patch("wrench.storage.db.get_connection", side_effect=lambda: sqlite3.connect(db_path)):
+        tab = IssueListTab(repo_path)
+    shiboken6.delete(tab)
+
+    # Emitting avatar_ready when IssueListTab is deleted must not raise RuntimeError
+    loader.avatar_ready.emit("https://example.com/avatar.png", 24)

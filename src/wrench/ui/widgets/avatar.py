@@ -357,6 +357,13 @@ class AvatarWidget(QLabel):
 
         self._loader = get_avatar_loader()
         self._loader.avatar_ready.connect(self._on_avatar_ready)
+        self.destroyed.connect(self._disconnect_avatar_loader)
+
+    def _disconnect_avatar_loader(self, *_) -> None:
+        try:
+            self._loader.avatar_ready.disconnect(self._on_avatar_ready)
+        except (RuntimeError, TypeError):
+            pass
 
     def set_avatar(self, url: str | None, name_or_email: str) -> None:
         self._url = url
@@ -376,5 +383,15 @@ class AvatarWidget(QLabel):
         self.setPixmap(pm)
 
     def _on_avatar_ready(self, url: str, size: int) -> None:
-        if url == self._url and (size == self._size or size == 0):
-            self._refresh()
+        try:
+            import shiboken6
+
+            if not shiboken6.isValid(self):
+                return
+        except Exception:
+            return
+        try:
+            if url == self._url and (size == self._size or size == 0):
+                self._refresh()
+        except (RuntimeError, AttributeError):
+            pass

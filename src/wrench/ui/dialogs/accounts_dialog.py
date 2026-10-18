@@ -1324,6 +1324,7 @@ class AccountsDialog(QDialog):
         self._avatar_urls: dict[int, str] = {}
         self._avatar_loader = get_avatar_loader()
         self._avatar_loader.avatar_ready.connect(self._on_avatar_ready)
+        self.destroyed.connect(self._disconnect_avatar_loader)
         self._init_ui()
         self.reload_accounts()
 
@@ -1374,18 +1375,36 @@ class AccountsDialog(QDialog):
 
         layout.addLayout(btn_bar)
 
+    def _disconnect_avatar_loader(self, *_) -> None:
+        try:
+            self._avatar_loader.avatar_ready.disconnect(self._on_avatar_ready)
+        except (RuntimeError, TypeError):
+            pass
+
     def _on_avatar_ready(self, url: str, size: int) -> None:
+        try:
+            import shiboken6
+
+            if not shiboken6.isValid(self):
+                return
+            if not hasattr(self, "table") or not shiboken6.isValid(self.table):
+                return
+        except Exception:
+            return
         if size != 20 and size != 0:
             return
         for row, acc in enumerate(self._accounts):
             if self._avatar_urls.get(acc.id) == url:
-                user_item = self.table.item(row, 2)
-                if user_item is not None:
-                    pixmap = self._avatar_loader.get_avatar(
-                        url, name_or_email=acc.username or acc.label, size=20
-                    )
-                    if not pixmap.isNull():
-                        user_item.setIcon(QIcon(pixmap))
+                try:
+                    user_item = self.table.item(row, 2)
+                    if user_item is not None:
+                        pixmap = self._avatar_loader.get_avatar(
+                            url, name_or_email=acc.username or acc.label, size=20
+                        )
+                        if not pixmap.isNull():
+                            user_item.setIcon(QIcon(pixmap))
+                except (RuntimeError, AttributeError):
+                    pass
 
     def reload_accounts(self) -> None:
         conn = db.get_connection()

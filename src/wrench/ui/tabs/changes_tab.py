@@ -210,7 +210,24 @@ class ChangesTab(QWidget):
         self._avatar_fetch_in_progress: set[int] = set()
 
         self._init_ui()
-        get_avatar_loader().avatar_ready.connect(lambda *_: self._update_account_btn())
+        get_avatar_loader().avatar_ready.connect(self._on_avatar_ready)
+        self.destroyed.connect(self._disconnect_avatar_loader)
+
+    def _disconnect_avatar_loader(self, *_) -> None:
+        try:
+            get_avatar_loader().avatar_ready.disconnect(self._on_avatar_ready)
+        except (RuntimeError, TypeError):
+            pass
+
+    def _on_avatar_ready(self, *_) -> None:
+        try:
+            import shiboken6
+
+            if not shiboken6.isValid(self):
+                return
+            self._update_account_btn()
+        except (RuntimeError, AttributeError):
+            pass
 
     def _init_ui(self) -> None:
         main_layout = QHBoxLayout(self)

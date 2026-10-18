@@ -201,7 +201,8 @@ class IssueListTab(QWidget):
         self.table_model = IssueTableModel(self)
         self.table_view.setModel(self.table_model)
         self.table_view.setItemDelegateForColumn(3, IssueStateDelegate(self))
-        get_avatar_loader().avatar_ready.connect(lambda *_: self.table_view.viewport().update())
+        get_avatar_loader().avatar_ready.connect(self._on_avatar_ready)
+        self.destroyed.connect(self._disconnect_avatar_loader)
 
         self.table_view.setSelectionBehavior(QTableView.SelectRows)
         self.table_view.setSelectionMode(QTableView.SingleSelection)
@@ -237,6 +238,24 @@ class IssueListTab(QWidget):
 
         self.empty_widget.setVisible(False)
         main_layout.addWidget(self.empty_widget, 1)
+
+    def _disconnect_avatar_loader(self, *_) -> None:
+        try:
+            get_avatar_loader().avatar_ready.disconnect(self._on_avatar_ready)
+        except (RuntimeError, TypeError):
+            pass
+
+    def _on_avatar_ready(self, *_) -> None:
+        try:
+            import shiboken6
+
+            if not shiboken6.isValid(self) or not hasattr(self, "table_view"):
+                return
+            if not shiboken6.isValid(self.table_view):
+                return
+            self.table_view.viewport().update()
+        except (RuntimeError, AttributeError):
+            pass
 
     def reload_links_and_data(self) -> None:
         """Discover all linked remotes for this repo and populate remote_combo."""

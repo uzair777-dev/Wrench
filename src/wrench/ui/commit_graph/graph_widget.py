@@ -383,7 +383,24 @@ class CommitGraphWidget(QTableView):
         self.setItemDelegateForColumn(1, self._ref_delegate)
 
         self._init_ui()
-        get_avatar_loader().avatar_ready.connect(lambda *_: self.viewport().update())
+        get_avatar_loader().avatar_ready.connect(self._on_avatar_ready)
+        self.destroyed.connect(self._disconnect_avatar_loader)
+
+    def _disconnect_avatar_loader(self, *_) -> None:
+        try:
+            get_avatar_loader().avatar_ready.disconnect(self._on_avatar_ready)
+        except (RuntimeError, TypeError):
+            pass
+
+    def _on_avatar_ready(self, *_) -> None:
+        try:
+            import shiboken6
+
+            if not shiboken6.isValid(self):
+                return
+            self.viewport().update()
+        except (RuntimeError, AttributeError):
+            pass
 
     @property
     def graph_scrollbar(self) -> QScrollBar:

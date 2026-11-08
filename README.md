@@ -12,10 +12,9 @@
 ---
 
 > [!WARNING]
+>
 > 1. Its only for linux as of now, but its foundation for cross-platform compatibility is being laid and is scheduled for v3, as i want to make it stable on one platform first rather than doing all at once.
-> 2. I do not recommend this for production use yet, but it can be used for personal use until full v2 spec and stability lands. 
-
-
+> 2. I do not recommend this for production use yet, but it can be used for personal use until full v2 spec and stability lands.
 
 ---
 
@@ -73,7 +72,7 @@
 ## Development Roadmap & Status
 
 | Phase | Milestone | Status | Details |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | **Phase 1** | Core Local Git Engine & MVP UI | **Completed** | [`phase-1.md`](dev/planning/phase-1.md) |
 | **Phase 1.5** | UI Shell Overhaul & Hybrid Tabs | **Completed** | [`phase-1.5.md`](dev/planning/phase-1.5.md) |
 | **Phase 2** | Visual Commit Graph & 3-Way Merge Tool | **Completed** | [`phase-2.md`](dev/planning/phase-2.md) |
@@ -106,7 +105,8 @@ cd Wrench
 source init-dev.sh
 ```
 
-#### Manual Virtual Environment Creation (Python 3.15):
+#### Manual Virtual Environment Creation (Python 3.15)
+
 ```bash
 # Provision Python 3.15 virtual environment with uv
 uv venv .venv --python 3.15
@@ -123,7 +123,7 @@ For complete details on building native C extensions (`pygit2`, `cffi`) and dyna
 All developer binaries in `bin/` leverage `uv run --no-sync` for fast, offline execution:
 
 | Command | Action | Direct Path Alternative |
-|---|---|---|
+| --- | --- | --- |
 | `wrench-run` | Launch the Wrench desktop application | `./bin/wrench-run` |
 | `wrench-debug` | Launch with verbose `--debug` structured logging | `./bin/wrench-debug` |
 | `wrench-test` | Run the complete pytest test suite via `uv run` | `./bin/wrench-test` |

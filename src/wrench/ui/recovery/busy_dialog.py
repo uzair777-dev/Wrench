@@ -4,7 +4,7 @@ import logging
 import threading
 from pathlib import Path
 
-from PySide6.QtCore import QTimer, Signal
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import (
     QDialog,
     QHBoxLayout,
@@ -130,10 +130,12 @@ class BusyOperationDialog(QDialog):
         message: str,
         *,
         cancel_event: threading.Event | None = None,
+        humor_enabled: bool = True,
         parent: QWidget | None = None,
     ):
         super().__init__(parent)
         self.cancel_event = cancel_event
+        self.humor_enabled = humor_enabled
         self.setWindowTitle(title)
         self.setMinimumWidth(440)
         self.setModal(True)
@@ -152,6 +154,26 @@ class BusyOperationDialog(QDialog):
         self.progress_bar.setRange(0, 0)  # default indeterminate
         layout.addWidget(self.progress_bar)
 
+        self.humor_label = QLabel("", self)
+        self.humor_label.setStyleSheet(
+            "font-size: 11px; font-style: italic; color: palette(placeholder-text);"
+        )
+        self.humor_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.humor_label.setVisible(False)
+        layout.addWidget(self.humor_label)
+
+        self._humor_timer = QTimer(self)
+        self._humor_timer.setInterval(4000)
+        self._humor_timer.timeout.connect(self._rotate_humor_line)
+
+        self._humor_start_timer = QTimer(self)
+        self._humor_start_timer.setSingleShot(True)
+        self._humor_start_timer.setInterval(8000)
+        self._humor_start_timer.timeout.connect(self._start_humor_rotation)
+
+        if self.humor_enabled:
+            self._humor_start_timer.start()
+
         btn_bar = QHBoxLayout()
         btn_bar.addStretch()
 
@@ -161,23 +183,55 @@ class BusyOperationDialog(QDialog):
 
         layout.addLayout(btn_bar)
 
+    def _start_humor_rotation(self) -> None:
+        if not self.humor_enabled or self.progress_bar.maximum() != 0:
+            return
+        from wrench.ui.quotes import WAITING_LINES, random_quote
+
+        self.humor_label.setText(self.tr(random_quote(WAITING_LINES)))
+        self.humor_label.setVisible(True)
+        self._humor_timer.start()
+
+    def _rotate_humor_line(self) -> None:
+        if not self.humor_enabled or self.progress_bar.maximum() != 0:
+            self.humor_label.setVisible(False)
+            self._humor_timer.stop()
+            return
+        from wrench.ui.quotes import WAITING_LINES, random_quote
+
+        self.humor_label.setText(self.tr(random_quote(WAITING_LINES)))
+
     def set_progress(self, pct: int) -> None:
         if pct <= 0:
             self.progress_bar.setRange(0, 0)
+            if (
+                self.humor_enabled
+                and not self._humor_start_timer.isActive()
+                and not self._humor_timer.isActive()
+            ):
+                self._humor_start_timer.start()
         else:
             self.progress_bar.setRange(0, 100)
             self.progress_bar.setValue(min(100, max(0, pct)))
+            self.humor_label.setVisible(False)
+            self._humor_timer.stop()
+            self._humor_start_timer.stop()
 
     def update_message(self, message: str) -> None:
         self.status_lbl.setText(message)
 
     def _on_cancel(self) -> None:
+        self._humor_timer.stop()
+        self._humor_start_timer.stop()
+        self.humor_label.setVisible(False)
         if self.cancel_event:
             self.cancel_event.set()
         self.status_lbl.setText("Cancelling operation...")
         self.cancel_btn.setEnabled(False)
 
     def closeEvent(self, event) -> None:
+        self._humor_timer.stop()
+        self._humor_start_timer.stop()
         if self.cancel_event:
             self.cancel_event.set()
         super().closeEvent(event)

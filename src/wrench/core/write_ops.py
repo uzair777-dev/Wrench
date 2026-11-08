@@ -109,7 +109,19 @@ def run_git(
     return result
 
 
+# ── Progress-type matrix (Phase 4.6) ────────────────────────────────────
+# Surface                  | Type          | Source
+# ─────────────────────────┼───────────────┼─────────────────────────────
+# Clone/Push/Pull/Fetch    | determinate   | existing "stage: NN%" parse
+# Rebase (n/m)             | determinate   | NEW: Rebasing (n/m)
+# LFS pull/push            | determinate   | NEW: Git LFS: (N of M files)
+# Submodule init/update    | countable     | NEW: per-submodule callback (Phase 5 wires)
+# Discovery scan           | countable     | existing "Found N..." — unchanged
+# Backup/open/switch/snap  | indeterminate | spinner + rotating line; no bar
+#
 _PROGRESS_RE = re.compile(r"^([\w ]+?):\s+(\d+)%(?:\s*\(\d+/\d+\))?")
+_REBASE_RE = re.compile(r"^Rebasing\s+\((\d+)/(\d+)\)")
+_LFS_RE = re.compile(r"^Git LFS:\s+\((\d+)\s+of\s+(\d+)\s+files?\)")
 
 
 def _parse_progress(line: str) -> tuple[int, str] | None:
@@ -117,10 +129,27 @@ def _parse_progress(line: str) -> tuple[int, str] | None:
 
     Captures (percent, stage) e.g. (12, "Counting objects").
     Returns None if line does not match.
+    Percent is a real fraction — never estimated, never faked.
     """
     s = line.strip()
     if s.startswith("remote:"):
         s = s[len("remote:") :].strip()
+
+    # 1. Rebase fraction: Rebasing (3/10) -> (30, "Rebasing")
+    m = _REBASE_RE.match(s)
+    if m:
+        current, total = int(m.group(1)), int(m.group(2))
+        pct = (current * 100) // total if total > 0 else 0
+        return (pct, "Rebasing")
+
+    # 2. LFS fraction: Git LFS: (5 of 20 files) -> (25, "Git LFS")
+    m = _LFS_RE.match(s)
+    if m:
+        current, total = int(m.group(1)), int(m.group(2))
+        pct = (current * 100) // total if total > 0 else 0
+        return (pct, "Git LFS")
+
+    # 3. Standard stage: NN% pattern (existing — clone/push/pull/fetch)
     m = _PROGRESS_RE.match(s)
     if not m:
         return None

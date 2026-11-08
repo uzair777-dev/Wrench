@@ -7,11 +7,27 @@ complete thread safety with GUI widgets without secondary Qt event loops or Shib
 
 import logging
 import threading
+import time
 from typing import Any, Callable
 
 from PySide6.QtCore import QCoreApplication, QObject, Qt, Signal, Slot
 
 logger = logging.getLogger(__name__)
+
+_activity_log: Any = None
+
+
+def set_activity_log(log: Any) -> None:
+    """Register the global activity log model for background workers."""
+    global _activity_log
+    _activity_log = log
+
+
+def _post_activity(text: str, level: str = "info") -> None:
+    """Post an activity message safely to the activity log via the Qt dispatcher."""
+    if _activity_log is not None:
+        dispatcher = _get_dispatcher()
+        dispatcher.dispatch_activity.emit(text, level)
 
 
 class _Dispatcher(QObject):
@@ -20,12 +36,14 @@ class _Dispatcher(QObject):
     dispatch_finished = Signal(object, object)
     dispatch_failed = Signal(object, object)
     dispatch_progress = Signal(object, int)
+    dispatch_activity = Signal(str, str)
 
     def __init__(self, parent: QObject | None = None):
         super().__init__(parent)
         self.dispatch_finished.connect(self._handle_finished, Qt.ConnectionType.QueuedConnection)
         self.dispatch_failed.connect(self._handle_failed, Qt.ConnectionType.QueuedConnection)
         self.dispatch_progress.connect(self._handle_progress, Qt.ConnectionType.QueuedConnection)
+        self.dispatch_activity.connect(self._handle_activity, Qt.ConnectionType.QueuedConnection)
 
     @Slot(object, object)
     def _handle_finished(self, callback: Callable[[Any], None] | None, result: Any) -> None:
@@ -50,6 +68,14 @@ class _Dispatcher(QObject):
                 callback(pct)
             except Exception as e:
                 logger.exception("Error in background worker on_progress callback: %s", e)
+
+    @Slot(str, str)
+    def _handle_activity(self, text: str, level: str) -> None:
+        if _activity_log is not None:
+            try:
+                _activity_log.post(text, level)
+            except Exception as e:
+                logger.exception("Error posting to activity log: %s", e)
 
 
 _dispatcher: _Dispatcher | None = None
@@ -110,6 +136,7 @@ class WorkerThread(threading.Thread):
         fn: Callable[..., Any],
         args: tuple[Any, ...],
         kwargs: dict[str, Any],
+        op_name: str = "",
         on_finished: Callable[[Any], None] | None = None,
         on_failed: Callable[[Exception], None] | None = None,
         on_progress: Callable[[int], None] | None = None,
@@ -119,6 +146,7 @@ class WorkerThread(threading.Thread):
         self._fn = fn
         self._args = args
         self._kwargs = kwargs
+        self._op_name = op_name
         self.on_finished = on_finished
         self.on_failed = on_failed
         self.on_progress = on_progress
@@ -127,6 +155,9 @@ class WorkerThread(threading.Thread):
 
     def run(self) -> None:
         dispatcher = _get_dispatcher()
+        start_time = time.time()
+        if self._op_name:
+            _post_activity(f"Started: {self._op_name}", level="info")
         try:
             kw = dict(self._kwargs)
             if hasattr(self._fn, "__code__"):
@@ -146,9 +177,14 @@ class WorkerThread(threading.Thread):
                     kw["cancel_event"] = self.cancel_event
 
             result = self._fn(*self._args, **kw)
+            elapsed = time.time() - start_time
+            if self._op_name:
+                _post_activity(f"Finished: {self._op_name} ({elapsed:.1f}s)", level="ok")
             if self.on_finished:
                 dispatcher.dispatch_finished.emit(self.on_finished, result)
         except Exception as e:
+            if self._op_name:
+                _post_activity(f"Failed: {type(e).__name__}", level="error")
             if self.on_failed:
                 dispatcher.dispatch_failed.emit(self.on_failed, e)
             else:
@@ -174,6 +210,7 @@ _active_workers: set[WorkerThread] = set()
 def run_in_background(
     fn: Callable[..., Any],
     *args: Any,
+    op_name: str = "",
     on_finished: Callable[[Any], None] | None = None,
     on_failed: Callable[[Exception], None] | None = None,
     on_progress: Callable[[int], None] | None = None,
@@ -185,6 +222,7 @@ def run_in_background(
         fn,
         args,
         kwargs,
+        op_name=op_name,
         on_finished=on_finished,
         on_failed=on_failed,
         on_progress=on_progress,

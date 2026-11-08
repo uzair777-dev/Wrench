@@ -57,6 +57,7 @@ from wrench.core.exceptions import (
 from wrench.core.remote_urls import host_of_instance_url, parse_remote_url
 from wrench.storage import forge_accounts, repo_registry, settings
 from wrench.storage.db import get_connection
+from wrench.ui.dialogs.about_dialog import AboutDialog
 from wrench.ui.dialogs.accounts_dialog import AccountsDialog
 from wrench.ui.dialogs.discover_repos_dialog import DiscoverReposDialog
 from wrench.ui.dialogs.link_dialog import LinkRepoDialog
@@ -76,7 +77,8 @@ from wrench.ui.tabs.pr_detail_tab import PRDetailTab
 from wrench.ui.tabs.pr_list_tab import PRListTab
 from wrench.ui.tabs.tab_bar import TabContainer
 from wrench.ui.theme import apply_theme
-from wrench.ui.workers import run_in_background
+from wrench.ui.widgets.activity_log import ActivityLogBar, ActivityLogModel
+from wrench.ui.workers import run_in_background, set_activity_log
 from wrench.watcher.inotify_watcher import RepoWatcher
 
 logger = logging.getLogger(__name__)
@@ -122,9 +124,21 @@ class MainWindow(QMainWindow):
         self._restore_settings()
 
     def _init_ui(self) -> None:
-        # Central TabContainer
+        # Central TabContainer & Activity Dock
+        _central_widget = QWidget(self)
+        _central_layout = QVBoxLayout(_central_widget)
+        _central_layout.setContentsMargins(0, 0, 0, 0)
+        _central_layout.setSpacing(0)
+
         self.tab_container = TabContainer(orientation=Qt.Vertical, parent=self)
-        self.setCentralWidget(self.tab_container)
+        _central_layout.addWidget(self.tab_container)
+
+        self._activity_log = ActivityLogModel(maxlen=200, parent=self)
+        self._activity_dock = ActivityLogBar(self._activity_log, parent=self)
+        _central_layout.addWidget(self._activity_dock)
+        set_activity_log(self._activity_log)
+
+        self.setCentralWidget(_central_widget)
 
         # 1. Changes tab (Default pinned, user can unpin/close)
         self.changes_tab = ChangesTab(self._conn, self)
@@ -306,6 +320,18 @@ class MainWindow(QMainWindow):
         self.act_theme_dark.setCheckable(True)
         self.act_theme_dark.triggered.connect(lambda: self._set_theme("dark"))
         self.theme_group.addAction(self.act_theme_dark)
+
+        view_menu.addSeparator()
+
+        self.act_toggle_activity_dock = view_menu.addAction(self.tr("Toggle Activity &History"))
+        self.act_toggle_activity_dock.setShortcut(QKeySequence("Ctrl+`"))
+        self.act_toggle_activity_dock.triggered.connect(self._on_toggle_activity_dock)
+
+        self.act_humor_lines = view_menu.addAction(self.tr("Show &Humor / Personality Lines"))
+        self.act_humor_lines.setCheckable(True)
+        self.act_humor_lines.toggled.connect(self._set_humor_lines)
+        view_menu.aboutToShow.connect(self._sync_humor_lines_action)
+        self._sync_humor_lines_action()
 
         # ---------------- Repository Menu ----------------
         repo_menu = menu_bar.addMenu(self.tr("&Repository"))
@@ -1042,6 +1068,28 @@ class MainWindow(QMainWindow):
             self.act_auto_fetch.setChecked(self._is_auto_fetch_enabled())
             self.act_auto_fetch.blockSignals(False)
 
+    def _is_humor_lines_enabled(self) -> bool:
+        """Returns True if humor / personality lines are enabled (default: True)."""
+        val = settings.get_setting(self._conn, "ui.humor_lines")
+        return val != "false"
+
+    def _set_humor_lines(self, enabled: bool) -> None:
+        """Single-source setter for the humor lines setting."""
+        settings.set_setting(self._conn, "ui.humor_lines", "true" if enabled else "false")
+        self._sync_humor_lines_action()
+
+    def _sync_humor_lines_action(self) -> None:
+        """Synchronise the menu checkmark with the persisted setting."""
+        if hasattr(self, "act_humor_lines"):
+            self.act_humor_lines.blockSignals(True)
+            self.act_humor_lines.setChecked(self._is_humor_lines_enabled())
+            self.act_humor_lines.blockSignals(False)
+
+    def _on_toggle_activity_dock(self) -> None:
+        """Toggle inline scrollback expansion of the activity log bar."""
+        if hasattr(self, "_activity_dock"):
+            self._activity_dock._toggle_expanded()
+
     def _on_new_repo(self) -> None:
         dir_path = QFileDialog.getExistingDirectory(
             self,
@@ -1254,6 +1302,7 @@ class MainWindow(QMainWindow):
             self.tr("Clone Repository"),
             self.tr(f"Cloning {clean_url}..."),
             cancel_event=cancel_event,
+            humor_enabled=self._is_humor_lines_enabled(),
             parent=self,
         )
 
@@ -1403,6 +1452,7 @@ class MainWindow(QMainWindow):
             self.tr("Fetch"),
             self.tr(f"Fetching from '{remote}'..."),
             cancel_event=cancel_event,
+            humor_enabled=self._is_humor_lines_enabled(),
             parent=self,
         )
 
@@ -1457,6 +1507,7 @@ class MainWindow(QMainWindow):
             self.tr("Pull"),
             self.tr(f"Pulling branch '{branch}' from '{remote}'..."),
             cancel_event=cancel_event,
+            humor_enabled=self._is_humor_lines_enabled(),
             parent=self,
         )
 
@@ -1505,6 +1556,7 @@ class MainWindow(QMainWindow):
             title,
             self.tr(f"Pushing branch '{branch}' to '{remote}'..."),
             cancel_event=cancel_event,
+            humor_enabled=self._is_humor_lines_enabled(),
             parent=self,
         )
 
@@ -1680,6 +1732,7 @@ class MainWindow(QMainWindow):
                     self.tr("Fetch & Retry"),
                     self.tr(f"Fetching from '{remote_name}' before retrying push..."),
                     cancel_event=cancel_event,
+                    humor_enabled=self._is_humor_lines_enabled(),
                     parent=self,
                 )
 
@@ -2148,19 +2201,11 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, self.tr("Create Tag Failed"), str(e))
 
     def _on_about(self) -> None:
-        QMessageBox.about(
-            self,
-            self.tr("About Wrench"),
-            self.tr(
-                "<h3>Wrench</h3>"
-                "<p>A native Linux desktop Git client built with Qt & PySide6.</p>"
-                "<p>Version: 0.1.0<br>License: AGPL-3.0-or-later</p>"
-            ),
-        )
+        dlg = AboutDialog(parent=self)
+        dlg.exec()
 
     def _on_report_bug(self) -> None:
-        QMessageBox.information(
-            self,
-            self.tr("Report a Bug"),
-            self.tr("Please file issues at: https://github.com/uzair/wrench/issues"),
-        )
+        from PySide6.QtCore import QUrl
+        from PySide6.QtGui import QDesktopServices
+
+        QDesktopServices.openUrl(QUrl("https://github.com/uzair777-dev/Wrench/issues"))

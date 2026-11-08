@@ -13,7 +13,6 @@ Provides:
 from __future__ import annotations
 
 import logging
-import random
 import sqlite3
 from collections.abc import Callable
 from pathlib import Path
@@ -49,6 +48,7 @@ from wrench.core.exceptions import NothingToCommitError
 from wrench.storage import forge_accounts, repo_registry, settings
 from wrench.ui.diff_view.diff_widget import DiffView
 from wrench.ui.merge_tool.merge_dialog import MergeDialog
+from wrench.ui.quotes import CLEAN_STATE_QUOTES, random_quote
 from wrench.ui.theme import (
     ACCENT_COLORS,
     CONFLICT_BANNER_STYLES,
@@ -62,16 +62,6 @@ from wrench.ui.widgets.branch_switcher import BranchSwitcherWidget
 from wrench.ui.workers import run_in_background
 
 logger = logging.getLogger(__name__)
-
-PROGRAMMING_QUOTES = [
-    ("Simplicity is prerequisite for reliability.", "Edsger W. Dijkstra"),
-    ("Make it work, make it right, make it fast.", "Kent Beck"),
-    ("Code is like humor. When you have to explain it, it's bad.", "Cory House"),
-    ("Clean code always looks like it was written by someone who cares.", "Robert C. Martin"),
-    ("First, solve the problem. Then, write the code.", "John Johnson"),
-    ("Talk is cheap. Show me the code.", "Linus Torvalds"),
-    ("Deleted code is debugged code.", "Jeff Sickel"),
-]
 
 
 class FileListItemWidget(QWidget):
@@ -891,8 +881,8 @@ class ChangesTab(QWidget):
     def _show_clean_state(self) -> None:
         self.diff_view.setVisible(False)
         self.clean_state_widget.setVisible(True)
-        quote, author = random.choice(PROGRAMMING_QUOTES)
-        self.clean_quote.setText(f'"{quote}"')
+        quote, author = random_quote(CLEAN_STATE_QUOTES)
+        self.clean_quote.setText(f'"{self.tr(quote)}"')
         self.clean_author.setText(f"— {author}")
 
     def _show_zero_repos_state(self) -> None:

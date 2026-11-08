@@ -301,6 +301,19 @@ Wrench is engineered around four non-negotiable architectural tenets:
     - Renders fallback colored badges containing two-letter initials derived from username/author.
     - Initial badge background colors are selected deterministically using hash-based lookup against `AVATAR_BG_COLORS` semantic tokens in `theme.py`, guaranteeing 100% WCAG 2.1 AAA/AA contrast compliance ($\ge 4.5:1$ against white text).
     - Automatically swaps to loaded pixmaps smoothly upon background completion.
+- **`ActivityLogBar` & `ActivityLogModel` (`ui/widgets/activity_log.py`)**:
+  - Live activity dock mounted immediately above the status bar displaying latest operation status with level indicators (`info`, `ok`, `warn`, `error`).
+  - Thread-safe in-memory ring buffer using `collections.deque(maxlen=200)` with queued signal dispatching.
+  - Expandable ~8-line monospace history scrollback pane toggled via chevron click or `Ctrl+`` keyboard shortcut without stealing focus from active editors.
+  - Automatic instrumentation via `workers.py`: `run_in_background` auto-posts start, finish (with elapsed time), and failure events when `op_name` is provided.
+- **`AboutDialog` (`ui/dialogs/about_dialog.py`)**:
+  - Native About dialog displaying package version dynamically resolved from `importlib.metadata.version("wrench")`.
+  - Rotating wisdom lines drawn from `ABOUT_WISDOM` in `ui/quotes.py`.
+  - External links to GitHub repository and issue tracker via `QDesktopServices`.
+  - Bundled AGPL-3.0 license and third-party notices pane (Qt/PySide6, pygit2/libgit2, httpx, watchdog, secretstorage, platformdirs) with About Qt integration.
+- **`Quotes & Personality Banks` (`ui/quotes.py`)**:
+  - Centralized, translatable flavor text module providing `CLEAN_STATE_QUOTES`, `WAITING_LINES`, `SUCCESS_LINES`, `EMPTY_REPO_LINES`, `EMPTY_PR_LINES`, `EMPTY_ISSUES_LINES`, `IDLE_LINES`, `MILESTONE_LINES`, and `ABOUT_WISDOM`.
+  - Gated by the `ui.humor_lines` configuration setting (persisted in `app_settings` with View menu toggle).
 - **`LoadingOverlay` (`ui/widgets/loading_overlay.py`)**:
   - Semi-transparent modal overlay with animated spinner and custom status text, providing responsive feedback during heavy repository or forge operations without locking the GUI event loop.
 - **`RecoveryDialog` (`ui/dialogs/recovery_dialog.py`)**:
@@ -1149,10 +1162,10 @@ wrench/
 
 ## 10. Python 3.15 Runtime & PEP 810 Native Lazy Imports
 
-### 10.1 Execution Model & Dual-Tier Version Policy
-Wrench adopts a dual-tier version policy:
-- **Primary Runtime (Developer & Test Environment)**: CPython 3.15.0 with PySide6 6.12.0 (Stable ABI `abi3`), pygit2 1.20+ (compiled C-extension against libgit2), and `uv` 0.13+.
-- **Compatibility Floor**: `requires-python = ">=3.12"` in `pyproject.toml`, preserving packaging portability across enterprise Linux distributions.
+### 10.1 Execution Model & Runtime Requirements
+Wrench requires:
+- **Runtime & Compilation Target**: CPython 3.15.0+ with PySide6 6.12.0 (Stable ABI `abi3`), pygit2 1.20+ (compiled C-extension against libgit2), and `uv` 0.13+.
+- **Package Constraint**: `requires-python = ">=3.15"` in `pyproject.toml`, enforcing native PEP 810 language syntax across local development, downstream distribution, and automated CI pipelines.
 
 ### 10.2 PEP 810 Native Explicit Lazy Imports
 Python 3.15 introduces native `lazy import <module>` syntax. Rather than eagerly executing a module's bytecode and registering its symbols into `sys.modules` at startup, Python 3.15 instantiates a lightweight deferred stub. Bytecode execution is suspended until first attribute access.
@@ -1196,4 +1209,10 @@ By utilizing `uv run --no-sync`, developer scripts avoid re-resolving dependenci
 
 ### 11.3 Automated Runtime Linker Management
 All scripts verify the presence of the vendored native prefix (`.build/libgit2/usr/lib64`) and automatically prepend it to `LD_LIBRARY_PATH`. This ensures `libgit2.so` and related system dynamic dependencies load correctly without requiring manual environment export in user shell profiles.
+
+### 11.4 Continuous Integration Pipeline Architecture
+GitHub Actions workflows (`.github/workflows/ci.yml`) mirror the local developer environment:
+- **Standardized Runtime**: Configured with `actions/setup-python@v5` targeting Python `3.15` across all pipeline stages (`lint`, `unit-tests`, `integration-tests`, and `ui-tests`).
+- **Platform Abstraction Guard**: Enforces architectural boundaries (FR-11.1–FR-11.3) by verifying no platform-specific primitives (`secretstorage`, `SSH_AUTH_SOCK`, `XDG_`) leak outside `src/wrench/credentials/` or `src/wrench/core/paths.py`.
+- **System Dependencies & Offscreen Rendering**: Installs Ubuntu runtime packages (`libgl1`, `libegl1`, `libxkbcommon-x11-0`, `libdbus-1-3`, `libfontconfig1`) along with native build headers (`libgit2-dev`, `libffi-dev`) under headless `QT_QPA_PLATFORM: offscreen` display execution.
 

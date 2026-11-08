@@ -41,7 +41,8 @@ Wrench is engineered around four non-negotiable architectural tenets:
 │  │ MainWindow (ui/main_window.py)                                                   │  │
 │  │   • MenuBar: File | Edit | View | Repository | Help                              │  │
 │  │   • Central Lifecycle Coordinator & Actionable Error Routing Engine              │  │
-│  │   • Dialogs: MergeDialog | RemotesDialog | AccountsDialog | LinkRepoDialog | ... │  │
+│  │   • Dialogs: MergeDialog | RemotesDialog | AccountsDialog | LinkRepoDialog |     │  │
+│  │              DiscoverReposDialog | SettingsDialog | PushRecoveryDialogs          │  │
 │  │   • Theme Engine (theme.py): Recursive Palette & Event Broadcast to all widgets  │  │
 │  └───────┬──────────────────────────────────────────────────────────────────▲───────┘  │
 │          │                                                                  │          │
@@ -52,13 +53,19 @@ Wrench is engineered around four non-negotiable architectural tenets:
 │  │  │ ChangesTab (Pinned Workspace)   │ │ HistoryTab                  │ │   │          │
 │  │  │  • BranchSwitcherWidget         │ │  • CommitGraphWidget (DAG)  │ │   │          │
 │  │  │  • Unified File List (Checks)   │ │  • Search/Filter Bar (300ms)│ │   │          │
-│  │  │  • DiffView & Staging UI        │ │  • Commit Detail Pane       │ │   │          │
-│  │  │  • Commit & Amend Box           │ │  • Branch & Ref Badges      │ │   │          │
+│  │  │  • DiffView & Staging UI        │ │  • CommitDetailPanel(Avatar)│ │   │          │
+│  │  │  • Commit & Amend Box (Avatar)  │ │  • Branch & Ref Badges      │ │   │          │
 │  │  └─────────────────────────────────┘ └─────────────────────────────┘ │   │          │
 │  │  ┌─────────────────────────────────────────────────────────────────┐ │   │          │
 │  │  │ Multi-Forge Tabs (ui/tabs/ & ui/forge_panel/)                   │ │   │          │
-│  │  │  • PRListTab & IssueListTab (SWR 60s Cache, Filterable Tables)  │ │   │          │
-│  │  │  • PRDetailTab & IssueDetailTab (CI Status, Review Dialogs)     │ │   │          │
+│  │  │  • PRListTab & IssueListTab (SWR 60s Cache, Table Avatars)      │ │   │          │
+│  │  │  • PRDetailTab & IssueDetailTab (40px Header Avatar, CI Status) │ │   │          │
+│  │  └─────────────────────────────────────────────────────────────────┘ │   │          │
+│  │  ┌─────────────────────────────────────────────────────────────────┐ │   │          │
+│  │  │ Avatar Subsystem (ui/widgets/avatar.py)                         │ │   │          │
+│  │  │  • AvatarLoader Singleton (2-tier mem + 7d SHA-256 disk cache)  │ │   │          │
+│  │  │  • AvatarWidget (smooth circle, initial badge fallback, themes) │ │   │          │
+│  │  │  • Gravatar Privacy Gate (default-OFF opt-in in Settings)       │ │   │          │
 │  │  └─────────────────────────────────────────────────────────────────┘ │   │          │
 │  └────────────────────────────────────────┬─────────────────────────────┘   │          │
 │                                           │                                 │          │
@@ -78,16 +85,21 @@ Wrench is engineered around four non-negotiable architectural tenets:
 │ • inotify_watcher.py │  │ • read_ops.py (pygit2 reads)   │  │   - Entry-point plugins  │
 │   - Linux inotify    │  │   - status, diff, log, blame   │  │ • forge.capability       │
 │   - 300ms debouncing │  │ • write_ops.py (git CLI writes)│  │   - ForgeAdapter Base    │
-│   - Atomic rename    │  │   - commit, branch, merge, push│  │ • Concrete Adapters:     │
-│     (tempfile/index) │  │ • run_git_streaming            │  │   - GitHubAdapter        │
-│ • polling_fallback.py│  │   - Pipe drainer & cancel event│  │   - GitLabAdapter        │
-│   - Portable safety  │  │ • ssh_agent platform guard     │  │   - ForgejoAdapter       │
-│     polling loop     │  │ • snapshots.py (safety stash)  │  │   - BitbucketAdapter     │
-│ • Signals Emitted:   │  │ • lock_recovery.py (index.lock)│  │ • github_device_flow.py  │
-│   - working tree     │  │ • reflog.py (history restore)  │  │   - RFC 8628 Device Flow │
-│   - head/ref updates │  │ • identity.py (author sync)    │  │   - Workflow scope setup │
-│   - lock releases    │  │ • crash_handler.py (recovery)  │  │ • TLS Custom CA / Verify │
-└──────────────────────┘  └────────────────┬───────────────┘  └────────────┬─────────────┘
+│   - Atomic rename    │  │   - commit, branch, merge, push│  │   - get_avatar_url()     │
+│     (tempfile/index) │  │ • run_git_streaming            │  │ • Concrete Adapters:     │
+│ • polling_fallback.py│  │   - Pipe drainer & cancel event│  │   - GitHubAdapter        │
+│   - Portable safety  │  │ • discovery.py (FR-1.12 scan)  │  │   - GitLabAdapter        │
+│     polling loop     │  │   - Bounded depth 3, worktrees │  │   - ForgejoAdapter       │
+│ • Signals Emitted:   │  │ • lazy_loader.py (PEP 810)     │  │   - BitbucketAdapter     │
+│   - working tree     │  │   - Explicit deferred modules  │  │ • author_avatar_url maps │
+│   - head/ref updates │  │ • paths.py (cache_dir/XDG)     │  │ • github_device_flow.py  │
+│   - lock releases    │  │ • ssh_agent platform guard     │  │   - RFC 8628 Device Flow │
+│                      │  │ • snapshots.py (safety stash)  │  │   - Workflow scope setup │
+│                      │  │ • lock_recovery.py (index.lock)│  │ • TLS Custom CA / Verify │
+│                      │  │ • reflog.py (history restore)  │  └────────────┬─────────────┘
+│                      │  │ • identity.py (author sync)    │               │              
+│                      │  │ • crash_handler.py (recovery)  │               │              
+└──────────────────────┘  └────────────────┬───────────────┘               │              
                                            │                               │              
                     Snapshot / Config      │              Token Storage    │              
                           Persistence      ▼               & Resolution    ▼              
@@ -96,10 +108,11 @@ Wrench is engineered around four non-negotiable architectural tenets:
 │                                        │ │  │                                          │
 │ • SQLite Database (wrench.db)          │ │  │ • credentials.py: Backend factory        │
 │   - Single coarse mutex (thread-safe)  │ │  │ • SecretServiceBackend (D-Bus Secret API)│
-│ • repo_registry.py: MRU, paths, missing│ │  │   - KDE KWallet & GNOME Keyring          │
-│ • settings.py: Theme, diff preferences │ │  │   - Zero plaintext tokens on disk        │
+│ • repo_registry.py: MRU, clear_missing │ │  │   - KDE KWallet & GNOME Keyring          │
+│ • settings.py: Theme, avatars_gravatar │ │  │   - Zero plaintext tokens on disk        │
 │ • snapshots.py: Recovery records & OIDs│ │  │ • OAuth RFC 8628 tokens resolution       │
 │ • forge_accounts.py: Accounts & links  │ │  │ • Disambiguated accounts per remote host │
+│ • health.py: Integrity checks & repair │ │  │                                          │
 │ • Schema migrations & backup handling  │ │  │                                          │
 └────────────────────────────────────────┴─┘  └────────────────────────────┴─────────────┘
                                          │                                 │              
@@ -117,15 +130,18 @@ Wrench is engineered around four non-negotiable architectural tenets:
 ### 2.1 Subsystem Dataflow & Interaction Summary
 
 1. **User Interface (`src/wrench/ui`)**:
-   - `MainWindow` coordinates top-level application actions, modal dialogs (`MergeDialog`, `RemotesDialog`, `AccountsDialog`, `LinkRepoDialog`, `BusyOperationDialog`), and actionable error routing.
+   - `MainWindow` coordinates top-level application actions, modal dialogs (`MergeDialog`, `RemotesDialog`, `AccountsDialog`, `LinkRepoDialog`, `DiscoverReposDialog`, `SettingsDialog`, `BusyOperationDialog`, `PushRecoveryDialogs`), and actionable error routing.
    - `TabContainer` manages dynamic tab lifecycles (`ChangesTab`, `HistoryTab`, `PRListTab`, `IssueListTab`, `PRDetailTab`, `IssueDetailTab`).
    - Theme changes in `theme.py` trigger recursive palette recalculation and broadcast across all child widgets without application restarts.
    - Heavy background tasks run through `run_in_background` (`ui/workers.py`), which uses native daemon threads and posts results via thread-safe Qt queued signals back to the main thread.
+   - **Avatar Subsystem (`ui/widgets/avatar.py`)**: `AvatarLoader` singleton resolves user avatars via a 2-tier cache (memory + 7-day disk cache with SHA-256 keying) and non-blocking background downloads. `AvatarWidget` renders anti-aliased circular avatars with deterministic initials badges. Commit author Gravatars are strictly gated behind the default-OFF `ui.avatars_gravatar` privacy setting on `SettingsDialog`'s `AppearancePage`.
 
 2. **Core Git Operations (`src/wrench/core`)**:
    - Strict read/write separation: read operations (status, diffs, log traversal, blame) execute in-memory via `pygit2`/libgit2 (`read_ops.py`); write operations (commit, branch creation/switching/renaming, push, pull, fetch, merge, rebase) invoke the system `git` CLI (`write_ops.py`).
    - All write executions funnel through `run_git_streaming` with pipe draining and cooperative `threading.Event` cancellation.
    - Destructive operations are guarded by automatic pre-operation safety snapshots (`snapshots.py`) and lock recovery (`lock_recovery.py`).
+   - **Directory Discovery (`discovery.py`)**: Performs bounded, non-blocking scans (max depth 3) for Git repositories and worktrees, pruning at `.git` boundaries, ignoring dot-directories, refusing symlinks, and tolerating permission errors.
+   - **Lazy Loading (`lazy_loader.py`)**: Implements explicit lazy module loading supporting Python 3.15 PEP 810 native `lazy import` alongside backward-compatible `LazyProxyModule` to defer heavy dependencies until first access.
 
 3. **Filesystem Watcher (`src/wrench/watcher`)**:
    - `InotifyWatcher` monitors the active repository directory on Linux with a 300ms debounce timer, accounting for atomic temporary-file renames during git index writes.
@@ -134,11 +150,13 @@ Wrench is engineered around four non-negotiable architectural tenets:
 4. **Multi-Forge Subsystem (`src/wrench/forge`)**:
    - Pluggable architecture based on Python entry points (`wrench.forge_adapters`) and the `ForgeAdapter` abstract base class.
    - Built-in adapters for GitHub, GitLab, Forgejo/Gitea, and Bitbucket Cloud normalize PRs, issues, CI checks, and review submissions.
+   - Maps `author_avatar_url` across all 4 providers and defines the `get_avatar_url()` capability contract.
    - Assisted GitHub setup uses RFC 8628 Device Authorization Flow (`github_device_flow.py`) requesting necessary OAuth scopes (`repo`, `workflow`, `user:email`, `read:org`).
 
 5. **Storage Layer (`src/wrench/storage`)**:
    - Local SQLite database (`wrench.db`) managed via a dedicated coarse-grained thread lock.
-   - Persists tracked repository registry (`repo_registry.py`), UI settings and session state (`settings.py`), safety snapshot metadata (`snapshots.py`), and forge account credentials / remote link associations (`forge_accounts.py`).
+   - Persists tracked repository registry (`repo_registry.py` with `clear_missing()` for rediscovered repos), UI settings and session state (`settings.py`), safety snapshot metadata (`snapshots.py`), and forge account credentials / remote link associations (`forge_accounts.py`).
+   - Health diagnostics and integrity verification via `health.py`.
 
 6. **Credentials Layer (`src/wrench/credentials`)**:
    - Uses `SecretServiceBackend` to store and retrieve authentication tokens securely over D-Bus via the FreeDesktop Secret Service specification (KDE KWallet / GNOME Keyring) with zero plaintext disk exposure.
@@ -173,6 +191,7 @@ Wrench is engineered around four non-negotiable architectural tenets:
   - Owns the active `RepoHandle` and `RepoWatcher`.
 - **`PRListTab` & `IssueListTab` (`ui/tabs/pr_list_tab.py`, `ui/tabs/issue_list_tab.py`)**:
   - Forge pull request and issue browser workspaces keyed by `(tab_type, repo_path)`.
+  - Author column displays 24px `AvatarWidget` circular avatar or deterministic colored initials badge fallback.
   - Interactive search bar and state filters (`Open`, `Merged`, `Closed`, `All`) with 300ms debouncing.
   - SWR (Stale-While-Revalidate) cache with a 60-second TTL for instantaneous view loads.
   - Remote selector dropdown binding active repository remotes to configured forge accounts.
@@ -181,6 +200,7 @@ Wrench is engineered around four non-negotiable architectural tenets:
   - Double-click item selection spawning dynamic entity detail tabs.
 - **`PRDetailTab` & `IssueDetailTab` (`ui/tabs/pr_detail_tab.py`, `ui/tabs/issue_detail_tab.py`)**:
   - Full-detail entity workspaces keyed by `(tab_type, repo_path, entity_id)`.
+  - Header view displays 40px `AvatarWidget` circular author avatar beside author name and title.
   - Direct non-paginated entity retrieval via `adapter.get_pull_request()` and `adapter.get_issue()`.
   - Inline CI/CD build status card (`CIIconWidget`) with external build log link button.
   - In-app review submission dialog (`SubmitReviewDialog`) supporting Approve, Request Changes, and Comment actions tailored to provider capability constraints.
@@ -256,13 +276,33 @@ Wrench is engineered around four non-negotiable architectural tenets:
   - **Synchronous Viewport Scroll Updates**: Overrides `scrollContentsBy(dx, dy)` and connects to `valueChanged`, `rangeChanged`, and `header.geometriesChanged` to ensure instant, zero-lag scrollbar positioning during mouse drags, trackpad pans, and window resizes.
   - Interactive column resizing across all header sections with boundary clipping and auto-save triggering on resize.
   - Auto-scrolling to selected commit nodes with glowing halo accent rings (`NODE_RADIUS + 3.0`).
+- **`CommitDetailPanel` (`ui/commit_graph/detail_panel.py`)**: Detailed commit inspection panel.
+  - Displays selected commit metadata: full commit message, author name, committer, SHA-1 with 1-click clipboard copy, parent SHAs, commit timestamp, and stat badges.
+  - Embeds a 24px `AvatarWidget` for the commit author, resolving avatars via Gravatar hashing (MD5/SHA-256 of author email) when the `ui.avatars_gravatar` setting is enabled, or gracefully falling back to deterministic initials badges when disabled.
 - **`Topological Layout Calculator` (`ui/commit_graph/layout.py`)**:
   - Computes `(col, row)` coordinates and directional `Connector` segments (`PASS_THROUGH`, `FORK_DOWN`, `MERGE_UP`, `JOIN_TOP`).
   - 10-color deterministic color persistence and slot recycling algorithm preventing lane explosion.
 - **`MergeDialog` (`ui/dialogs/merge_dialog.py`)**: 3-Way visual merge conflict resolution tool.
   - Side-by-side Ours, Base, and Theirs diff viewers with block-level conflict acceptance and index staging.
 - **`DiscoverReposDialog` (`ui/dialogs/discover_repos_dialog.py`)**:
-  - Multi-repository discovery review and import dialog (FR-1.12). Displays detected repositories in a checkable list with Select All / Deselect All controls, canonical path display, and theme token styling.
+  - Multi-repository discovery review and import dialog (FR-1.12).
+  - Displays discovered local Git repositories and worktrees in a checkable list with Select All / Deselect All controls, path canonicalization, and Catppuccin theme token styling.
+  - On accept, registers newly found repositories in SQLite `repos` table and invokes `repo_registry.clear_missing()` to re-activate previously missing repository entries.
+- **`SettingsDialog` (`ui/dialogs/settings_dialog.py`)**:
+  - Centralized application preferences dialog with tabbed categories (`General`, `Git Defaults`, `Appearance`, `Remotes`).
+  - **Appearance Page**: Configures light/dark/system theme modes and hosts the **Gravatar Privacy Opt-In Toggle** (`ui.avatars_gravatar`, default: `False`). Strictly protects developer privacy by preventing unsolicited external Gravatar network requests without explicit opt-in consent.
+- **`AvatarWidget` & `AvatarLoader` (`ui/widgets/avatar.py`)**:
+  - **`AvatarLoader` Singleton**: Application-wide thread-safe manager for asynchronous avatar downloads and caching.
+    - **Dual-Tier Cache**: In-memory `_mem_cache` (`QPixmap`, `mtime`) for instant zero-latency retrieval; on-disk SHA-256 hashed cache files stored in `$XDG_CACHE_HOME/wrench/avatars` (`paths.cache_dir() / "avatars"`) with a 7-day TTL.
+    - **In-Flight Request Coalescing**: Collapses duplicate concurrent requests for identical URLs into a single network operation.
+    - **Non-Blocking Architecture**: Disk reads and network downloads execute on background worker threads (`urllib.request.urlopen` with a 5-second timeout). Pixmap decoding and widget repainting are marshalled safely back to the Qt main thread via the `avatar_loaded` Qt signal.
+    - **Silent Failure Fallback**: Network errors, HTTP 404s, offline airplane mode, or corrupt cache files fail silently without popups, cleanly falling back to initials.
+  - **`AvatarWidget`**: Circular, anti-aliased avatar widget supporting standard size buckets (24px, 40px, 64px).
+    - Renders fallback colored badges containing two-letter initials derived from username/author.
+    - Initial badge background colors are selected deterministically using hash-based lookup against `AVATAR_BG_COLORS` semantic tokens in `theme.py`, guaranteeing 100% WCAG 2.1 AAA/AA contrast compliance ($\ge 4.5:1$ against white text).
+    - Automatically swaps to loaded pixmaps smoothly upon background completion.
+- **`LoadingOverlay` (`ui/widgets/loading_overlay.py`)**:
+  - Semi-transparent modal overlay with animated spinner and custom status text, providing responsive feedback during heavy repository or forge operations without locking the GUI event loop.
 - **`RecoveryDialog` (`ui/dialogs/recovery_dialog.py`)**:
   - Actionable diagnostics and recovery workflows for stale locks, interrupted rebases, detached HEADs, and reflogs.
 - **`DiffView` (`ui/diff_view/diff_widget.py`)**: Syntax-highlighted diff viewer.
@@ -305,9 +345,12 @@ Wrench is engineered around four non-negotiable architectural tenets:
 - **`snapshots.py`**: Captures working directory states into dangling Git commit objects (`git stash create`) and compresses untracked files into `.tar.gz` archives without altering working directory status.
 - **`reflog.py`**: Reflog inspection and branch restoration.
 - **`identity.py`**: Validates user name and email configurations (`check_identity()`), provides repo-local configuration setters (`set_identity()`), and supports automatic background synchronization from authenticated forge accounts on link creation.
-- **`paths.py`**: Standardized XDG data, config, and state directory resolution via `platformdirs`.
+- **`paths.py`**: Standardized XDG data, config, state, and cache directory (`cache_dir()`) resolution via `platformdirs` with graceful `~/.cache/wrench` fallback and automatic directory creation on demand.
+- **`remote_urls.py`**: Git remote URL parsing and normalization (supporting SCP-like `git@host:...`, SSH `ssh://...`, HTTPS, and git protocols), extracting canonical forge hostnames and owner/repository path slugs.
+- **`backup.py`**: Safety backup and recovery utilities for repository configurations and runtime states.
 - **`discovery.py`**: Multi-repository directory discovery (`discover_repos`). Performs a bounded, non-blocking scan up to depth 3, immediately pruning at repository roots (handling both standard directories and `.git`-file linked worktrees), skipping dot-directories, refusing to follow symlinks to prevent cycles, and catching permission errors without aborting. Re-exported via `core.engine.discover_repos`.
 - **`lazy_loader.py`**: Explicit lazy module loading system supporting Python 3.15 PEP 810 native `lazy import` syntax alongside backward-compatible `LazyProxyModule` and module-level `__lazy_modules__` declarations to defer heavy dependencies until first access.
+- **`lazy_demo.py`**: Demonstrates native Python 3.15 PEP 810 explicit lazy imports syntax and deferred symbol resolution.
 - **`crash_handler.py` & `core/recovery/`**: Local-first crash resilience framework:
   - `crash_handler.py`: Global unhandled exception hook capturing stack traces and auto-saving in-flight session drafts.
   - `process_guard.py`: Inspects `/proc` to verify whether process holding lock files is alive or defunct.
@@ -316,18 +359,19 @@ Wrench is engineered around four non-negotiable architectural tenets:
 
 ### 3.3 Multi-Forge Subsystem (`src/wrench/forge/`)
 - **`models.py`**: Normalized cross-provider data models:
-  - `PullRequest`: Standardized entity with `state` normalized to `{"open", "merged", "closed"}`.
-  - `Issue`: Standardized entity with `state` normalized to `{"open", "closed"}`.
+  - `PullRequest`: Standardized entity with `state` normalized to `{"open", "merged", "closed"}` and trailing `author_avatar_url: str | None = None` preserving constructor backward compatibility.
+  - `Issue`: Standardized entity with `state` normalized to `{"open", "closed"}` and trailing `author_avatar_url: str | None = None` preserving constructor backward compatibility.
   - `CIStatus`: Build status with state normalized to `{"success", "failure", "pending", "unknown"}`.
   - `ForgeAccount`: Runtime representation of configured accounts including TLS configuration and Secret Service references.
 - **`capability.py`**:
   - `ForgeCapability`: Bitwise flags for granular feature gating (`PULL_REQUESTS`, `ISSUES`, `CI_STATUS`, `ISSUE_LINKING`, `REVIEWS`).
-  - `ForgeAdapter(ABC)`: Abstract base class encapsulating `httpx.Client` with connection pooling, custom TLS CA bundle loading, self-signed skip-verification policies, automatic Secret Service token resolution, standard pagination (`_paged_get` with 500-item safeguard), status-code-to-exception translation, and `get_primary_email()` contract.
+  - `ForgeAdapter(ABC)`: Abstract base class encapsulating `httpx.Client` with connection pooling, custom TLS CA bundle loading, self-signed skip-verification policies, automatic Secret Service token resolution, standard pagination (`_paged_get` with 500-item safeguard), status-code-to-exception translation, `get_primary_email()` contract, and `get_avatar_url(account, token)` capability method.
 - **`registry.py`**: Pluggable adapter discovery using Python entry points (`[project.entry-points."wrench.forge_adapters"]`). Provides collision detection and the `get_adapter_for_account(account)` factory.
 - **`adapters/`**: Provider-specific implementations:
-  - `GitHubAdapter` (`github.py`): REST v3 API (`api.github.com` & GHES), Bearer authentication, `/issues` PR filtering, commit statuses + check-runs CI, full review submissions (`APPROVE`, `REQUEST_CHANGES`, `COMMENT`), and `/user/emails` verified email resolution.
-  - `GitLabAdapter` (`gitlab.py`): REST v4 API (`gitlab.com` & self-hosted), Private-Token authentication, URL-encoded path slugs (`owner%2Frepo`), merge request state mapping, pipeline CI status, and self-approval trap translation.
-  - `ForgejoAdapter` (`forgejo.py`): REST v1 API, token auth, commit status CI, and past-tense `APPROVED` review action mapping.
+  - `GitHubAdapter` (`github.py`): REST v3 API (`api.github.com` & GHES), Bearer authentication, `/issues` PR filtering, commit statuses + check-runs CI, full review submissions (`APPROVE`, `REQUEST_CHANGES`, `COMMENT`), `/user/emails` verified email resolution, and author avatar URL extraction via `user.avatar_url`.
+  - `GitLabAdapter` (`gitlab.py`): REST v4 API (`gitlab.com` & self-hosted), Private-Token authentication, URL-encoded path slugs (`owner%2Frepo`), merge request state mapping, pipeline CI status, self-approval trap translation, and author avatar URL extraction via `author.avatar_url`.
+  - `ForgejoAdapter` (`forgejo.py`): REST v1 API, token auth, commit status CI, past-tense `APPROVED` review action mapping, and author avatar URL extraction via `user.avatar_url`.
+  - `BitbucketAdapter` (`bitbucket.py`): REST 2.0 API, HTTP Basic Auth (email + app password), `next` URL pagination, commit statuses, multi-endpoint review actions, and author avatar URL extraction via `author.links.avatar.href`.
   - `BitbucketAdapter` (`bitbucket.py`): REST 2.0 API, HTTP Basic Auth (email + app password), `next` URL pagination, commit statuses, and multi-endpoint review actions.
 - **`oauth/github_device_flow.py`**: Native OAuth Device Authorization Flow (RFC 8628):
   - Requests `repo workflow user:email read:org` scopes, with customizable preset and advanced scope configurations.
@@ -347,12 +391,14 @@ Wrench is engineered around four non-negotiable architectural tenets:
   - Configured with `check_same_thread=False`.
   - Serialized through a single process-wide `threading.Lock()` to prevent SQLite concurrency deadlocks.
   - Automated corrupt database quarantine and recovery.
-- **`repo_registry.py`**: Repository CRUD operations, tracking last opened times, missing states, and relocated paths.
-- **`settings.py`**: App-level and per-repository key-value configuration storage.
+- **`repo_registry.py`**: Repository CRUD operations, tracking last opened times, missing states (`is_missing`), and relocated paths. Provides `clear_missing(conn, path_or_id)` to restore missing repository records during multi-repo directory discovery.
+- **`settings.py`**: App-level and per-repository key-value configuration storage (including UI session states and `ui.avatars_gravatar` privacy preferences).
 - **`forge_accounts.py`**: Forge account metadata storage and repository-to-account bindings (`repo_forge_links`):
   - Supports `tls_ca_bundle_path` and `tls_insecure` columns.
   - Atomic two-step insert-then-update with automatic rollback on Secret Service storage failure.
   - Fast-path path-based link resolution for `git-credential-wrench`.
+- **`health.py`**: SQLite database health checks, pragma integrity validation, and automated repair/vacuum routines.
+- **`snapshots.py`**: Safety snapshot metadata records, dangling commit OIDs, and untracked archive paths.
 - **`schema.sql`**: Normalized relational schema with foreign key cascading deletes.
 
 ### 3.6 Credentials & Platform Layer (`src/wrench/credentials/`)
@@ -615,6 +661,13 @@ If $\text{Luminance} < 0.5$, the widget/app is dark; otherwise it is light. This
 | **Warning / Detached HEAD** | `#df8e1d` (Amber Latte) | `#f9e2af` (Amber Mocha) |
 | **Primary Commit Button** | `#1e66f5` (Sapphire) bg / `#ffffff` text (disabled: `#e6e9ef` bg / `#7c7f93` text) | Native Qt button (`setStyleSheet("")`, untouched) |
 | **Repo Dropdown Text** | `#4c4f69` (Charcoal slate) on transparent / `#ffffff` popup | `palette(window-text)` (untouched) |
+| **Avatar Backgrounds** | 6 accessible Latte tones (`#1e66f5`, `#8839ef`, `#40a02b`, `#d20f39`, `#179299`, `#7287fd`) | 6 accessible Mocha tones (`#89b4fa`, `#cba6f7`, `#a6e3a1`, `#fab387`, `#94e2d5`, `#b4befe`) |
+
+#### 4.7.5 Accessible Deterministic Avatar Color Generation
+Avatar fallback badges derive their background colors using `get_avatar_bg_color(username: str, mode: str = "dark")`:
+1. **Deterministic Hashing**: The username string is hashed (`abs(hash(username)) % len(tokens)`) ensuring persistent color assignment across sessions.
+2. **WCAG 2.1 AA/AAA Contrast**: White text (`#ffffff`) against all 12 `AVATAR_BG_COLORS` tokens achieves $\ge 4.5:1$ contrast ratio, verified by automated CI gates (`tests/unit/ui/test_theme_contrast.py`).
+3. **Zero Hardcoded Colors**: Strictly centralized in `ui/theme.py`; hardcoded color checks forbid raw hex codes outside the theme engine.
 
 ### 4.8 Commit Graph Rendering & Synchronized Pixel Scrolling Architecture
 ```
@@ -800,6 +853,134 @@ GitHub returns HTTP 403 with `refusing to allow an OAuth App to create or update
 If treated as a generic `PushRejectedError`, GUI clients mistakenly suggest "Fetch and Retry" or "Force Push". Neither action succeeds because the rejection is authorization-based rather than reference non-fast-forward.
 By raising `WorkflowScopeRequiredError` before generic rejection classification, Wrench intercepts the failure at the core engine level and directs the user straight to in-place OAuth token re-authorization with the required `"repo workflow"` scopes.
 
+### 4.12 Multi-Repository Directory Discovery Workflow (FR-1.12)
+```text
+[User clicks "Open Repository" (Ctrl+O) in MainWindow]
+                          │
+                          ▼
+             [QFileDialog.getExistingDirectory]
+                          │
+         ┌────────────────┴────────────────┐
+         ▼                                 ▼
+[Path is Git Repository]        [Path is Directory Container]
+(engine.open_repo succeeds)     (engine.open_repo raises WrenchRepoNotFoundError)
+         │                                 │
+         ├── Add to repo_registry          ▼
+         ├── Load in ChangesTab        [MainWindow._start_directory_discovery(root_path)]
+         └── Done                          │
+                                           ├── Show non-modal status bar scan notification
+                                           ├── Instantiate cancel_event = threading.Event()
+                                           ├── ui.workers.run_in_background(
+                                           │       core.discovery.discover_repos,
+                                           │       root_path, max_depth=3, cancel_event, on_progress
+                                           │   )
+                                           │
+                                           ▼
+                             [Background Worker Thread]
+                                           │
+                                           ├── os.walk(root_path, followlinks=False)
+                                           ├── Cycle guard: refuses symlinks to prevent infinite loops
+                                           ├── Prunes dot-directories (.cache, .local, etc.)
+                                           ├── Depth guard: stops descent when depth >= 3
+                                           │
+                                  ┌────────┴───────────────────────────┐
+                                  ▼                                    ▼
+                         [.git Directory or File]             [Non-Repo Directory]
+                                  │                                    │
+                                  ├── Add resolved path                └── Descend if depth < 3
+                                  ├── Prune dirnames (no submodules)
+                                  └── Emit on_progress(count)
+                                           │
+                                           ▼
+                             [Scan Completes / Results Returned]
+                                           │
+                                  ┌────────┴───────────────────────────┐
+                                  ▼                                    ▼
+                             [0 Repos Found]                    [>= 1 Repos Found]
+                                  │                                    │
+                                  └── QMessageBox.information          ▼
+                                      ("No Repositories Found")  [Launch DiscoverReposDialog]
+                                                                       │
+                                                                       ├── Displays checkable list
+                                                                       ├── Select All / Deselect All
+                                                                       │
+                                                              ┌────────┴────────┐
+                                                              ▼                 ▼
+                                                         [User Confirms]   [User Cancels]
+                                                              │                 │
+                                                              ├── Loop paths    └── Abort
+                                                              │   ├── Known & is_missing:
+                                                              │   │     repo_registry.clear_missing()
+                                                              │   └── New repo:
+                                                              │         repo_registry.add_repo()
+                                                              │
+                                                              ▼
+                                               [ChangesTab.load_repos()]
+                                               [Status bar: "Added X repos (Y already known)"]
+```
+
+### 4.13 Asynchronous Non-Blocking Avatar Loading & Gravatar Privacy Workflow (FR-5.14)
+```text
+[UI Surface Requests Avatar: PRList, PRDetail, ChangesTab, CommitDetailPanel]
+                               │
+                               ▼
+            [AvatarWidget.set_avatar(url, username/email)]
+                               │
+                               ├── 1. Immediately paint fallback badge with 2-letter initials
+                               ├── 2. Background color resolved via get_avatar_bg_color(username)
+                               │      (deterministic WCAG 2.1 AAA/AA compliant Catppuccin palette)
+                               │
+                               ▼
+                   [AvatarLoader.load_avatar(url)]
+                               │
+                    ┌──────────┴────────────────────────┐
+                    ▼                                   ▼
+          [Memory Cache Hit]                  [Memory Cache Miss]
+                    │                                   │
+                    ├── Return cached QPixmap           ▼
+                    └── Instant zero-latency render   [Check On-Disk Cache]
+                                                        │
+                                                        ├── Path: cache_dir() / "avatars" / "{sha256(url)}.png"
+                                                        │
+                                             ┌──────────┴────────────────────────┐
+                                             ▼                                   ▼
+                                    [Disk Cache Valid (< 7d)]         [Disk Miss or Stale (>= 7d)]
+                                             │                                   │
+                                             ├── Read bytes from disk            ▼
+                                             ├── Decode QPixmap            [In-Flight Request Coalescing]
+                                             ├── Populate _mem_cache             │
+                                             └── Emit avatar_loaded              ├── URL already fetching?
+                                                                                 │   └── Attach callback & wait
+                                                                                 │
+                                                                                 ▼
+                                                                   [Background Worker Download]
+                                                                                 │
+                                                                                 ├── urllib.request.urlopen
+                                                                                 │   (5-second timeout)
+                                                                                 │
+                                                                      ┌──────────┴──────────┐
+                                                                      ▼                     ▼
+                                                             [Download Success]    [Error / Offline]
+                                                                      │                     │
+                                                                      ├── Save to disk      └── Fail silently;
+                                                                      ├── Store in mem          retain initials
+                                                                      └── Emit avatar_loaded
+                                                                              │
+                                                                              ▼
+                                                                   [GUI Thread Qt Dispatch]
+                                                                              │
+                                                                              └── Smooth cross-fade to
+                                                                                  circular anti-aliased
+                                                                                  QPixmap in AvatarWidget
+```
+
+#### 4.13.1 Gravatar Privacy Opt-In Enforcement
+For commit authors, avatar URLs are synthesized by hashing the author's normalized email address (`https://www.gravatar.com/avatar/{hash}`).
+To eliminate telemetry leakage and strictly protect developer privacy:
+1. **Default-OFF Setting**: The setting `ui.avatars_gravatar` defaults to `False`.
+2. **Privacy Gate**: `CommitDetailPanel` checks `settings.get_setting("ui.avatars_gravatar", "false")`. When disabled, zero external network requests are initiated; the widget exclusively displays the author's deterministic initials badge.
+3. **Explicit Opt-In**: Users can explicitly enable Gravatar avatar fetching via the "Enable Gravatar avatars for commit authors" checkbox on `SettingsDialog`'s `AppearancePage`.
+
 ---
 
 ## 5. Relational Database Schema
@@ -846,7 +1027,7 @@ By raising `WorkflowScopeRequiredError` before generic rejection classification,
 
 ```
 wrench/
-├── bin/                          # Development helper binaries (symlinked to .venv/bin)
+├── bin/                          # Development helper binaries (uv & uvx with runtime LD_LIBRARY_PATH)
 │   ├── wrench-run
 │   ├── wrench-debug
 │   ├── wrench-test
@@ -863,7 +1044,13 @@ wrench/
 │       ├── phase-1.5.md
 │       ├── phase-2.md
 │       ├── phase-3.md
-│       └── phase-4.md
+│       ├── phase-4.md
+│       ├── phase-4.1.md
+│       ├── phase-4.2.md
+│       ├── phase-4.3.md
+│       ├── phase-4.4.md
+│       ├── phase-4.5.md
+│       └── python-315-migration.md
 ├── packaging/
 │   └── flatpak/                  # Flatpak packaging manifests
 ├── src/wrench/
@@ -879,7 +1066,9 @@ wrench/
 │   │   ├── snapshots.py          # Rolling safety snapshots
 │   │   ├── reflog.py             # Reflog operations
 │   │   ├── identity.py           # Git author configuration
-│   │   ├── paths.py              # XDG / platformdirs path resolution
+│   │   ├── paths.py              # XDG / platformdirs path resolution (cache_dir)
+│   │   ├── remote_urls.py        # Remote URL parser & host extractor
+│   │   ├── backup.py             # Configuration backup & restore helpers
 │   │   ├── discovery.py          # FR-1.12: bounded multi-repo directory scanner
 │   │   ├── lazy_loader.py        # Explicit lazy import proxy and loader
 │   │   ├── lazy_demo.py          # Python 3.15 native lazy import demonstration
@@ -893,15 +1082,15 @@ wrench/
 │   │   ├── backend.py            # CredentialBackend abstract interface
 │   │   └── secret_service.py     # D-Bus Secret Service platform backend
 │   ├── forge/                    # Forge provider capability system
-│   │   ├── capability.py         # ForgeCapability flags & ForgeAdapter ABC
+│   │   ├── capability.py         # ForgeCapability flags, ForgeAdapter ABC & get_avatar_url
 │   │   ├── exceptions.py         # Typed forge error hierarchy
-│   │   ├── models.py             # Dataclasses: PullRequest, Issue, CIStatus
+│   │   ├── models.py             # Dataclasses: PullRequest, Issue, CIStatus, author_avatar_url
 │   │   ├── registry.py           # Dynamic entry point & provider adapter registry
 │   │   ├── adapters/             # Forge provider implementations
-│   │   │   ├── github.py         # GitHub REST/GraphQL adapter
-│   │   │   ├── gitlab.py         # GitLab REST adapter
-│   │   │   ├── forgejo.py        # Forgejo / Gitea REST adapter
-│   │   │   └── bitbucket.py      # Bitbucket Cloud REST adapter
+│   │   │   ├── github.py         # GitHub REST/GraphQL adapter & user.avatar_url
+│   │   │   ├── gitlab.py         # GitLab REST adapter & author.avatar_url
+│   │   │   ├── forgejo.py        # Forgejo / Gitea REST adapter & user.avatar_url
+│   │   │   └── bitbucket.py      # Bitbucket Cloud REST adapter & author avatar link
 │   │   └── oauth/                # OAuth flows
 │   │       └── github_device_flow.py # RFC 8628 Device Authorization Flow client
 │   ├── storage/                  # SQLite storage & repository registry
@@ -909,19 +1098,23 @@ wrench/
 │   │   ├── repo_registry.py      # Repository tracking CRUD & clear_missing
 │   │   ├── settings.py           # App & repo key-value settings
 │   │   ├── forge_accounts.py     # Forge accounts, repo links & TLS settings
+│   │   ├── health.py             # Database integrity diagnostics & vacuuming
 │   │   └── schema.sql            # Normalized relational schema
 │   ├── ui/                       # PySide6 desktop UI
 │   │   ├── main_window.py        # Main application window & repository menu
-│   │   ├── theme.py              # Catppuccin Velvet Pastel palettes & theme management
+│   │   ├── theme.py              # Catppuccin Velvet Pastel palettes & AVATAR_BG_COLORS
 │   │   ├── workers.py            # Thread-safe background worker marshaller
 │   │   ├── commit_graph/         # Topological DAG layout & custom table view
 │   │   │   ├── layout.py         # S-curve calculation & slot recycling
-│   │   │   └── graph_widget.py   # CommitGraphWidget & custom delegate
+│   │   │   ├── graph_widget.py   # CommitGraphWidget & custom delegate
+│   │   │   └── detail_panel.py   # CommitDetailPanel & author Gravatar avatar
 │   │   ├── dialogs/              # Interactive dialogs & account managers
 │   │   │   ├── accounts_dialog.py# Forge accounts manager & OAuth Device Flow
 │   │   │   ├── discover_repos_dialog.py # Multi-repo discovery review & batch import
 │   │   │   ├── link_dialog.py    # Remote-to-forge account association dialog
-│   │   │   └── remotes_dialog.py # Repository remotes manager & reachability
+│   │   │   ├── remotes_dialog.py # Repository remotes manager & reachability
+│   │   │   ├── push_recovery_dialogs.py # Secret scanning, branch & size recovery
+│   │   │   └── settings_dialog.py# App preferences & Gravatar privacy toggle
 │   │   ├── diff_view/            # Syntax-highlighted diff viewer & staging
 │   │   ├── forge_panel/          # Forge UI integration components
 │   │   │   ├── badges.py         # Catppuccin Velvet Pastel pill painter
@@ -938,13 +1131,15 @@ wrench/
 │   │   │   └── snapshots_panel.py# Snapshot timeline & restore triggers
 │   │   ├── tabs/                 # Hybrid tab navigation system
 │   │   │   ├── tab_bar.py        # TabContainer & TabButton widgets
-│   │   │   ├── changes_tab.py    # Primary Changes workspace
+│   │   │   ├── changes_tab.py    # Primary Changes workspace & account avatar
 │   │   │   ├── history_tab.py    # History / Commit graph workspace
-│   │   │   ├── pr_list_tab.py    # Pull Requests virtualized list & filters
-│   │   │   ├── pr_detail_tab.py  # Pull Request discussion & diff inspector
-│   │   │   ├── issue_list_tab.py # Issues virtualized list & filters
-│   │   │   └── issue_detail_tab.py # Issue discussion & state toggles
+│   │   │   ├── pr_list_tab.py    # Pull Requests virtualized list & 24px avatars
+│   │   │   ├── pr_detail_tab.py  # Pull Request discussion & 40px avatar header
+│   │   │   ├── issue_list_tab.py # Issues virtualized list & 24px avatars
+│   │   │   └── issue_detail_tab.py # Issue discussion & 40px avatar header
 │   │   └── widgets/              # Reusable UI widgets
+│   │       ├── avatar.py         # AvatarWidget & AvatarLoader singleton
+│   │       ├── loading_overlay.py# Semi-transparent loading spinner overlay
 │   │       └── branch_switcher.py# Interactive branch selector & popup
 │   └── watcher/                  # Inotify filesystem watching & debouncing
 └── tests/                        # Comprehensive test suite (unit, integration, UI)
@@ -982,4 +1177,23 @@ For compiled extensions on Python 3.15 (where prebuilt PyPI wheels are not yet a
 1. **User-Space Development Prefix (`.build/`)**: Official `libgit2-devel` and `libffi-devel` headers are vendored inside the workspace, eliminating `sudo` requirements.
 2. **Environment Exports**: `init-dev.sh` exports `C_INCLUDE_PATH`, `LIBRARY_PATH`, and `PKG_CONFIG_PATH` to enable seamless `uv pip install -e ".[dev]"`.
 3. **Runtime Linker Path**: All developer binaries (`bin/wrench-*`) prepend `.build/libgit2/usr/lib64` to `LD_LIBRARY_PATH` ensuring `libgit2.so.1.9` is resolved dynamically at runtime.
+
+---
+
+## 11. Modern Developer Tooling & UV Workflow Architecture
+
+### 11.1 Fast Standardized Developer Scripts (`bin/wrench-*`)
+All development and CI operations are unified under the `bin/wrench-*` executable suite:
+- `bin/wrench-run`: Launches the desktop application (`python -m wrench.app`).
+- `bin/wrench-debug`: Runs Wrench with full `--debug` logging flags enabled.
+- `bin/wrench-test`: Executes the pytest suite under `uv run --no-sync pytest -v "$@"`.
+- `bin/wrench-lint`: Runs fast Ruff linting and Black code style verification.
+- `bin/wrench-format`: Automatically formats and fixes code violations via Ruff and Black.
+- `bin/wrench-ci-check`: Orchestrates linting, formatting, and the complete test suite.
+
+### 11.2 Zero-Sync Execution (`--no-sync`)
+By utilizing `uv run --no-sync`, developer scripts avoid re-resolving dependencies and checking network indexes on every command invocation. This reduces test startup latency from hundreds of milliseconds to under 20ms, providing near-instantaneous test and lint cycles.
+
+### 11.3 Automated Runtime Linker Management
+All scripts verify the presence of the vendored native prefix (`.build/libgit2/usr/lib64`) and automatically prepend it to `LD_LIBRARY_PATH`. This ensures `libgit2.so` and related system dynamic dependencies load correctly without requiring manual environment export in user shell profiles.
 

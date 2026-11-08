@@ -185,6 +185,53 @@ def test_no_fstring_sql_queries_in_storage() -> None:
                     raise AssertionError(
                         f"{py_file}:{node.lineno} uses forbidden f-string in SQL execute()"
                     )
+
+FORBIDDEN_FLASH_PATTERNS = (
+    ("from PyQt5", "PyQt5 hallucination — use PySide6"),
+    ("from PyQt6", "PyQt6 hallucination — use PySide6"),
+    ("import PyQt5", "PyQt5 hallucination — use PySide6"),
+    ("import PyQt6", "PyQt6 hallucination — use PySide6"),
+    ("pyqtSignal", "PyQt signal hallucination — use PySide6.QtCore.Signal"),
+    ("pyqtSlot", "PyQt slot hallucination — use PySide6.QtCore.Slot"),
+    (".exec_()", "Deprecated Qt5 .exec_() — use .exec() in Qt6"),
+    (".iter_commits(", "GitPython hallucination — use pygit2 repo.walk()"),
+    (".active_branch", "GitPython hallucination — use pygit2 repo.head.shorthand"),
+    ("# ... existing", "Truncated file rewrite comment — keep all existing code intact"),
+    ("# ... rest of", "Truncated file rewrite comment — keep all existing code intact"),
+    ("# existing code", "Truncated file rewrite comment — keep all existing code intact"),
+)
+
+
+def test_no_flash_api_hallucinations_or_truncation_markers():
+    """FLASH-1..FLASH-3: Reject PyQt5/PyQt6/GitPython hallucinations and truncated-file comments."""
+    violations = []
+    for py_file in _iter_py_files(SRC_ROOT):
+        content = py_file.read_text(encoding="utf-8")
+        for lineno, line in enumerate(content.splitlines(), start=1):
+            for bad_token, reason in FORBIDDEN_FLASH_PATTERNS:
+                if bad_token in line:
+                    violations.append(f"{py_file}:{lineno} [{reason}]: {line.strip()}")
+            if "from PySide6.QtWidgets import" in line and "QAction" in line:
+                violations.append(
+                    f"{py_file}:{lineno} [In Qt6/PySide6, QAction lives in PySide6.QtGui, not QtWidgets]"
+                )
+    assert not violations, "Flash model hallucination / truncation detected:\n" + "\n".join(violations)
+
+
+def test_no_silent_exception_pass_in_src():
+    """FLASH-5: Forbid silent `except Exception: pass` blocks that hide broken logic."""
+    violations = []
+    for py_file in _iter_py_files(SRC_ROOT):
+        tree = ast.parse(py_file.read_text(encoding="utf-8"), filename=str(py_file))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ExceptHandler):
+                if len(node.body) == 1 and isinstance(node.body[0], ast.Pass):
+                    exc_name = getattr(node.type, "id", None) if node.type else "BaseException"
+                    if exc_name in ("Exception", "BaseException", None):
+                        violations.append(
+                            f"{py_file}:{node.lineno} has silent `except {exc_name}: pass` (log or handle explicitly)"
+                        )
+    assert not violations, "Silent exception swallowing detected:\n" + "\n".join(violations)
 ```
 
 &nbsp;
@@ -256,6 +303,46 @@ def test_no_fstring_sql_queries_in_storage() -> None:
 | **VP-26** | Extended Multi-Forge Suite: Codeberg, Azure Repos, Radicle, Gerrit, SourceHut & Tangled | `FR-6.5`–`6.10`, `DEC-10` | `src/wrench/forge/adapters/{codeberg,azure_repos,radicle,gerrit,sourcehut,tangled}.py`, `src/wrench/ui/dialogs/forge_review_push_dialog.py` |
 
 &nbsp;
+
+### 0.E Fast-Model / Gemini 3.8 Flash Anti-Hallucination & Execution Contract (`FLASH-1`..`FLASH-7`)
+
+> **CRITICAL FOR FAST CODING MODELS (Gemini Flash / Haiku / Mini Executors):**
+> Fast models fail on large PySide6 + `pygit2` codebases in 7 predictable ways. Every rule below is mechanically enforced by `tests/unit/test_no_shortcuts_guard.py`. Violating any of `FLASH-1`..`FLASH-7` will immediately fail the phase gate.
+
+1. **`FLASH-1` — Non-Destructive Shared File Edits (Zero Truncation Rule):**
+   * When editing shared files (`src/wrench/core/engine.py`, `read_ops.py`, `write_ops.py`, `models.py`, `src/wrench/ui/main_window.py`, `changes_view.py`, `history_view.py`, `settings_dialog.py`), **NEVER** delete existing methods, signals, dataclasses, or imports from earlier phases.
+   * **NEVER** write lazy truncation comments like `# ... existing code ...`, `# ... rest of class ...`, or `# unchanged`. Always preserve 100% of existing lines and run `git diff <file>` after every edit to verify only new/updated code was touched.
+2. **`FLASH-2` — Strict PySide6 (Qt 6.8+) API Rules (Zero PyQt5 / Qt5 Contamination):**
+   * **Imports:** Always use `PySide6` (`from PySide6.QtCore import Qt, Signal, Slot, QTimer, QObject, QRunnable, QThreadPool`). **NEVER** import `PyQt5` or `PyQt6`, and **NEVER** use `pyqtSignal` or `pyqtSlot`.
+   * **`QAction` & `QShortcut` Location:** In Qt 6 / PySide6, `QAction`, `QShortcut`, `QKeySequence`, `QIcon`, `QPainter`, `QColor`, `QFont`, `QPen`, and `QBrush` live in **`PySide6.QtGui`**, **NOT** `PySide6.QtWidgets`! Writing `from PySide6.QtWidgets import QAction` raises `ImportError` and fails CI.
+   * **Event Loops & Dialogs:** Always call `dialog.exec()` and `app.exec()`, **NEVER** Qt5's `.exec_()`.
+   * **Mouse Events:** On `QMouseEvent` / `QWheelEvent` in Qt 6, always use `event.position().toPoint()`, **NEVER** deprecated `event.pos()`.
+   * **Scoped Enums:** Prefer scoped Qt6 enums (`Qt.Orientation.Horizontal`, `Qt.AlignmentFlag.AlignLeft`, `Qt.Key.Key_Return`, `Qt.KeyboardModifier.ControlModifier`, `QAbstractItemView.ScrollMode.ScrollPerPixel`).
+3. **`FLASH-3` — Strict `pygit2` Idioms (Zero `GitPython` Contamination):**
+   * Wrench uses **`pygit2` (libgit2)** + system `git` CLI (`subprocess.run(..., shell=False)`). Wrench does **NOT** use `GitPython` (`import git`).
+   * **NEVER** call `.iter_commits()`, `.active_branch`, or `repo.git.*` (those are `GitPython` methods and do not exist on `pygit2.Repository`).
+   * **Canonical `pygit2` Cheat-Sheet:**
+     * Open repo: `repo = pygit2.Repository(str(repo_path))`
+     * Commit/Blob/Tree SHA string: `str(obj.id)` (prefer `str(obj.id)` over deprecated `.hex`)
+     * Current branch name: `repo.head.shorthand` (guard with `if not repo.head_is_unborn:`)
+     * Walk commits: `for commit in repo.walk(repo.head.target, pygit2.GIT_SORT_TOPOLOGICAL | pygit2.GIT_SORT_TIME):`
+     * Lookup reference/branch: `repo.references.get("refs/heads/main")` or `repo.lookup_branch("main")`
+4. **`FLASH-4` — Non-Blocking Headless Qt Tests (`QT_QPA_PLATFORM=offscreen`):**
+   * In `tests/`, **NEVER** call blocking `dialog.exec()` or `menu.exec()` directly inside a test function—it will hang headless `pytest` forever waiting for human mouse clicks!
+   * Instead: instantiate the widget/dialog (`dlg = MyDialog(...)`), call non-blocking methods or trigger slots directly (`dlg._on_apply_clicked()` or `dlg.accept()`), inspect widget state, and call `dlg.close()`.
+5. **`FLASH-5` — Zero Silent Exception Swallowing & Zero Mock-Only Unit Tests:**
+   * **NEVER** write `except Exception: pass` or `except BaseException: pass` in `src/wrench/`. Always catch specific exceptions (`pygit2.GitError`, `GitCommandError`, `httpx.HTTPError`, `sqlite3.Error`, `OSError`) and either raise a typed domain exception or log via `logger.warning(...)` / `logger.debug(...)`.
+   * Core Git tests (`tests/unit/test_*_ops.py`) **MUST** initialize a real temporary Git repository in `tmp_path` (`pygit2.init_repository(str(tmp_path))` + real commits) and assert actual Git state (`HEAD` OID, branch refs, working tree files) after the operation runs.
+6. **`FLASH-6` — Thread Safety Boundary (`QThreadPool` / `QRunnable` vs. GUI Thread):**
+   * Background workers (`AsyncWorker` / `QRunnable`) **MUST NEVER** read or mutate any `QWidget`, `QAbstractItemModel`, or `QPixmap` directly. Workers may only execute `core.engine`, `forge.registry`, or `storage` calls and emit immutable Python dataclasses (`models.py`) or primitives back to the main thread via Qt `Signal`.
+7. **`FLASH-7` — Mandatory 4-Step Micro-Loop For Every Single Step inside a Phase:**
+   * Execute one numbered Step at a time:
+     1. Read the target file(s) completely before editing.
+     2. Write the complete implementation for that single Step (zero `TODO`s, zero stubs).
+     3. Run `./bin/wrench-test tests/unit/test_no_shortcuts_guard.py -v` + the phase's unit test file immediately.
+     4. Run `git diff --stat` to confirm no unintended files or existing functions were deleted.
+
+---
 
 ## VP-0 — Universal Settings Registry, v1 Feature Retrofits & Searchable Preferences Center (`FR-8.8`–`8.11`, `NFR-5`)
 

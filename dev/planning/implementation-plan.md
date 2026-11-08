@@ -27,6 +27,12 @@ This section exists so an implementer — including a less capable model — can
 4. **Don't add dependencies not listed in §2's Technology Decisions table.** A step that seems to need an unlisted library is an open question to flag, not a free choice — new dependencies have Flatpak packaging consequences (§6.1) that aren't free to add later.
 5. **If two parts of this document seem to contradict each other, stop and flag it.** Do not silently pick one interpretation and continue.
 
+12. **`FLASH-1` (Non-Destructive Edits to Shared Files):** When adding methods to `engine.py`, `read_ops.py`, `write_ops.py`, `models.py`, or `main_window.py`, NEVER delete existing methods from earlier phases or write `# ... existing code ...` truncation comments. Always inspect `git diff` after editing.
+13. **`FLASH-2` (Strict PySide6 / Qt6 API):** Always use `PySide6` (`Signal`, `Slot`, `.exec()`, `event.position().toPoint()`). NEVER import `PyQt5`/`PyQt6`, NEVER use `pyqtSignal`/`.exec_()`, and always import `QAction` and `QShortcut` from `PySide6.QtGui` (NOT `QtWidgets`).
+14. **`FLASH-3` (Strict `pygit2` API — Zero `GitPython`):** Use `pygit2.Repository`, `str(obj.id)`, `repo.walk()`, and `repo.head.shorthand`. NEVER call `GitPython` methods like `.iter_commits()`, `.active_branch`, or `repo.git.*`.
+15. **`FLASH-4` (Headless Offscreen Tests):** Never call blocking `dialog.exec()` in `tests/` under `QT_QPA_PLATFORM=offscreen`. Trigger dialog slots directly (`dlg._on_accept()`) and assert state.
+16. **`FLASH-5` (Zero Silent Exception Swallowing):** Never write `except Exception: pass` in `src/wrench/`.
+
 ### 0.2 Where development happens
 
 Phases 1–5 (all feature work) are built and tested in a **plain local Python virtual environment** — not inside a Flatpak build. The Flatpak build is only exercised at the end of Phase 0 (skeleton must build), continuously in CI on every PR (§7), and again at Phase 6 (hardening). Don't run `flatpak-builder` after every code change during feature phases; the acceptance checks in Phases 1–5 all run against plain `pytest`.

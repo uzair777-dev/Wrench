@@ -4,7 +4,7 @@
 
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](LICENSE)
 ![GitHub Repo stars](https://img.shields.io/github/stars/uzair777-dev/Wrench)
-[![Python: 3.15 Primary (3.12+ Compatible)](https://img.shields.io/badge/Python-3.15%20Primary%20(3.12+%20Compatible)-blue.svg)](https://www.python.org/)
+[![Python: 3.15](https://img.shields.io/badge/Python-3.15-blue.svg)](https://www.python.org/)
 [![GUI: PySide6](https://img.shields.io/badge/GUI-PySide6%20%2F%20Qt%206-informational.svg)](https://www.qt.io/)
 [![Tests: 534 passed](https://img.shields.io/badge/Tests-534%20passed-brightgreen.svg)](tests/)
 ![GitHub Actions Workflow Status](https://img.shields.io/github/actions/workflow/status/uzair777-dev/Wrench/ci.yml)
@@ -28,7 +28,7 @@
   - Automatic branching from `_on_open_repo` when a picked folder is not a Git repo.
   - Interactive `DiscoverReposDialog` with Select All / Deselect All, tri-state selection, worktree `.git`-file detection, symlink cycle protection, and atomic batch registry import with missing-status recovery (`clear_missing`).
 - **Python 3.15 Engine & Native Explicit Lazy Imports (PEP 810)**:
-  - Primary development runtime powered by Python 3.15 with backwards-compatible support for Python 3.12+.
+  - Primary runtime powered by Python 3.15 with PEP 810 native explicit lazy imports.
   - Native `lazy import <mod>` syntax deferring heavyweight startup modules (`secretstorage`, `platformdirs`, `httpx`, `watchdog`), eliminating cold-start latency.
   - Fully integrated with high-speed `uv` and `uvx` package management, offline test runners, and automated C-extension compilation.
 - **Unified Changes Workspace**:
@@ -138,7 +138,7 @@ All developer binaries in `bin/` leverage `uv run --no-sync` for fast, offline e
 - **GUI Framework:** PySide6 (Qt 6.8+ / Qt 6.12 via Python Stable ABI `abi3`)
 - **Git Engine:** `pygit2` (C libgit2 bindings) + System `git` CLI
 - **Tooling & Package Management:** `uv` & `uvx` 0.13+ (sub-second dependency resolution)
-- **Runtime & Optimization:** Python 3.15.0 primary runtime (PEP 810 native `lazy import` support & `LazyProxyModule` fallback, `requires-python = ">=3.12"`)
+- **Runtime & Optimization:** Python 3.15.0 primary runtime (PEP 810 native `lazy import` support, `requires-python = ">=3.15"`)
 - **HTTP Client:** `httpx` (HTTP/1.1 & HTTP/2 with custom TLS trust anchors, lazily imported)
 - **Credential Storage:** `secretstorage` (FreeDesktop Secret Service D-Bus specification, lazily imported)
 - **Local Storage:** SQLite (`~/.local/share/wrench/wrench.db` via `platformdirs`, lazily imported)

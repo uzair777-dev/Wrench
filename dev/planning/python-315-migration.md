@@ -2,7 +2,7 @@
 
 ## Executive Summary
 
-As part of Phase 4.5, Wrench has transitioned its primary development and execution runtime to **Python 3.15.0 (CPython)** while preserving a permissive compatibility policy (`requires-python = ">=3.12"`) for downstream distribution.
+As part of Phase 4.5, Wrench has transitioned its primary development and execution runtime to **Python 3.15.0 (CPython)** with modern package and platform constraints (`requires-python = ">=3.15"`).
 
 This migration brings:
 1. **PEP 810 Explicit Lazy Imports**: Native language-level deferral (`lazy import <module>`) for heavyweight and secondary dependencies, eliminating cold-start latency without complex proxy boilerplate.

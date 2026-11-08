@@ -137,7 +137,7 @@ class AboutDialog(QDialog):
             "• pygit2 / libgit2 — GPL v2 with Linking Exception",
             "• httpx — BSD 3-Clause",
             "• watchdog — Apache License 2.0",
-            "• secretstorage — BSD 3-Clause",
+            "• SecretStorage — BSD 3-Clause",
             "• platformdirs — MIT",
             "",
         ]

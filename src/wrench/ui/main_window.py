@@ -44,6 +44,7 @@ from wrench.core.exceptions import (
     CloneAbortedError,
     FileTooLargeRejectedError,
     GitCommandError,
+    GitNetworkTransferError,
     MergeRequiredError,
     ProtectedBranchRejectedError,
     PushRejectedError,
@@ -63,6 +64,8 @@ from wrench.ui.dialogs.discover_repos_dialog import DiscoverReposDialog
 from wrench.ui.dialogs.link_dialog import LinkRepoDialog
 from wrench.ui.dialogs.push_recovery_dialogs import (
     FileTooLargeDialog,
+    GitNetworkRecoveryDialog,
+    PrePushLargeFilesDialog,
     ProtectedBranchDialog,
     SecretScanningDialog,
 )
@@ -1551,6 +1554,25 @@ class MainWindow(QMainWindow):
             return
 
         cancel_event = threading.Event()
+
+        # Pre-flight check for large blobs in unpushed commits (>= 50 MB)
+        extra_config: dict[str, str] | None = None
+        try:
+            large_blobs = engine.scan_unpushed_large_blobs(
+                self._current_repo, remote=remote, branch=branch, threshold_mb=50.0
+            )
+        except Exception:
+            large_blobs = []
+
+        if large_blobs:
+            pre_dlg = PrePushLargeFilesDialog(
+                large_blobs, remote=remote, branch=branch, parent=self
+            )
+            if pre_dlg.exec() != QDialog.DialogCode.Accepted:
+                return
+            if pre_dlg.action == "extreme_compression":
+                extra_config = engine.EXTREME_COMPRESSION_CONFIG.copy()
+
         title = self.tr("Force Push") if force else self.tr("Push")
         busy_dlg = BusyOperationDialog(
             title,
@@ -1576,6 +1598,7 @@ class MainWindow(QMainWindow):
             remote,
             branch,
             force=force,
+            extra_config=extra_config,
             on_finished=on_finished,
             on_failed=on_failed,
             on_progress=busy_dlg.set_progress,
@@ -1707,6 +1730,75 @@ class MainWindow(QMainWindow):
             )
             return
 
+        if isinstance(exc, GitNetworkTransferError):
+            unpushed_blobs = []
+            has_multiple = False
+            remote_url = None
+            if self._current_repo:
+                try:
+                    unpushed_blobs = engine.scan_unpushed_large_blobs(
+                        self._current_repo,
+                        remote=remote_name,
+                        branch=branch,
+                        threshold_mb=50.0,
+                    )
+                except Exception:
+                    pass
+                try:
+                    clean_b = (branch or "HEAD").replace("refs/heads/", "")
+                    p = self._current_repo.path
+                    from wrench.core import write_ops
+
+                    rev_res = write_ops.run_git(
+                        p,
+                        ["rev-list", f"refs/remotes/{remote_name}/{clean_b}..refs/heads/{clean_b}"],
+                        check=False,
+                    )
+                    if rev_res.returncode == 0:
+                        has_multiple = len(rev_res.stdout.splitlines()) > 1
+                except Exception:
+                    pass
+                try:
+                    from wrench.core import write_ops
+
+                    url_res = write_ops.run_git(
+                        self._current_repo.path, ["remote", "get-url", remote_name], check=False
+                    )
+                    if url_res.returncode == 0 and url_res.stdout.strip():
+                        remote_url = url_res.stdout.strip()
+                except Exception:
+                    pass
+
+            dlg = GitNetworkRecoveryDialog(
+                exc,
+                remote_url=remote_url,
+                unpushed_large_blobs=unpushed_blobs,
+                has_multiple_commits=has_multiple,
+                parent=self,
+            )
+            if dlg.exec() == QDialog.DialogCode.Accepted:
+                action = dlg.get_action()
+                target_branch = branch or "HEAD"
+                if action == "auto_heal":
+                    self._start_auto_heal_push(
+                        remote_name, target_branch, has_multiple=has_multiple
+                    )
+                elif action == "retry_config":
+                    self._retry_push_with_config(
+                        remote_name, target_branch, dlg.get_config_overrides()
+                    )
+                elif action == "chunk_push":
+                    self._start_incremental_push(remote_name, target_branch)
+                elif action == "switch_ssh":
+                    ssh_url = dlg.get_ssh_url()
+                    if ssh_url and self._current_repo:
+                        try:
+                            engine.set_remote_url(self._current_repo, remote_name, ssh_url)
+                            self._on_push_remote(force=False)
+                        except Exception as e:
+                            QMessageBox.critical(self, self.tr("Failed to Set Remote URL"), str(e))
+            return
+
         if isinstance(exc, PushRejectedError):
             box = QMessageBox(self)
             box.setIcon(QMessageBox.Icon.Warning)
@@ -1793,11 +1885,26 @@ class MainWindow(QMainWindow):
             return
 
         if isinstance(exc, CLITimeoutError):
-            QMessageBox.critical(
-                self,
-                self.tr("Operation Timed Out"),
-                self.tr(f"The Git operation timed out after {exc.timeout}s."),
-            )
+            t_val = getattr(exc, "timeout", 600.0)
+            if op == "push":
+                QMessageBox.critical(
+                    self,
+                    self.tr("Push Timed Out"),
+                    self.tr(
+                        f"The push operation timed out after {t_val:.0f}s.\n\n"
+                        "This usually occurs when uploading very large files or packfiles "
+                        "over a slow connection.\n\n"
+                        "To resolve this:\n"
+                        "• Track large files with Git LFS instead of regular git history\n"
+                        "• Or try pushing in incremental batches"
+                    ),
+                )
+            else:
+                QMessageBox.critical(
+                    self,
+                    self.tr("Operation Timed Out"),
+                    self.tr(f"The Git operation timed out after {t_val:.0f}s."),
+                )
             return
 
         msg = exc.stderr if isinstance(exc, GitCommandError) and exc.stderr else str(exc)
@@ -1806,6 +1913,182 @@ class MainWindow(QMainWindow):
             self.tr(f"{op.capitalize()} Failed"),
             self.tr(f"Git operation failed: {msg}"),
         )
+
+    def _retry_push_with_config(
+        self,
+        remote_name: str,
+        branch: str,
+        extra_config: dict[str, str],
+        on_success_callback=None,
+        on_failure_callback=None,
+    ) -> None:
+        if not self._current_repo:
+            return
+
+        cancel_event = threading.Event()
+        dlg = BusyOperationDialog(
+            self.tr("Pushing with Resilient Network Settings"),
+            self.tr(f"Retrying push to '{remote_name}' with optimized network parameters..."),
+            cancel_event=cancel_event,
+            humor_enabled=self._is_humor_lines_enabled(),
+            parent=self,
+        )
+
+        def on_success(_):
+            dlg.accept()
+            self._refresh_after_git_op()
+            if on_success_callback:
+                on_success_callback()
+            else:
+                self._prompt_save_network_config(extra_config)
+
+        def on_failure(e):
+            dlg.reject()
+            if on_failure_callback:
+                on_failure_callback(e)
+            else:
+                self._route_remote_error(e, remote_name, branch=branch, op="push")
+
+        dlg.show()
+        run_in_background(
+            engine.push,
+            self._current_repo,
+            remote_name,
+            branch,
+            force=False,
+            extra_config=extra_config,
+            on_finished=on_success,
+            on_failed=on_failure,
+            on_progress=dlg.set_progress,
+            cancel_event=cancel_event,
+            op_name="Push (Resilient Config)",
+        )
+
+    def _start_incremental_push(self, remote_name: str, branch: str) -> None:
+        if not self._current_repo:
+            return
+
+        cancel_event = threading.Event()
+        dlg = BusyOperationDialog(
+            self.tr("Pushing Commits in Batches"),
+            self.tr(f"Pushing commit batches to '{remote_name}' to avoid transfer timeouts..."),
+            cancel_event=cancel_event,
+            humor_enabled=self._is_humor_lines_enabled(),
+            parent=self,
+        )
+
+        def on_success(_):
+            dlg.accept()
+            self._refresh_after_git_op()
+            QMessageBox.information(
+                self,
+                self.tr("Incremental Push Complete"),
+                self.tr(f"All commit batches successfully pushed to '{remote_name}/{branch}'!"),
+            )
+
+        def on_failure(e):
+            dlg.reject()
+            self._route_remote_error(e, remote_name, branch=branch, op="push")
+
+        dlg.show()
+        run_in_background(
+            engine.push_incremental_batches,
+            self._current_repo,
+            remote_name,
+            branch,
+            chunk_size=20,
+            force=False,
+            on_finished=on_success,
+            on_failed=on_failure,
+            on_progress=dlg.set_progress,
+            cancel_event=cancel_event,
+            op_name="Push (Incremental Batches)",
+        )
+
+    def _start_auto_heal_push(
+        self, remote_name: str, branch: str, has_multiple: bool = False
+    ) -> None:
+        """Execute the progressive Auto-Heal pipeline with circuit breaker."""
+        # Stage 1: Resilient Buffer (500MB) + low-speed immunity
+        stage1_cfg = {
+            "http.postBuffer": "524288000",
+            "http.lowSpeedLimit": "0",
+            "http.lowSpeedTime": "999999",
+        }
+
+        # Stage 2: Buffer + HTTP/1.1 Downgrade + Window Memory Limits
+        stage2_cfg = {
+            "http.postBuffer": "524288000",
+            "http.version": "HTTP/1.1",
+            "http.lowSpeedLimit": "0",
+            "http.lowSpeedTime": "999999",
+            "pack.windowMemory": "256m",
+            "pack.threads": "1",
+        }
+
+        # Stage 3: Extreme 7-Zip Style Compression
+        stage3_cfg = engine.EXTREME_COMPRESSION_CONFIG.copy()
+
+        def on_stage1_failed(err):
+            def on_stage2_failed(err2):
+                def on_stage3_failed(err3):
+                    if has_multiple:
+                        self._start_incremental_push(remote_name, branch)
+                    else:
+                        self._route_remote_error(err3, remote_name, branch=branch, op="push")
+
+                self._retry_push_with_config(
+                    remote_name,
+                    branch,
+                    stage3_cfg,
+                    on_success_callback=lambda: self._prompt_save_network_config(stage3_cfg),
+                    on_failure_callback=on_stage3_failed,
+                )
+
+            self._retry_push_with_config(
+                remote_name,
+                branch,
+                stage2_cfg,
+                on_success_callback=lambda: self._prompt_save_network_config(stage2_cfg),
+                on_failure_callback=on_stage2_failed,
+            )
+
+        self._retry_push_with_config(
+            remote_name,
+            branch,
+            stage1_cfg,
+            on_success_callback=lambda: self._prompt_save_network_config(stage1_cfg),
+            on_failure_callback=on_stage1_failed,
+        )
+
+    def _prompt_save_network_config(self, config_dict: dict[str, str]) -> None:
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Question)
+        box.setWindowTitle(self.tr("Push Succeeded — Save Network Settings?"))
+
+        cfg_summary = ", ".join(
+            f"{k}={v}" for k, v in config_dict.items() if not k.startswith("pack.")
+        )
+        box.setText(
+            self.tr(
+                f"Push completed successfully with optimized parameters ({cfg_summary})!\n\n"
+                "Would you like to keep these settings for future push operations?"
+            )
+        )
+        repo_btn = box.addButton(self.tr("For this Repository"), QMessageBox.ButtonRole.ActionRole)
+        global_btn = box.addButton(
+            self.tr("Globally (All Repos)"), QMessageBox.ButtonRole.ActionRole
+        )
+        box.addButton(self.tr("Don't Save"), QMessageBox.ButtonRole.RejectRole)
+        box.exec()
+
+        clicked = box.clickedButton()
+        if clicked == repo_btn and self._current_repo:
+            for k, v in config_dict.items():
+                engine.set_git_config(self._current_repo, k, v, scope="local")
+        elif clicked == global_btn:
+            for k, v in config_dict.items():
+                engine.set_git_config(None, k, v, scope="global")
 
     def _on_close_repo(self) -> None:
         current_idx = self.tab_container.current_index()

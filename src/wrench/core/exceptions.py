@@ -233,6 +233,54 @@ class RepoPermissionDeniedError(PushRejectedError):
     """Raised when authenticated user lacks push permissions on the repository (HTTP 403)."""
 
 
+class GitNetworkTransferError(PushRejectedError):
+    """Raised when git push fails due to network, RPC, buffer timeout, or protocol interruption."""
+
+    def __init__(
+        self,
+        stderr_or_args: str | list[str] = "",
+        returncode: int = 1,
+        stderr: str | None = None,
+        stdout: str = "",
+        *,
+        kind: str = "timeout_408",
+        status_code: int | None = None,
+        curl_code: int | None = None,
+        payload_mb: float | None = None,
+        commit_count: int | None = None,
+    ) -> None:
+        super().__init__(stderr_or_args, returncode, stderr)
+        if stdout:
+            self.stdout = stdout
+        self.kind = kind
+        self.status_code = status_code
+        self.curl_code = curl_code
+        self.payload_mb = payload_mb
+        self.commit_count = commit_count
+
+    @property
+    def is_timeout(self) -> bool:
+        return self.kind in ("timeout_408", "gateway_error") or self.status_code in (408, 504)
+
+    @property
+    def is_http2_error(self) -> bool:
+        return self.kind == "http2_stream_92" or self.curl_code == 92
+
+    @property
+    def is_payload_too_large(self) -> bool:
+        return self.kind == "payload_too_large_413" or self.status_code == 413
+
+    def __str__(self) -> str:
+        mb_str = f" (~{self.payload_mb:.1f} MB)" if self.payload_mb is not None else ""
+        details = []
+        if self.status_code:
+            details.append(f"HTTP {self.status_code}")
+        if self.curl_code:
+            details.append(f"curl {self.curl_code}")
+        tag = f" [{', '.join(details)}]" if details else ""
+        return f"Network transfer failed{mb_str}{tag} (kind={self.kind}): {self.stderr}"
+
+
 class MergeRequiredError(GitCommandError):
     """git pull --ff-only failed because branches diverged."""
 
@@ -272,8 +320,16 @@ class CLITimeoutError(GitCommandError):
         args_or_msg: list[str] | str = "",
         returncode_or_timeout: int | float = -1,
         stderr: str = "",
+        timeout: float | None = None,
     ):
+        if timeout is not None:
+            self.timeout: float = float(timeout)
+        elif isinstance(returncode_or_timeout, (int, float)) and returncode_or_timeout > 0:
+            self.timeout = float(returncode_or_timeout)
+        else:
+            self.timeout = 600.0
+
         if isinstance(args_or_msg, list):
-            super().__init__(args_or_msg, int(returncode_or_timeout), stderr)
+            super().__init__(args_or_msg, -1, stderr)
         else:
             super().__init__(["git"], -1, args_or_msg)

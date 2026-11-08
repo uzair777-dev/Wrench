@@ -33,6 +33,7 @@ from .exceptions import (
     EmptyCommitMessageError,
     FileTooLargeRejectedError,
     GitCommandError,
+    GitNetworkTransferError,
     MergeRequiredError,
     NothingToCommitError,
     ProtectedBranchRejectedError,
@@ -165,8 +166,8 @@ def _classify_git_error(
     remote_url: str | None = None,
 ) -> Exception:
     """Classify non-zero git CLI exit into specific domain exceptions."""
-    is_push = len(args) > 0 and args[0] == "push"
-    is_pull = len(args) > 0 and args[0] == "pull"
+    is_push = "push" in args
+    is_pull = "pull" in args
 
     # --- Push-specific classification (order matters: specific before generic) ---
 
@@ -261,7 +262,86 @@ def _classify_git_error(
     ):
         return RepoPermissionDeniedError(args, returncode, stderr)
 
-    # 7. Generic push rejected (non-fast-forward, etc.) — MUST BE LAST push check
+    # 7. Network / RPC / Timeout / Protocol failures during push
+    if is_push and (
+        "RPC failed" in stderr
+        or "HTTP 408" in stderr
+        or "HTTP 413" in stderr
+        or "HTTP 502" in stderr
+        or "HTTP 503" in stderr
+        or "HTTP 504" in stderr
+        or "HTTP 524" in stderr
+        or "curl 22" in stderr
+        or "curl 28" in stderr
+        or "curl 35" in stderr
+        or "curl 92" in stderr
+        or "curl 56" in stderr
+        or "curl 18" in stderr
+        or "curl 55" in stderr
+        or "Operation timed out" in stderr
+        or "Connection timed out" in stderr
+        or ("send-pack: unexpected disconnect" in stderr and "hung up unexpectedly" in stderr)
+    ):
+        payload_mb: float | None = None
+        size_match = re.search(r"Writing objects:.*,\s*([\d\.]+)\s*(KiB|MiB|GiB|B)", stderr)
+        if size_match:
+            val = float(size_match.group(1))
+            unit = size_match.group(2)
+            if unit == "B":
+                payload_mb = val / (1024.0 * 1024.0)
+            elif unit == "KiB":
+                payload_mb = val / 1024.0
+            elif unit == "MiB":
+                payload_mb = val
+            elif unit == "GiB":
+                payload_mb = val * 1024.0
+
+        status_code: int | None = None
+        status_match = re.search(r"HTTP\s+(\d{3})", stderr)
+        if status_match:
+            status_code = int(status_match.group(1))
+
+        curl_code: int | None = None
+        curl_match = re.search(r"curl\s+(\d+)", stderr)
+        if curl_match:
+            curl_code = int(curl_match.group(1))
+
+        is_timeout_err = (
+            status_code in (408, 504, 524)
+            or (curl_code == 28)
+            or (curl_code == 22 and any(c in stderr for c in ("408", "504", "524")))
+            or "timed out" in stderr.lower()
+        )
+        if is_timeout_err:
+            kind = "timeout_408"
+        elif status_code == 413 or "Request Entity Too Large" in stderr:
+            kind = "payload_too_large_413"
+        elif (
+            status_code in (502, 503) or "Bad Gateway" in stderr or "Service Unavailable" in stderr
+        ):
+            kind = "gateway_error"
+        elif curl_code == 92 or "HTTP/2 stream" in stderr:
+            kind = "http2_stream_92"
+        elif curl_code in (55, 56) or "SSL_read" in stderr or "Connection reset by peer" in stderr:
+            kind = "connection_reset_56"
+        elif curl_code == 18 or "outstanding read data" in stderr:
+            kind = "partial_transfer_18"
+        elif "send-pack: unexpected disconnect" in stderr:
+            kind = "sideband_disconnect"
+        else:
+            kind = "timeout_408" if status_code == 408 else "connection_reset_56"
+
+        return GitNetworkTransferError(
+            args,
+            returncode,
+            stderr,
+            kind=kind,
+            status_code=status_code,
+            curl_code=curl_code,
+            payload_mb=payload_mb,
+        )
+
+    # 8. Generic push rejected (non-fast-forward, etc.) — MUST BE LAST push check
     if is_push and "rejected" in stderr:
         return PushRejectedError(args, returncode, stderr)
 
@@ -583,12 +663,18 @@ def push(
     branch: str,
     *,
     force: bool = False,
+    extra_config: dict[str, str] | None = None,
+    timeout: float = 1800.0,
     progress_cb: Callable[[int, str], None] | None = None,
     cancel_event: threading.Event | None = None,
 ) -> None:
     """Push branch to remote using --progress and --force-with-lease if force=True."""
     p = Path(repo_path)
-    args = ["push", "--progress"]
+    args: list[str] = []
+    if extra_config:
+        for k, v in extra_config.items():
+            args.extend(["-c", f"{k}={v}"])
+    args.extend(["push", "--progress"])
     if force:
         args.append("--force-with-lease")
     args.extend([remote, branch])
@@ -602,7 +688,7 @@ def push(
     code, stdout, stderr = run_git_streaming(
         p,
         args,
-        timeout=600,
+        timeout=timeout,
         on_stderr_line=on_line,
         cancel_event=cancel_event,
     )
@@ -617,6 +703,94 @@ def push(
         except Exception:
             pass
         raise _classify_git_error(args, code, stderr, remote_url=remote_url)
+
+
+def push_incremental_batches(
+    repo_path: Path | str,
+    remote: str,
+    branch: str,
+    *,
+    chunk_size: int = 20,
+    force: bool = False,
+    extra_config: dict[str, str] | None = None,
+    progress_cb: Callable[[int, str], None] | None = None,
+    cancel_event: threading.Event | None = None,
+) -> None:
+    """Push commits in incremental batches to avoid payload timeout on large histories.
+
+    1. Determines unpushed commits between remote/branch and HEAD.
+    2. If multiple commits exist, pushes checkpoints every `chunk_size` commits.
+    3. Concludes by pushing final HEAD.
+    """
+    p = Path(repo_path)
+    clean_branch = branch.replace("refs/heads/", "")
+    tracking_ref = f"refs/remotes/{remote}/{clean_branch}"
+
+    # Check if tracking branch exists
+    proc_verify = run_git(p, ["rev-parse", "--verify", tracking_ref], check=False)
+    if proc_verify.returncode == 0:
+        rev_range = f"{tracking_ref}..refs/heads/{clean_branch}"
+    else:
+        rev_range = f"refs/heads/{clean_branch}"
+
+    proc_list = run_git(p, ["rev-list", "--reverse", rev_range], check=False)
+    commits = [c.strip() for c in proc_list.stdout.splitlines() if c.strip()]
+
+    # If 1 or 0 commits, push directly
+    if len(commits) <= 1:
+        push(
+            p,
+            remote,
+            clean_branch,
+            force=force,
+            extra_config=extra_config,
+            progress_cb=progress_cb,
+            cancel_event=cancel_event,
+        )
+        return
+
+    # Calculate chunks
+    total_commits = len(commits)
+    checkpoint_indices = list(range(chunk_size - 1, total_commits, chunk_size))
+    if checkpoint_indices and checkpoint_indices[-1] == total_commits - 1:
+        checkpoint_indices.pop()
+
+    total_steps = len(checkpoint_indices) + 1
+    step = 0
+
+    for idx in checkpoint_indices:
+        if cancel_event and cancel_event.is_set():
+            raise GitCommandError(["push"], -1, "Push operation was cancelled by user")
+        step += 1
+        commit_sha = commits[idx]
+        if progress_cb:
+            progress_cb(
+                int((step / total_steps) * 100),
+                f"Pushing batch {step}/{total_steps} (commit {idx + 1}/{total_commits})",
+            )
+        push(
+            p,
+            remote,
+            f"{commit_sha}:refs/heads/{clean_branch}",
+            force=force,
+            extra_config=extra_config,
+            cancel_event=cancel_event,
+        )
+
+    # Final step: push HEAD
+    if cancel_event and cancel_event.is_set():
+        raise GitCommandError(["push"], -1, "Push operation was cancelled by user")
+    step += 1
+    if progress_cb:
+        progress_cb(100, f"Pushing final branch tip ({total_commits}/{total_commits})")
+    push(
+        p,
+        remote,
+        clean_branch,
+        force=force,
+        extra_config=extra_config,
+        cancel_event=cancel_event,
+    )
 
 
 def pull(

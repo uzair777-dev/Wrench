@@ -58,6 +58,10 @@ class TestPhase3Exceptions:
 
         timeout_err = CLITimeoutError(["fetch", "origin"], -1, "Command timed out after 600s")
         assert timeout_err.returncode == -1
+        assert timeout_err.timeout == 600.0
+
+        explicit_timeout_err = CLITimeoutError(["push", "origin"], 300, "Timed out", timeout=300)
+        assert explicit_timeout_err.timeout == 300.0
 
     def test_git_command_error_stdout_fallback(self):
         err = GitCommandError(["commit", "-m", "foo"], 1, "", stdout="nothing to commit")

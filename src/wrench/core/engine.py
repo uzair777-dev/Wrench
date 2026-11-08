@@ -503,6 +503,8 @@ def push(
     branch: str,
     *,
     force: bool = False,
+    extra_config: dict[str, str] | None = None,
+    timeout: float = 1800.0,
     progress_cb=None,
     cancel_event=None,
 ) -> None:
@@ -511,6 +513,31 @@ def push(
         remote,
         branch,
         force=force,
+        extra_config=extra_config,
+        timeout=timeout,
+        progress_cb=progress_cb,
+        cancel_event=cancel_event,
+    )
+
+
+def push_incremental_batches(
+    repo: RepoHandle,
+    remote: str,
+    branch: str,
+    *,
+    chunk_size: int = 20,
+    force: bool = False,
+    extra_config: dict[str, str] | None = None,
+    progress_cb=None,
+    cancel_event=None,
+) -> None:
+    write_ops.push_incremental_batches(
+        repo.path,
+        remote,
+        branch,
+        chunk_size=chunk_size,
+        force=force,
+        extra_config=extra_config,
         progress_cb=progress_cb,
         cancel_event=cancel_event,
     )
@@ -791,3 +818,177 @@ def sweep_repo_debris(repo: RepoHandle) -> list[str]:
     from .recovery import sweep_debris
 
     return sweep_debris(repo.path)
+
+
+# Git Network & Config Helpers
+def get_git_config(
+    repo: RepoHandle | Path | str | None,
+    key: str,
+    scope: str = "local",
+) -> str | None:
+    """Retrieve git config value for key, returning None if unset."""
+    flag = "--local" if scope == "local" else "--global"
+    cwd = None
+    if isinstance(repo, RepoHandle):
+        cwd = repo.path
+    elif repo is not None:
+        cwd = Path(repo)
+    else:
+        cwd = Path.cwd()
+
+    try:
+        proc = write_ops.run_git(cwd, ["config", flag, "--get", key], check=False)
+        if proc.returncode == 0:
+            val = proc.stdout.strip()
+            return val if val else None
+        return None
+    except Exception:
+        return None
+
+
+def set_git_config(
+    repo: RepoHandle | Path | str | None,
+    key: str,
+    value: str,
+    scope: str = "local",
+) -> None:
+    """Set git config key=value for local or global scope."""
+    flag = "--local" if scope == "local" else "--global"
+    cwd = None
+    if isinstance(repo, RepoHandle):
+        cwd = repo.path
+    elif repo is not None:
+        cwd = Path(repo)
+    else:
+        cwd = Path.cwd()
+
+    write_ops.run_git(cwd, ["config", flag, key, str(value)])
+
+
+def get_http_post_buffer(
+    repo: RepoHandle | Path | str | None = None,
+    scope: str = "local",
+) -> int | None:
+    """Retrieve git http.postBuffer in bytes, or None if unset."""
+    val = get_git_config(repo, "http.postBuffer", scope=scope)
+    if val:
+        try:
+            return int(val)
+        except ValueError:
+            return None
+    return None
+
+
+def set_http_post_buffer(
+    repo: RepoHandle | Path | str | None,
+    buffer_bytes: int,
+    scope: str = "local",
+) -> None:
+    """Set git http.postBuffer in bytes for local repo or globally."""
+    set_git_config(repo, "http.postBuffer", str(buffer_bytes), scope=scope)
+
+
+def get_http_version(
+    repo: RepoHandle | Path | str | None = None,
+    scope: str = "local",
+) -> str | None:
+    """Retrieve git http.version (e.g. 'HTTP/1.1'), or None if unset."""
+    return get_git_config(repo, "http.version", scope=scope)
+
+
+def set_http_version(
+    repo: RepoHandle | Path | str | None,
+    version: str,
+    scope: str = "local",
+) -> None:
+    """Set git http.version for local repo or globally."""
+    set_git_config(repo, "http.version", version, scope=scope)
+
+
+EXTREME_COMPRESSION_CONFIG: dict[str, str] = {
+    "core.compression": "9",
+    "pack.compression": "9",
+    "pack.window": "10",
+    "pack.depth": "50",
+    "pack.windowMemory": "512m",
+    "pack.threads": "0",
+    "http.postBuffer": "524288000",
+    "http.lowSpeedLimit": "0",
+    "http.lowSpeedTime": "999999",
+}
+
+
+def scan_unpushed_large_blobs(
+    repo: RepoHandle,
+    remote: str = "origin",
+    branch: str | None = None,
+    threshold_mb: float = 50.0,
+) -> list[tuple[str, float]]:
+    """Scan unpushed commits for blobs exceeding threshold_mb.
+
+    Returns list of (file_path, size_in_mb) sorted by size descending.
+    """
+    clean_branch = (branch or getattr(repo.pygit2_repo.head, "shorthand", "") or "HEAD").replace(
+        "refs/heads/", ""
+    )
+    tracking_ref_name = f"refs/remotes/{remote}/{clean_branch}"
+
+    pygit_repo = repo.pygit2_repo
+    head_commit = None
+    for target in [f"refs/heads/{clean_branch}", clean_branch, "HEAD"]:
+        try:
+            head_commit = pygit_repo.revparse_single(target)
+            if head_commit:
+                break
+        except Exception:
+            continue
+
+    if not head_commit:
+        return []
+
+    remote_commit = None
+    try:
+        remote_commit = pygit_repo.revparse_single(tracking_ref_name)
+    except Exception:
+        pass
+
+    threshold_bytes = int(threshold_mb * 1024 * 1024)
+    found_blobs: dict[str, float] = {}
+
+    def _check_blob_entry(oid, file_path: str) -> None:
+        try:
+            if not oid or str(oid) == "0" * 40:
+                return
+            obj = pygit_repo[oid]
+            if getattr(obj, "type_str", "") == "blob" and obj.size >= threshold_bytes:
+                size_mb = obj.size / (1024.0 * 1024.0)
+                if file_path not in found_blobs or size_mb > found_blobs[file_path]:
+                    found_blobs[file_path] = size_mb
+        except Exception:
+            pass
+
+    try:
+        walker = pygit_repo.walk(head_commit.id, pygit2.enums.SortMode.TOPOLOGICAL)
+        if remote_commit:
+            walker.hide(remote_commit.id)
+
+        count = 0
+        for commit in walker:
+            count += 1
+            if count > 200:
+                break
+            diff = None
+            if commit.parents:
+                diff = pygit_repo.diff(commit.parents[0].tree, commit.tree)
+            else:
+                try:
+                    diff = commit.tree.diff_to_tree()
+                except Exception:
+                    diff = None
+            if diff:
+                for delta in diff.deltas:
+                    _check_blob_entry(delta.new_file.id, delta.new_file.path)
+    except Exception:
+        pass
+
+    return sorted(found_blobs.items(), key=lambda x: x[1], reverse=True)

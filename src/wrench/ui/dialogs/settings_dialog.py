@@ -35,6 +35,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from wrench.core import engine
 from wrench.storage import settings
 from wrench.ui.theme import (
     COMMIT_STAT_COLORS,
@@ -282,6 +283,41 @@ class RepositoriesPage(SettingsPage):
         group_layout.addWidget(self.chk_auto_fetch)
         layout.addWidget(group)
 
+        # Network & Large Transfers Group
+        net_group = QGroupBox(self.tr("Network & Large Transfers"), self)
+        net_layout = QFormLayout(net_group)
+
+        self.spin_post_buffer = QSpinBox(net_group)
+        self.spin_post_buffer.setRange(1, 2048)
+        self.spin_post_buffer.setSuffix(" MB")
+        self.spin_post_buffer.setValue(500)
+        net_layout.addRow(self.tr("HTTP Post Buffer Size:"), self.spin_post_buffer)
+
+        self.combo_http_version = QComboBox(net_group)
+        self.combo_http_version.addItem(self.tr("Default (HTTP/2 with Fallback)"), "")
+        self.combo_http_version.addItem(
+            self.tr("HTTP/1.1 (Maximum Middlebox Compatibility)"), "HTTP/1.1"
+        )
+        self.combo_http_version.addItem(self.tr("HTTP/2"), "HTTP/2")
+        net_layout.addRow(self.tr("HTTP Protocol Version:"), self.combo_http_version)
+
+        self.combo_network_scope = QComboBox(net_group)
+        self.combo_network_scope.addItem(self.tr("Current Repository (--local)"), "local")
+        self.combo_network_scope.addItem(
+            self.tr("Global for all repositories (--global)"), "global"
+        )
+        self.combo_network_scope.currentIndexChanged.connect(self._on_scope_changed)
+        net_layout.addRow(self.tr("Apply Settings To:"), self.combo_network_scope)
+
+        self.btn_apply_network = QPushButton(self.tr("Apply Network Settings"), net_group)
+        self.btn_apply_network.clicked.connect(self._on_apply_network_settings)
+        net_layout.addRow("", self.btn_apply_network)
+
+        self.network_status_label = QLabel(net_group)
+        self.network_status_label.setStyleSheet("color: palette(bright-text);")
+        net_layout.addRow("", self.network_status_label)
+
+        layout.addWidget(net_group)
         layout.addStretch()
 
     def load(self) -> None:
@@ -289,6 +325,70 @@ class RepositoriesPage(SettingsPage):
         self.chk_auto_fetch.blockSignals(True)
         self.chk_auto_fetch.setChecked(enabled)
         self.chk_auto_fetch.blockSignals(False)
+
+        repo = getattr(self.main_window, "_current_repo", None)
+        scope = self.combo_network_scope.currentData() or "local"
+        if not repo and scope == "local":
+            self.combo_network_scope.blockSignals(True)
+            self.combo_network_scope.setCurrentIndex(1)
+            scope = "global"
+            self.combo_network_scope.blockSignals(False)
+
+        self._reload_network_values(scope)
+
+    def _on_scope_changed(self) -> None:
+        scope = self.combo_network_scope.currentData() or "local"
+        self._reload_network_values(scope)
+
+    def _reload_network_values(self, scope: str) -> None:
+        repo = getattr(self.main_window, "_current_repo", None)
+        target_repo = repo if scope == "local" else None
+
+        buf_bytes = engine.get_http_post_buffer(target_repo, scope=scope)
+        self.spin_post_buffer.blockSignals(True)
+        if buf_bytes:
+            self.spin_post_buffer.setValue(max(1, buf_bytes // (1024 * 1024)))
+        else:
+            self.spin_post_buffer.setValue(500)
+        self.spin_post_buffer.blockSignals(False)
+
+        ver = engine.get_http_version(target_repo, scope=scope)
+        self.combo_http_version.blockSignals(True)
+        idx = self.combo_http_version.findData(ver or "")
+        if idx >= 0:
+            self.combo_http_version.setCurrentIndex(idx)
+        else:
+            self.combo_http_version.setCurrentIndex(0)
+        self.combo_http_version.blockSignals(False)
+        self.network_status_label.setText("")
+
+    def _on_apply_network_settings(self) -> None:
+        repo = getattr(self.main_window, "_current_repo", None)
+        scope = self.combo_network_scope.currentData() or "local"
+        if scope == "local" and not repo:
+            self.network_status_label.setText(
+                self.tr("Cannot apply locally: no repository is open.")
+            )
+            return
+
+        mb = self.spin_post_buffer.value()
+        bytes_val = mb * 1024 * 1024
+        target_repo = repo if scope == "local" else None
+
+        try:
+            engine.set_http_post_buffer(target_repo, bytes_val, scope=scope)
+            ver = self.combo_http_version.currentData()
+            if ver:
+                engine.set_http_version(target_repo, ver, scope=scope)
+            else:
+                engine.set_git_config(target_repo, "http.version", "", scope=scope)
+
+            scope_str = "current repository" if scope == "local" else "globally"
+            self.network_status_label.setText(
+                self.tr(f"Settings saved to {scope_str} ({mb} MB buffer).")
+            )
+        except Exception as exc:
+            self.network_status_label.setText(self.tr(f"Error saving settings: {exc}"))
 
     def _on_auto_fetch_toggled(self, checked: bool) -> None:
         self.main_window._set_auto_fetch(checked)

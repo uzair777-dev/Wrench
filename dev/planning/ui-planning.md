@@ -1,6 +1,6 @@
 # UI Planning — Wrench (`dev/planning/ui-planning.md`)
 
-**Version:** 0.7 (v2 Complete UI/UX Specification: 11-Forge Ecosystem UI \[Codeberg, Azure Repos, Radicle, Gerrit, SourceHut, Tangled\], Virtualized Diff Engine & Multi-Mirror DAG) **Status:** Authoritative UI Specification for v1 and v2 (`VP-0`–`VP-26`) **Purpose:** Detailed UI and UX specification for [Wrench](https://github.com/uzair777-dev/Wrench)'s native Linux desktop interface. Written to be deterministically executable by a lower-tier coding model — every layout, widget hierarchy, signal connection, keyboard shortcut, zero-impact disable gate, and performance optimization is spelled out explicitly so the model never improvises.
+**Version:** 0.9 (Competitive Powerhouse Edition: Modal Chord Engine, Conflict Prediction, Op-Log Undo, 11-Forge Ecosystem & Virtualized Diffs — VP-0–VP-26)
 
 **Companion Documents:**
 
@@ -239,7 +239,7 @@ Every coding model implementing or modifying UI and storage code in `VP-0`..`VP-
     3. **"Modified Only" Filter Pill (`QToolButton`, checkable):** When checked, hides all settings currently at their default value, showing only user-modified settings and active per-repo overrides.  
     4. **Undo / Redo Buttons (`↶ Undo (Ctrl+Z)`, `↷ Redo (Ctrl+Y)`, `🕓 History`):** Wired to the **Delta-Only Settings Undo Stack (`OPT-3`)**. Shows a badge with the number of undoable setting changes in the current session. Clicking `🕓 History` opens a popover listing the last 50 individual setting deltas (`"18:42 — graph.lane_width_px: 16 → 22 [Revert This]"`) so the user can revert any specific past tweak even out of order\!  
     5. **Preset & Portability Menu (`Presets & JSON ▾`):** `Apply Minimalist Local-Only Mode`, `Apply Power-User Full Mode`, `Export Settings to JSON...`, `Import Settings from JSON...`, `Reset All to Factory Defaults`.  
-  - **Left Category Navigation (`QListWidget`, 12 Categories):**  
+  - **Left Category Navigation (`QListWidget`, 13 Categories):**  
     1. `General & UI`  
     2. `Staging & Commits`  
     3. `Commit Graph`  

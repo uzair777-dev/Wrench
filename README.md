@@ -79,11 +79,11 @@
 | **Phase 3** | Remote Operations, Push/Pull & Credential Helper | **Completed** | [`phase-3.md`](dev/planning/phase-3.md) |
 | **Phase 4** | Multi-Forge Integration (GitHub, GitLab, Forgejo, Bitbucket) | **Completed** | [`phase-4.md`](dev/planning/phase-4.md) |
 | **Phase 4.5** | Multi-Repository Directory Discovery & `uv` Tooling | **Completed** | [`phase-4.5.md`](dev/planning/phase-4.5.md) |
-| **Phase 4.6** | Operation Feedback & Delight (Progress, Activity Log, Humor) | *Next in line* | [`implementation-plan.md`](dev/planning/implementation-plan.md) |
-| **Phase 5** | Git LFS & Submodules | *Planned* | [`implementation-plan.md`](dev/planning/implementation-plan.md) |
-| **Phase 6** | Packaging Hardening & Flathub Submission | *Planned* | [`implementation-plan.md`](dev/planning/implementation-plan.md) |
-| **Phase 7** | v1 Polish & Final Release | *Planned* | [`implementation-plan.md`](dev/planning/implementation-plan.md) |
-| **Phase 8** | v2 Backlog (Interactive Rebase, GPG Signing, SourceForge) | *Planned (v2)* | [`v2-implementation-plan.md`](dev/planning/v2-implementation-plan.md) |
+| **Phase 4.6** | Operation Feedback & Delight | 🚧 Next Up |
+| **Phase 5 (Promoted)** | Self-Contained Linux Packaging (AppImage & Flatpak with Bundled Python 3.15 Runtime, `aur/wrench-bin`, `.deb`, `.rpm`) | 📋 Planned |
+| **Phase 6** | Git LFS & Submodule Management | 📋 Planned |
+| **Phase 7** | v1 Polish, Performance Benchmarks & Release | 📋 Planned |
+| **Phase 8 (v2 `VP-0`–`VP-26`)** | **Stage 1:** Universal `SettingsRegistry`, Zero-Copy Diffs (`OPT-8`), Single-Key Vim Chord Engine (`OPT-9`), Interactive Rebase, GPG/SSH Signing, 100k-Commit 60 FPS Graph & Command Palette (`Ctrl+K`)<br>**Stage 2:** Stacked Branches (`--update-refs`), Live `< 15 ms` Conflict Prediction (`git merge-tree --write-tree`), & `Ctrl+Alt+Z` Op-Log Time Machine<br>**Stage 3–6:** Wayland/XDG, Progressive Help, Blame Heatmap (`git log -L`), Bisect Wizard, 11-Forge Suite & 5-Stage Multi-Mirror DAG (`OPT-7`) | 📋 Spec Complete ([v2 Plan](dev/planning/v2-implementation-plan.md)) |
 
 ---
 

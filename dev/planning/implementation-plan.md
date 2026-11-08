@@ -1,6 +1,6 @@
 # Implementation Plan — Wrench
 
-**Derived from:** `srs.md` v0.1
+**Derived from:** `srs.md` v0.9 (all requirements marked `M (v1)` or `S (v1)`) and `ui-planning.md` v0.9 (Steps 1–25).
 **Purpose:** Translate the SRS into an actionable, phased build plan — architecture, tech decisions with rationale, packaging mechanics, CI/CD, and risk mitigations.
 
 **Note on detail level:** This revision is written to be executable step-by-step, including concrete file paths, function/class signatures, database schemas, and config file skeletons — so each task can be implemented without needing to infer missing design decisions. Where a decision was previously implicit, it has been made explicit below.
@@ -189,7 +189,7 @@ wrench/
 │   │   ├── lock_recovery.py       # FR-1.9: detect/clear stale .git/index.lock
 │   │   ├── crash_handler.py       # global crash hook; auto-saves session drafts on crash (Phase 4-era)
 │   │   ├── recovery/              # crash resilience subsystem: process_guard, sweeper, transaction, classifier, actions
-│   │   ├── reflog.py              # FR-1.10: reflog read + restore-to-ref
+│   │   ├── reflog_ops.py              # FR-1.10: reflog read + restore-to-ref
 │   │   ├── snapshots.py           # FR-10.x: rolling snapshot capture/restore/prune (§4.6)
 │   │   ├── identity.py            # FR-1.1/1.5: user.name/email check, per-repo override
 │   │   ├── backup.py              # FR-8.1-8.5: git bundle create/restore
@@ -197,7 +197,7 @@ wrench/
 │   │   ├── ssh_agent.py           # FR-11.3: isolates $SSH_AUTH_SOCK access, §4.7
 │   │   ├── git_credential_helper.py # §5 Phase 3: git credential helper entrypoint (git-credential-wrench)
 │   │   ├── remote_urls.py         # shared remote-URL parse (protocol/host/owner/repo) — §5 Phase 4.1 step 1
-│   │   ├── lfs.py                 # FR-6.1: LFS detect/track/pull/push + pointer-file detection (§5 Phase 5)
+│   │   ├── lfs_ops.py                 # FR-6.1: LFS detect/track/pull/push + pointer-file detection (§5 Phase 5)
 │   │   ├── discovery.py           # FR-1.12: bounded multi-repo directory scan (§5 Phase 4.5)
 │   │   ├── submodules.py          # FR-6.2: submodule list/status/init/update/add (§5 Phase 5)
 │   │   └── exceptions.py          # WrenchGitError and subclasses
@@ -761,7 +761,7 @@ def discover_repos(root: Path, *, max_depth: int = 3,
     # cancellable between directory visits, results resolved + sorted.
     # Pure os/pathlib — never shells out to git. Bare repos: documented non-goal.
 
-# --- Phase 5 surface (LFS & submodules; implementations in core/lfs.py and
+# --- Phase 5 surface (LFS & submodules; implementations in core/lfs_ops.py and
 #     core/submodules.py; engine.py delegates so the UI keeps importing only the
 #     façade. Submodule/SubmoduleStatus dataclasses are defined above.) ---
 
@@ -1543,7 +1543,7 @@ Each phase should be independently shippable/testable — don't let phases bleed
    c. If it still exists and `now - mtime >= 5 seconds`, treat it as stale. Do **not** delete it automatically — raise a `StaleLockDetectedError` that the UI turns into a confirmation dialog ("A previous operation may have been interrupted. Remove the lock file and continue?"). Only unlink the file after explicit user confirmation.
    d. On app startup, run this same check against every registry repo with `is_missing = 0`, so a stale lock from a crash is surfaced on next launch, not only on next write attempt.
    Unit test: create `.git/index.lock` and backdate its mtime with `os.utime`; assert the check returns "stale." Create one with mtime = now; assert it returns "recent, not stale."
-10. `core/reflog.py`: FR-1.10.
+10. `core/reflog_ops.py`: FR-1.10.
     - `get_reflog(repo) -> list[ReflogEntry]`: via pygit2's reflog API (`repo.head.log()`, iterating `RefLogEntry` objects with `.oid_old`, `.oid_new`, `.message`, `.committer.time`), mapped into `ReflogEntry(sha, message, timestamp)`, listed newest-first.
     - `restore_to_ref(repo, sha)`: `run_git(["reset", "--hard", sha])` — **unlike the snapshot system's restore (§4.6), this legitimately uses `reset --hard`**, because reflog recovery is explicitly about moving the *current branch* back to a prior state of itself, not about restoring a synthetic side-object without disturbing history. Gate this behind a confirmation dialog in `ui/main_window.py` stating plainly that it discards uncommitted changes — it's destructive to the working tree.
 11. `core/snapshots.py` + `storage/snapshots.py`: FR-10.1–10.5, FR-10.7 — implement `take_snapshot`/`prune_snapshots` exactly per §4.6, with the `commit` and `manual` triggers wired now (`timer` and `pre_risky_op` are wired in Phase 2, once a timer surface and risky operations both exist). Include `delete_branch` as a `pre_risky_op` trigger point here in Phase 1, since branch deletion already exists by this point. **Two edge cases specific to this feature:**
@@ -2172,14 +2172,14 @@ Each phase should be independently shippable/testable — don't let phases bleed
 
 **Step 0 — repo-state reconciliation (verified against the tree at Phase 4 completion):**
 
-- `core/lfs.py` and `core/submodules.py` **do not exist** — this phase creates both at their §3 paths. Implementations live in those modules; `core/engine.py` re-exports them through the façade signatures §4.1 already declares (the "Phase 5 surface" block), so the UI keeps importing only the façade (§1's dependency rule).
+- `core/lfs_ops.py` and `core/submodules.py` **do not exist** — this phase creates both at their §3 paths. Implementations live in those modules; `core/engine.py` re-exports them through the façade signatures §4.1 already declares (the "Phase 5 surface" block), so the UI keeps importing only the façade (§1's dependency rule).
 - The `Submodule`/`SubmoduleStatus` dataclasses **already exist** in §4.1 (written with the Phase 1 dataclasses) — reuse them verbatim; do not redefine or extend.
 - `LfsUnavailableError` is specified in §4.1.A alongside the other Phase 3+ exceptions — implement against it; if it isn't in `core/exceptions.py` yet, add it exactly as §4.1.A says, as part of this phase.
 - §4.1's `clone_repo` already declares `recursive: bool = False` (back-end of the clone dialog's "Clone recursively" checkbox, ui-planning §6.2), but the Phase 3 implementation was written before the flag existed — verify and, if missing, add the `--recurse-submodules` pass-through here; don't ship a checkbox that does nothing.
 - `ui-planning.md §6.3` is the authoritative spec for the Changes-tab indicators (LFS badge, submodule badge, pointer-OID diff rendering) and explicitly defers the *full management UI* to this phase — step 3 owns it. `ui/dialogs/submodule_dialog.py` is in the §3 tree listing but does not exist on disk yet.
 - git-lfs is a **binary dependency, not a pip package** — dev machines and CI may or may not have it installed. Every part of this phase degrades gracefully without it (step 4's suite runs in both states); the packaged app bundles it (Phase 6 step 1).
 
-1. FR-6.1 — `core/lfs.py`, function by function:
+1. FR-6.1 — `core/lfs_ops.py`, function by function:
    - `lfs_available() -> bool`: one `run_git(["lfs", "version"])` probe, result cached in a module-level `bool | None` for the process lifetime. `run_git` (§4.2) requires a cwd path — the probe is cwd-independent, so pass the app data dir (§4.7 paths), never a repo path: the UI needs this answer with no repo open. Note `["lfs", "version"]` is a git *subcommand* through the normal `run_git` entry point — git-lfs is an extension git dispatches to, not a separately-invoked binary.
    - A module-private `_require_lfs()` guard at the top of `lfs_track`/`lfs_pull`/`lfs_push` raises `LfsUnavailableError` (§4.1.A) when the probe is False. The normal path to this exception is "a UI surface called an op it should have disabled" (a bug) or git-lfs vanishing mid-session — so its message must stand alone, per §4.1.A's guidance text.
    - `lfs_files(repo, paths) -> set[str]`: one batched `run_git(repo.path, ["check-attr", "-z", "filter", "--", *paths])` per call, parsed for `filter: lfs` entries. Per the §4.1 comment: reproducing `.gitattributes` glob semantics (dir rules, negations) in Python is a losing game, and this is one subprocess per Changes-tab refresh, not per row.
@@ -2772,7 +2772,7 @@ Flattened, in strict execution order, across every phase — the literal path th
 - [x] 1.7 `watcher/inotify_watcher.py`: single-shot-`QTimer` debounce per §5 Phase 1 step 7
 - [x] 1.8 `watcher/polling_fallback.py`: inotify-limit fallback
 - [x] 1.9 `core/lock_recovery.py`: mtime-only stale-lock algorithm per §5 Phase 1 step 9 — no PID checks
-- [x] 1.10 `core/reflog.py`: reflog read + restore-to-ref
+- [x] 1.10 `core/reflog_ops.py`: reflog read + restore-to-ref
 - [x] 1.11 `core/snapshots.py` + `storage/snapshots.py`: capture/prune per §4.6; wire `commit` and `manual` triggers now, plus `delete_branch` as a `pre_risky_op` point
 - [x] 1.12 `ui/main_window.py` + `ui/sidebar/` + `ui/diff_view/` (default tab) + `ui/workers.py` (§4.8 — needed starting Phase 3, scaffold now)
 - [x] 1.13 **CHECK**: `pytest tests/unit/core tests/unit/storage -v` green; manual QA per §5 Phase 1 acceptance check, including a snapshot appearing after commit and after manual "snapshot now"
@@ -2879,7 +2879,7 @@ Flattened, in strict execution order, across every phase — the literal path th
 
 **Phase 5 — LFS & Submodules** *(prerequisites: 4.6.5 checked)*
 
-- [ ] 5.1 `core/lfs.py` — cached cwd-independent `lfs_available()` probe; `_require_lfs` → `LfsUnavailableError`; batched `lfs_files` via `check-attr -z`; `is_lfs_pointer`/`parse_lfs_pointer`; track/pull/push via `run_git` with network timeouts; per-repo `lfs install --local` on open (never global — Flatpak HOME)
+- [ ] 5.1 `core/lfs_ops.py` — cached cwd-independent `lfs_available()` probe; `_require_lfs` → `LfsUnavailableError`; batched `lfs_files` via `check-attr -z`; `is_lfs_pointer`/`parse_lfs_pointer`; track/pull/push via `run_git` with network timeouts; per-repo `lfs install --local` on open (never global — Flatpak HOME)
 - [ ] 5.2 `core/submodules.py` — list/status via pygit2 (uninitialized never raises); init/update/add via `run_git`; `file://` transport confirmation dialog + per-invocation `-c protocol.file.allow=always`; LFS filters propagated into initialized submodules; credential-gap documented (§8.1)
 - [ ] 5.3 UI per ui-planning §6.3 — Changes-tab badges (batched, once per refresh), pointer-aware diff rendering, `ui/dialogs/submodule_dialog.py`, Repository ▸ Git LFS menu with git-lfs-missing degraded state; all ops via `run_in_background`; `tr()` + `setAccessibleName` throughout
 - [ ] 5.4 **CHECK**: `pytest tests/unit/test_lfs.py tests/unit/test_submodules.py` green WITH and WITHOUT git-lfs on `PATH`; fixtures `make_lfs_repo` (hand-built pointer blob) + `make_submodule_repo` (file:// child); manual QA on a real repo with both features

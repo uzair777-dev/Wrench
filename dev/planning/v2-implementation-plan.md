@@ -2,7 +2,7 @@
 
 **Scope source:** [srs.md](https://github.com/uzair777-dev/Wrench/blob/master/dev/planning/srs.md) v0.4 §3 rows marked **D (v2)** (`FR-1.13`–`1.18`, `FR-2.4`–`2.10`, `FR-3.4`–`3.9`, `FR-4.5`, `FR-5.10`–`5.13`, `FR-6.3`–`6.4`, `FR-7.4`, `FR-8.3`–`8.12`, `FR-9.1`–`9.5`, `FR-10.5`–`10.6`, `FR-11.3`, `FR-12.1`, `FR-12.4`, and `NFR-5`) and [ui-planning.md](https://github.com/uzair777-dev/Wrench/blob/master/dev/planning/ui-planning.md) v0.3 (§1–§8).
 
-**Purpose of this edition:** This document is engineered so that **any developer or automated coding model (including smaller / lower-tier models)** can execute every phase from `VP-0` through `VP-23` mechanically, step-by-step, without making architectural guesses, missing [ui-planning.md](https://github.com/uzair777-dev/Wrench/blob/master/dev/planning/ui-planning.md) widget specifications, forgetting user configurability, or skipping component-specific performance/memory optimizations.
+**Purpose of this edition:** This document is engineered so that **any developer or automated coding model (including smaller / lower-tier models)** can execute every phase from `VP-0` through `VP-26` mechanically, step-by-step, without making architectural guesses, missing [ui-planning.md](https://github.com/uzair777-dev/Wrench/blob/master/dev/planning/ui-planning.md) widget specifications, forgetting user configurability, or skipping component-specific performance/memory optimizations.
 
 ## 0\. Mandatory Execution Protocol for Coding Models (Read Before Writing Any Code)
 
@@ -36,7 +36,7 @@ Every executor (human or AI model) MUST obey the following 12 rules verbatim. **
 
 ## 0.A Master 6-Stage Phased Delivery Pipeline & Dependency Architecture (Modeled on `implementation-plan.md`)
 
-To ensure lower-tier coding models never lose track of dependencies across the 26 v2 phases (`VP-0` through `VP-26`), execution is organized into **6 sequential Macro Release Stages (`Stage 1`–`Stage 6`)**. No phase in `Stage K+1` may begin until the **Stage-Gate Regression Command** for `Stage K` passes 100%:
+To ensure lower-tier coding models never lose track of dependencies across the 27 v2 phases (`VP-0` through `VP-26`), execution is organized into **6 sequential Macro Release Stages (`Stage 1`–`Stage 6`)**. No phase in `Stage K+1` may begin until the **Stage-Gate Regression Command** for `Stage K` passes 100%:
 
 ```
 [STAGE 1: Foundation, Configurability & Zero-Shortcut Guardrails]
@@ -128,6 +128,7 @@ import re
 SRC_ROOT = pathlib.Path("src/wrench")
 UI_ROOT = SRC_ROOT / "ui"
 FORBIDDEN_UI_IMPORTS = {"pygit2", "subprocess", "sqlite3", "httpx"}
+FORBIDDEN_UI_INTERNAL_MODULES = {"wrench.core.read_ops", "wrench.core.write_ops", "wrench.storage.db"}
 
 
 def test_ui_layer_never_imports_backends_directly() -> None:

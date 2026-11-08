@@ -29,6 +29,19 @@ This document is organized from the outermost window container inward:
 3. **Contextual Gear (`⚙`) Jump-to-Setting Button:** Every panel header and dialog title bar MUST include a compact `16x16` `QToolButton("⚙")` with tooltip `"Configure <Feature> in Settings..."` that calls `MainWindow.open_settings_at_category("<Category Name>", highlight_key="<key>")`.  
 4. **Apply All §5.5 Optimizations:** Never instantiate hidden tabs or unselected Settings pages eagerly; always use lazy factory instantiation, debounced auto-save, bounded ring buffers, and worker generation tokens as specified in §5.5.
 
+### 0.1 Mandatory PySide6 (Qt 6.8+) Anti-Hallucination Cheat-Sheet for Coding Models
+
+| Rule | Correct PySide6 / Qt 6.8+ Idiom | Forbidden Hallucination (Fails CI) |
+| :--- | :--- | :--- |
+| **Signals & Slots** | `from PySide6.QtCore import Signal, Slot` | `pyqtSignal`, `pyqtSlot`, `PyQt5`, `PyQt6` |
+| **`QAction` & `QShortcut`** | `from PySide6.QtGui import QAction, QShortcut, QKeySequence` | `from PySide6.QtWidgets import QAction` (Qt5 relic) |
+| **Modal / Event Loop** | `dialog.exec()`, `menu.exec(global_pos)`, `app.exec()` | `.exec_()` |
+| **Mouse Coordinates** | `event.position().toPoint()`, `event.globalPosition().toPoint()` | `event.pos()`, `event.globalPos()` |
+| **Headless `pytest` UI Tests** | Instantiate widget, call slot directly (`dlg._on_apply()`), `dlg.close()` | Unmocked blocking `dlg.exec()` in `tests/` (hangs CI) |
+| **Worker Thread Safety** | Emit immutable dataclasses from `QRunnable` via `Signal` to main thread | Creating/mutating any `QWidget` or `QPixmap` inside a worker thread |
+
+---
+
 ## 1\. Window Chrome (`SRS FR-1.1`, `FR-8.8`–`8.11`, `FR-12.1`)
 
 ### 1.1 Title Bar & Window Frame
@@ -430,18 +443,4 @@ Every coding model implementing or modifying UI and storage code in `VP-0`..`VP-
 - **Step 49 (`VP-22` & `VP-23`):** Build Granular Stash split-button and `SkipWorktreePanel` (§3.1), `git rerere` banner in `MergeDialog` (§6.6), and `CommandPaletteDialog` (`Ctrl+K`, §6.24).  
 - **Step 50 (`VP-24`):** Build `RichHelpTooltipManager` (§5.6), `HelpCenterDialog` (`F1`, §6.25), `UIWidgetHighlighter`, and `help_topics.py`.  
 - **Step 51 (`VP-25`):** Build `MirrorManagerDialog` (§6.26) and multi-mirror unified ref pills, drift badges, and cross-forge CI aggregation in `CommitGraphWidget` (§4.2.5).  
-- **Step 52 (`VP-26`):** Build `ForgeReviewPushDialog` (§6.27), Gerrit `Change-Id` pill & label-voting bar (`-2..+2`), Radicle node status pill & `refs/patches` push flow, Azure Repos 5-state vote selector & Work Item completer, SourceHut `lists.sr.ht` patchset modal, and Tangled Knot/Spindle CI badges
-### 0.1 Mandatory PySide6 (Qt 6.8+) Anti-Hallucination Cheat-Sheet for Coding Models
-
-| Rule | Correct PySide6 / Qt 6.8+ Idiom | Forbidden Hallucination (Fails CI) |
-| :--- | :--- | :--- |
-| **Signals & Slots** | `from PySide6.QtCore import Signal, Slot` | `pyqtSignal`, `pyqtSlot`, `PyQt5`, `PyQt6` |
-| **`QAction` & `QShortcut`** | `from PySide6.QtGui import QAction, QShortcut, QKeySequence` | `from PySide6.QtWidgets import QAction` (Qt5 relic) |
-| **Modal / Event Loop** | `dialog.exec()`, `menu.exec(global_pos)`, `app.exec()` | `.exec_()` |
-| **Mouse Coordinates** | `event.position().toPoint()`, `event.globalPosition().toPoint()` | `event.pos()`, `event.globalPos()` |
-| **Headless `pytest` UI Tests** | Instantiate widget, call slot directly (`dlg._on_apply()`), `dlg.close()` | Unmocked blocking `dlg.exec()` in `tests/` (hangs CI) |
-| **Worker Thread Safety** | Emit immutable dataclasses from `QRunnable` via `Signal` to main thread | Creating/mutating any `QWidget` or `QPixmap` inside a worker thread |
-
----
-
-.
+- **Step 52 (`VP-26`):** Build `ForgeReviewPushDialog` (§6.27), Gerrit `Change-Id` pill & label-voting bar (`-2..+2`), Radicle node status pill & `refs/patches` push flow, Azure Repos 5-state vote selector & Work Item completer, SourceHut `lists.sr.ht` patchset modal, and Tangled Knot/Spindle CI badges.

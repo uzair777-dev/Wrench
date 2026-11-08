@@ -53,9 +53,13 @@ def test_lazy_modules_declarations():
     """Verify that __lazy_modules__ declarations exist in target entry points."""
     from wrench import app
     from wrench.core import git_credential_helper
+    from wrench.credentials import secret_service
 
     assert hasattr(git_credential_helper, "__lazy_modules__")
-    assert "secretstorage" in git_credential_helper.__lazy_modules__
+    assert "platformdirs" in git_credential_helper.__lazy_modules__
+
+    assert hasattr(secret_service, "__lazy_modules__")
+    assert "secretstorage" in secret_service.__lazy_modules__
 
     assert hasattr(app, "__lazy_modules__")
     assert "watchdog" in app.__lazy_modules__

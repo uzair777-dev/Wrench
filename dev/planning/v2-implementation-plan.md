@@ -1,6 +1,6 @@
-# Wrench v2 Implementation Plan (v0.7 — 11-Forge Ecosystem \[Codeberg, Azure Repos, Radicle, Gerrit, SourceHut, Tangled\], Phased Pipeline, Diff Virtualization & Zero-Shortcut Security Edition)
+# Wrench v2 Implementation Plan (v0.9 — Competitive Powerhouse Edition: 11-Forge Ecosystem \[Codeberg, Azure Repos, Radicle, Gerrit, SourceHut, Tangled\], Phased Pipeline, Diff Virtualization & Zero-Shortcut Security Edition)
 
-**Scope source:** [srs.md](https://github.com/uzair777-dev/Wrench/blob/master/dev/planning/srs.md) v0.4 §3 rows marked **D (v2)** (`FR-1.13`–`1.18`, `FR-2.4`–`2.10`, `FR-3.4`–`3.9`, `FR-4.5`, `FR-5.10`–`5.13`, `FR-6.3`–`6.4`, `FR-7.4`, `FR-8.3`–`8.12`, `FR-9.1`–`9.5`, `FR-10.5`–`10.6`, `FR-11.3`, `FR-12.1`, `FR-12.4`, and `NFR-5`) and [ui-planning.md](https://github.com/uzair777-dev/Wrench/blob/master/dev/planning/ui-planning.md) v0.3 (§1–§8).
+**Scope source:** [srs.md](https://github.com/uzair777-dev/Wrench/blob/master/dev/planning/srs.md) v0.9 §3 rows marked **D (v2)** (`FR-1.13`–`1.18`, `FR-2.4`–`2.10`, `FR-3.4`–`3.9`, `FR-4.5`, `FR-5.10`–`5.13`, `FR-6.3`–`6.4`, `FR-7.4`, `FR-8.3`–`8.12`, `FR-9.1`–`9.5`, `FR-10.5`–`10.6`, `FR-11.3`, `FR-12.1`, `FR-12.4`, and `NFR-5`) and [ui-planning.md](https://github.com/uzair777-dev/Wrench/blob/master/dev/planning/ui-planning.md) v0.9 (§1–§8).
 
 **Purpose of this edition:** This document is engineered so that **any developer or automated coding model (including smaller / lower-tier models)** can execute every phase from `VP-0` through `VP-26` mechanically, step-by-step, without making architectural guesses, missing [ui-planning.md](https://github.com/uzair777-dev/Wrench/blob/master/dev/planning/ui-planning.md) widget specifications, forgetting user configurability, or skipping component-specific performance/memory optimizations.
 
@@ -8,7 +8,7 @@
 
 Every executor (human or AI model) MUST obey the following 12 rules verbatim. **Do not improvise, do not skip steps, and do not invent your own architecture:**
 
-1. **Strict Phase Sequence (`VP-0` \-\> `VP-1` \-\> ... \-\> `VP-23`):** Never start Phase `VP-N` until Phase `VP-(N-1)`'s completion gates and acceptance checks pass 100%. `VP-0` MUST be completed first because every phase `VP-1`..`VP-23` registers its settings keys into `VP-0`'s `SettingsRegistry` and reuses `VP-0`'s UI infrastructure (`UndoToastWidget`, `LazyTabContainer`, `SettingsDialog`).  
+1. **Strict Phase Sequence (`VP-0` \-\> `VP-1` \-\> ... \-\> `VP-23`):** Never start Phase `VP-N` until Phase `VP-(N-1)`'s completion gates and acceptance checks pass 100%. `VP-0` MUST be completed first because every phase `VP-1`..`VP-26` registers its settings keys into `VP-0`'s `SettingsRegistry` and reuses `VP-0`'s UI infrastructure (`UndoToastWidget`, `LazyTabContainer`, `SettingsDialog`).  
 2. **Mandatory `ui-planning.md` Cross-Check Before Writing Any UI Code:**  
    - Every phase below includes a **`Mandatory UI Spec & Optimization Reference`** block pointing to exact sections and step numbers in [ui-planning.md](https://github.com/uzair777-dev/Wrench/blob/master/dev/planning/ui-planning.md) (e.g. `ui-planning.md §6.11, §8 Step 26`).  
    - In `Step 0` of every phase, you MUST open and read the cited `ui-planning.md` sections and implement the exact widget layouts, keyboard shortcuts, `⚙` jump-to-setting header buttons, and `CliCommandPreviewBar` footers specified there.  
@@ -19,9 +19,11 @@ Every executor (human or AI model) MUST obey the following 12 rules verbatim. **
      - **`OPT-3` (Delta-Only Settings Snapshot & Undo/Redo Stack):** Whenever `SettingsRegistry.set(key, new_val, repo_path)` changes a setting, insert **only that single changed key's delta** `(repo_path, key, old_value_json, new_value_json)` into the 100-row ring buffer table `settings_undo_log` so `Ctrl+Z` / `Ctrl+Y` and the Settings History popover can revert mistakes with zero table-copy overhead.  
      - **`OPT-4` (SQLite `WAL` Mode & Batched Transactions):** Enable `PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;` on `wrench.db` and batch multi-row writes with `executemany()`.  
      - **`OPT-5` (Bounded `5000`\-Line Ring-Buffer & `50ms` Batch Flush for Log Drawers):** Streaming output drawers (`HookOutputDrawer`, `CILogDrawer`, `ActivityLog`) MUST set `setMaximumBlockCount(5000)` and buffer incoming stdout lines into `50ms` `QTimer` flush ticks so verbose scripts never freeze the GUI thread.  
-     - **`OPT-6` (Monotonic Worker Generation Tokens):** Every async UI query (`DiffWidget`, `CommitGraphWidget`, `BlameViewerDialog`, `PRReviewOverlay`) MUST attach an incrementing `request_id: int` and discard worker results if `request_id != self._latest_request_id`.  
+     - **`OPT-6` (Monotonic Worker Generation Tokens):** Every async UI query (`DiffWidget`, `CommitGraphWidget`, `BlameViewerDialog`, `PRReviewOverlay`) MUST attach an incrementing `request_id: int` and discard worker results if `request_id != self._latest_request_id`.
+     - **`OPT-9` (Zero-Latency Modal Single-Key Chord Dispatch — `FR-2.11`):** `MainWindow` installs a lightweight `ChordDispatcher` (`src/wrench/ui/widgets/chord_dispatcher.py`) routing single-key Vim/Lazygit chords (`j`, `k`, `[`, `]`, `s`, `u`, `Space`, `d`, `c`, `a`, `/`, `x`) in `< 1 ms` whenever no text-input widget has focus and `shortcuts.vim_mode_enabled` is `True`.
+     - **`OPT-10` (In-Memory `git merge-tree --write-tree` Conflict Prediction & Atomic Op-Log Undo — `FR-3.11`, `FR-8.15`):** Pre-merge/rebase conflict checks use `git merge-tree --write-tree <base> <target>` (`< 15 ms`, zero disk/index mutation, 128-entry OID-pair LRU cache), and mutating Git operations record atomic rows in `op_log_entries` for 1-click `Ctrl+Alt+Z` undo.  
 4. **Zero-Impact Feature Toggle Rule ("We Do Not Forget the User"):**  
-   - Every single feature in Wrench (both existing v1 features retrofitted in `VP-0` and new v2 features in `VP-1`..`VP-23`) MUST have its exact `SettingSpec` entries registered in `src/wrench/storage/settings_registry.py`.  
+   - Every single feature in Wrench (both existing v1 features retrofitted in `VP-0` and new v2 features in `VP-1`..`VP-26`) MUST have its exact `SettingSpec` entries registered in `src/wrench/storage/settings_registry.py`.  
    - Every backend method for an optional feature MUST check `if not self.settings.get_bool("<key>", repo_path=repo_path): return <safe_empty_default>` on its very first line so that a disabled feature consumes **zero CPU, disk I/O, subprocesses, or network calls**.  
    - Every UI widget, tab, toolbar button, sidebar section, badge, or context-menu item for a toggleable feature MUST connect to `self.settings.setting_changed.connect(self._on_setting_changed)` and call `widget.setVisible(self.settings.get_bool("<key>", repo_path=self.repo_path))` so toggling a setting off in Preferences (`Ctrl+,`) hides the UI immediately without requiring an app restart.  
 5. **Strict 3-Tier Layering (`ARCHITECTURE.md` §1.2):**  
@@ -257,7 +259,7 @@ def test_no_fstring_sql_queries_in_storage() -> None:
 
 ## VP-0 — Universal Settings Registry, v1 Feature Retrofits & Searchable Preferences Center (`FR-8.8`–`8.11`, `NFR-5`)
 
-**Why this position:** Foundational prerequisite for all of v2. Establishes the `SettingsRegistry` and auto-generated searchable `SettingsDialog` so every v1 feature and every new v2 feature (`VP-1`..`VP-23`) can be tweaked or completely turned off with zero overhead. **Prerequisites:** v1 Phase 7 complete. **Mandatory UI Spec Reference:** MUST read and implement `ui-planning.md §1.3` (Quick-Settings Pin Popover), `§1.4` (`UndoToastWidget`), `§2.2` (`LazyTabContainer`), `§5.5` (`OPT-1`..`OPT-4`), `§6.11` (Modular Settings Center), and `§8 Steps 26–27`. **Mandatory Optimizations Reminder for Lower-Tier Models (`DO NOT SKIP`):**
+**Why this position:** Foundational prerequisite for all of v2. Establishes the `SettingsRegistry` and auto-generated searchable `SettingsDialog` so every v1 feature and every new v2 feature (`VP-1`..`VP-26`) can be tweaked or completely turned off with zero overhead. **Prerequisites:** v1 Phase 7 complete. **Mandatory UI Spec Reference:** MUST read and implement `ui-planning.md §1.3` (Quick-Settings Pin Popover), `§1.4` (`UndoToastWidget`), `§2.2` (`LazyTabContainer`), `§5.5` (`OPT-1`..`OPT-4`), `§6.11` (Modular Settings Center), and `§8 Steps 26–27`. **Mandatory Optimizations Reminder for Lower-Tier Models (`DO NOT SKIP`):**
 
 - **Lazy Category Page Loading (`OPT-1`):** In `SettingsDialog`, do NOT construct all 13 category `QWidget` pages in `__init__`. Store page factory callables and instantiate a category page only when the user clicks that category in `QListWidget` or searches.  
 - **Debounced Auto-Save (`OPT-2`):** Do NOT add a Save/Apply button. Connect `QSpinBox` and `QLineEdit` controls to a `150ms` single-shot `QTimer` so rapid typing/spinning writes to SQLite only once after a `150ms` pause.  
@@ -386,7 +388,7 @@ Modify existing v1 modules to obey `SettingsRegistry`:
 
 ### Forbidden Decisions for Lower-Tier Models
 
-- DO NOT hardcode individual checkboxes in `SettingsDialog` per feature; `SettingsDialog` MUST build its rows dynamically from `SettingsRegistry.list_specs()` so that when `VP-1`..`VP-23` register new `SettingSpec` items, they appear in the Settings menu automatically.  
+- DO NOT hardcode individual checkboxes in `SettingsDialog` per feature; `SettingsDialog` MUST build its rows dynamically from `SettingsRegistry.list_specs()` so that when `VP-1`..`VP-26` register new `SettingSpec` items, they appear in the Settings menu automatically.  
 - DO NOT require an app restart when a user toggles a setting.
 
 ### Acceptance Check

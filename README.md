@@ -13,8 +13,18 @@
 
 > [!WARNING]
 >
-> 1. Its only for linux as of now, but its foundation for cross-platform compatibility is being laid and is scheduled for v3, as i want to make it stable on one platform first rather than doing all at once.
-> 2. I do not recommend this for production use yet, but it can be used for personal use until full v2 spec and stability lands.
+> 1. **Linux-First Target:** Wrench currently targets Linux exclusively so we can nail rock-solid stability and native desktop integration on one platform first. Cross-platform support (macOS & Windows) is architected at the platform layer and scheduled for **v3**.
+> 2. **Pre-v2 Status:** Wrench is great for personal workflows today, but is not recommended for mission-critical production repositories until the full **v2 specification (`VP-0`–`VP-26`)** and stability gates land.
+
+---
+
+## Why Wrench?
+
+- **Sublime Merge Speed, 100% Open Source:** Hybrid `pygit2` C-speed reads + conflict-aware `git` CLI writes, a 4-stage zero-copy `array('I')` virtualized diff engine (`< 3 ms` indexing for 50,000 lines), and 60 FPS commit graph virtualization on 100k+ commit monorepos.
+- **Lazygit Keyboard Velocity in a Native Qt6 GUI:** Modal single-key chord engine (`j`/`k` navigate, `[`/`]` jump hunks, `s`/`u`/`Space` stage/unstage, `d` discard, `c` commit, `a` amend) plus a `< 10 ms` Fuzzy Command Palette (`Ctrl+K`).
+- **GitButler / Jujutsu Safety on Standard Git:** Pre-operation rolling snapshots (`git stash create` + untracked `.tar.gz`), an atomic **Op-Log Time Machine (`Ctrl+Alt+Z` Undo Last Git Operation)**, and **Live Pre-Merge Conflict Prediction (`git merge-tree --write-tree` in `< 15 ms`)**.
+- **Total User Sovereignty (`SettingsRegistry`):** Every feature, daemon, and UI surface can be tweaked or toggled off in Settings (`Ctrl+,`) with **zero runtime, memory, or CPU overhead**—including a 1-click *Minimalist Local-Only Mode*.
+- **11-Forge Ecosystem & 5-Stage Mirror DAG:** First-class support for GitHub, GitLab, Forgejo/Gitea, Codeberg, Bitbucket, Azure Repos, Radicle, Gerrit, SourceHut, Tangled, and SourceForge.
 
 ---
 

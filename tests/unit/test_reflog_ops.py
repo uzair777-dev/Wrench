@@ -20,6 +20,8 @@ def repo_with_history(tmp_path: Path):
     repo_path.mkdir()
     init_repo(repo_path)
     repo = open_repo(repo_path)
+    repo.pygit2_repo.config["user.name"] = "Test User"
+    repo.pygit2_repo.config["user.email"] = "test@example.com"
 
     f = repo_path / "file.txt"
 

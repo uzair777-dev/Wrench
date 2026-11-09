@@ -22,6 +22,8 @@ def child_repo(tmp_path: Path):
     child_path.mkdir()
     init_repo(child_path)
     repo = open_repo(child_path)
+    repo.pygit2_repo.config["user.name"] = "Test User"
+    repo.pygit2_repo.config["user.email"] = "test@example.com"
 
     readme = child_path / "README.md"
     readme.write_text("# Child Repo\n", encoding="utf-8")
@@ -36,6 +38,8 @@ def parent_repo(tmp_path: Path):
     parent_path.mkdir()
     init_repo(parent_path)
     repo = open_repo(parent_path)
+    repo.pygit2_repo.config["user.name"] = "Test User"
+    repo.pygit2_repo.config["user.email"] = "test@example.com"
 
     readme = parent_path / "README.md"
     readme.write_text("# Parent Repo\n", encoding="utf-8")

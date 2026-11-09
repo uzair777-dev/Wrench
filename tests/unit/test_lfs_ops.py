@@ -92,6 +92,8 @@ def test_lfs_files_and_status_in_real_repo(tmp_path: Path):
     repo_path.mkdir()
     init_repo(repo_path)
     repo = open_repo(repo_path)
+    repo.pygit2_repo.config["user.name"] = "Test User"
+    repo.pygit2_repo.config["user.email"] = "test@example.com"
 
     # Disable filter invocation when git-lfs binary is absent in test environment
     from wrench.core.write_ops import run_git
@@ -151,6 +153,8 @@ def test_lfs_track_and_ops_mocked(tmp_path: Path):
     repo_path.mkdir()
     init_repo(repo_path)
     repo = open_repo(repo_path)
+    repo.pygit2_repo.config["user.name"] = "Test User"
+    repo.pygit2_repo.config["user.email"] = "test@example.com"
 
     with patch("wrench.core.lfs_ops.is_lfs_installed", return_value=True):
         with patch("wrench.core.lfs_ops.run_git") as mock_run:

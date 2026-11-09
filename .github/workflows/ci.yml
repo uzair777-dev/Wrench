@@ -3,6 +3,10 @@ on: [push, pull_request]
 
 env:
   QT_QPA_PLATFORM: offscreen
+  GIT_AUTHOR_NAME: CI Runner
+  GIT_AUTHOR_EMAIL: ci@wrench.local
+  GIT_COMMITTER_NAME: CI Runner
+  GIT_COMMITTER_EMAIL: ci@wrench.local
 
 jobs:
   lint:

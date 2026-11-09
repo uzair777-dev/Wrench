@@ -20,6 +20,8 @@ def sample_repo(tmp_path: Path):
     repo_path.mkdir()
     init_repo(repo_path)
     repo = open_repo(repo_path)
+    repo.pygit2_repo.config["user.name"] = "Test User"
+    repo.pygit2_repo.config["user.email"] = "test@example.com"
 
     readme = repo_path / "README.md"
     readme.write_text("# Bundle Source\n", encoding="utf-8")

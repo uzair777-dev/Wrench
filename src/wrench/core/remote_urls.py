@@ -1,8 +1,11 @@
 """Shared Git remote URL parser for credential helper and UI account linking."""
 
+import logging
 import re
 from dataclasses import dataclass
 from urllib.parse import urlsplit
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -99,8 +102,8 @@ def host_of_instance_url(instance_url: str) -> str:
         parsed = urlsplit(instance_url)
         if parsed.hostname:
             return parsed.hostname.lower()
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("urlsplit failed on %s: %s", instance_url, e)
     # Fallback for plain host:port or scp-style user@host:path
     raw = (
         instance_url.replace("https://", "")

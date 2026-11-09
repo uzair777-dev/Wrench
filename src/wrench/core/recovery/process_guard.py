@@ -27,7 +27,7 @@ def is_pid_alive(pid: int) -> bool:
     try:
         os.kill(pid, 0)
         return True
-    except (ProcessLookupError, ValueError):
+    except ProcessLookupError, ValueError:
         return False
     except PermissionError:
         # Process exists but owned by another user
@@ -45,8 +45,8 @@ def get_process_cmdline(pid: int) -> str:
 
         p = psutil.Process(pid)
         return " ".join(p.cmdline()) or p.name()
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("psutil get cmdline failed: %s", e)
 
     # Linux /proc fallback
     proc_cmdline = Path(f"/proc/{pid}/cmdline")
@@ -55,8 +55,8 @@ def get_process_cmdline(pid: int) -> str:
             raw = proc_cmdline.read_bytes()
             parts = [p.decode("utf-8", errors="replace") for p in raw.split(b"\x00") if p]
             return " ".join(parts)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Failed reading /proc/%s/cmdline: %s", pid, e)
     return ""
 
 
@@ -80,8 +80,8 @@ def find_active_git_processes_for_repo(repo_path: Path | str) -> list[tuple[int,
                     ):
                         active_processes.append((pid, cmd))
 
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Error iterating /proc: %s", e)
     return active_processes
 
 
@@ -115,8 +115,8 @@ def inspect_locks(repo_path: Path | str) -> list[tuple[Path, int | None, str, fl
         try:
             for lock in refs_heads.glob("*.lock"):
                 candidate_locks.append(lock)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Failed globbing refs/heads locks: %s", e)
 
     for lock_path in candidate_locks:
         if not lock_path.exists():
@@ -133,8 +133,8 @@ def inspect_locks(repo_path: Path | str) -> list[tuple[Path, int | None, str, fl
                     content = lock_path.read_text(encoding="utf-8", errors="replace").strip()
                     if content.isdigit():
                         pid = int(content)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug("Failed reading lock file PID: %s", e)
 
             # If no PID in file, look for active git processes for this repo
             if pid is None:

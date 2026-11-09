@@ -130,7 +130,11 @@ import re
 SRC_ROOT = pathlib.Path("src/wrench")
 UI_ROOT = SRC_ROOT / "ui"
 FORBIDDEN_UI_IMPORTS = {"pygit2", "subprocess", "sqlite3", "httpx"}
-FORBIDDEN_UI_INTERNAL_MODULES = {"wrench.core.read_ops", "wrench.core.write_ops", "wrench.storage.db"}
+FORBIDDEN_UI_INTERNAL_MODULES = {
+    "wrench.core.read_ops",
+    "wrench.core.write_ops",
+    "wrench.storage.db",
+}
 
 
 def test_ui_layer_never_imports_backends_directly() -> None:
@@ -186,6 +190,7 @@ def test_no_fstring_sql_queries_in_storage() -> None:
                         f"{py_file}:{node.lineno} uses forbidden f-string in SQL execute()"
                     )
 
+
 FORBIDDEN_FLASH_PATTERNS = (
     ("from PyQt5", "PyQt5 hallucination — use PySide6"),
     ("from PyQt6", "PyQt6 hallucination — use PySide6"),
@@ -215,7 +220,9 @@ def test_no_flash_api_hallucinations_or_truncation_markers():
                 violations.append(
                     f"{py_file}:{lineno} [In Qt6/PySide6, QAction lives in PySide6.QtGui, not QtWidgets]"
                 )
-    assert not violations, "Flash model hallucination / truncation detected:\n" + "\n".join(violations)
+    assert not violations, "Flash model hallucination / truncation detected:\n" + "\n".join(
+        violations
+    )
 
 
 def test_no_silent_exception_pass_in_src():
@@ -450,7 +457,7 @@ class SettingSpec:
   - *Remotes & Sync*: `remote.auto_fetch.enabled` (`True`), `remote.auto_fetch.interval_seconds` (`180`, min `30`, max `3600`, `parent_toggle_key="remote.auto_fetch.enabled"`), `remote.pull_default_mode` (`"ff-only"`, choices `("ff-only", "rebase", "merge")`), `remote.force_push_mode` (`"force-with-lease"`, choices `("disabled", "force-with-lease", "force")`), `remote.prune_on_fetch` (`True`).  
   - *Forges & CI*: `forge.enabled` (`True`), `forge.github.enabled` (`True`, parent `"forge.enabled"`), `forge.gitlab.enabled` (`True`, parent `"forge.enabled"`), `forge.forgejo.enabled` (`True`, parent `"forge.enabled"`), `forge.bitbucket.enabled` (`True`, parent `"forge.enabled"`), `forge.ci_badges.enabled` (`True`, parent `"forge.enabled"`), `forge.poll_interval_seconds` (`120`, min `30`, max `3600`, parent `"forge.enabled"`), `forge.allow_third_party_entrypoint_plugins` (`True`, parent `"forge.enabled"`).  
   - *Watcher & Performance*: `watcher.inotify.enabled` (`True`), `watcher.debounce_ms` (`300`, min `50`, max `5000`, parent `"watcher.inotify.enabled"`), `watcher.refresh_on_window_focus` (`True`), `watcher.lock_recovery_prompt.enabled` (`True`), `performance.worker_thread_count` (`4`, min `1`, max `16`), `performance.max_diff_file_size_kb` (`2048`, min `128`, max `32768`).  
-  - *Safety & Backups*: `safety.pre_op_snapshot.enabled` (`True`), `stash.ui.enabled` (`True`), `stash.confirm_before_drop` (`True`).  
+  - *Safety & Backups*: `safety.pre_op_snapshot.enabled` (`True`), `stash.ui.enabled` (`True`), `stash.confirm_before_drop` (`True`), `safety.commit_partially_staged_mode` (`"prompt"`, choices `("prompt", "stage_all", "staged_only")`), `safety.auto_stage_hook_modifications` (`True`), `safety.precommit_tool_search_paths` (`True`).  
 - **Completion Gate:** `pytest tests/storage/test_settings_registry.py`
 
 ### Step 2 — Wire v1 modules to `SettingsRegistry` for immediate zero-impact disabling
@@ -480,7 +487,7 @@ Modify existing v1 modules to obey `SettingsRegistry`:
 
 ### Acceptance Check
 
-- [ ] Opening `Ctrl+,` displays all categories, filters settings in real time via the search bar, and clicking "Apply Minimalist Local-Only Mode" immediately hides all Forge/PR/CI widgets and stops background `inotify` and fetch timers without restarting Wrench.
+- [x] Opening `Ctrl+,` displays all categories, filters settings in real time via the search bar, and clicking "Apply Minimalist Local-Only Mode" immediately hides all Forge/PR/CI widgets and stops background `inotify` and fetch timers without restarting Wrench.
 
 ## VP-1 — Multi-Commit Cherry-Pick, Revert & Visual Reset Mode Picker (`FR-2.4`, `FR-3.4`)
 
@@ -2074,9 +2081,9 @@ class TangledAdapter:
 
 ## Master Sequential Checklist (`VP-0` – `VP-26`)
 
-- [ ] **VP-0.1:** Create `src/wrench/storage/settings_registry.py` with `SettingSpec`, SQLite tables (`global_settings`, `repo_settings_overrides`), and `DEFAULT_SETTING_SPECS` for all v1 features.  
-- [ ] **VP-0.2:** Wire all v1 modules (`inotify_watcher.py`, `forge/registry.py`, `snapshots.py`, `history_tab.py`, `changes_tab.py`) to obey `SettingsRegistry` with zero-overhead short-circuiting when disabled.  
-- [ ] **VP-0.3:** Build searchable, dynamic `SettingsDialog` (`Ctrl+,`) with per-repo overrides, `Minimalist Local-Only Mode` preset, and JSON import/export.  
+- [x] **VP-0.1:** Create `src/wrench/storage/settings_registry.py` with `SettingSpec`, SQLite tables (`global_settings`, `repo_settings_overrides`), and `DEFAULT_SETTING_SPECS` for all v1 features.  
+- [x] **VP-0.2:** Wire all v1 modules (`inotify_watcher.py`, `forge/registry.py`, `snapshots.py`, `history_tab.py`, `changes_tab.py`) to obey `SettingsRegistry` with zero-overhead short-circuiting when disabled.  
+- [x] **VP-0.3:** Build searchable, dynamic `SettingsDialog` (`Ctrl+,`) with per-repo overrides, `Minimalist Local-Only Mode` preset, and JSON import/export.  
 - [ ] **VP-1.1:** Register `VP-1` settings and implement `cherry_pick_commits`, `revert_commits`, `sequencer_action`, and `reset_branch` in `core`.  
 - [ ] **VP-1.2:** Build `reset_dialog.py` visual file-impact preview and wire Cherry-Pick/Revert/Reset into `HistoryTab`.  
 - [ ] **VP-2.1:** Register `VP-2` settings and implement `rebase_sequencer.py` and `rebase_editor_helper.py`.  

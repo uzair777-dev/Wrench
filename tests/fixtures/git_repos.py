@@ -222,7 +222,7 @@ def make_repo_forest(tmp_path: Path) -> tuple[Path, dict[str, set[Path] | Path]]
     # 7. Symlink loop: link pointing to root
     try:
         (forest / "link_to_forest").symlink_to(forest, target_is_directory=True)
-    except (OSError, NotImplementedError):
+    except OSError, NotImplementedError:
         pass
 
     # 8. Unreadable directory (chmod 000)

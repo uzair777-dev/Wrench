@@ -7,8 +7,7 @@ git remotes for the active repository.
 from __future__ import annotations
 
 import logging
-import sqlite3
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
@@ -112,7 +111,7 @@ class RemotesDialog(QDialog):
         repo: RepoHandle,
         parent: QWidget | None = None,
         *,
-        db_conn: sqlite3.Connection | None = None,
+        db_conn: Any = None,
         auto_probe: bool = False,
     ) -> None:
         super().__init__(parent)

@@ -49,8 +49,8 @@ def save_emergency_session(
             tab = _active_window.changes_tab
             data["commit_summary"] = tab.summary_input.text()
             data["commit_description"] = tab.desc_input.toPlainText()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Failed reading draft from active window: %s", e)
 
     try:
         session_file.write_text(json.dumps(data, indent=2), encoding="utf-8")

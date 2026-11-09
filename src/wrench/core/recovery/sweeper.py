@@ -56,8 +56,8 @@ def sweep_debris(repo_path: Path | str) -> list[str]:
                 else:
                     temp_match.unlink(missing_ok=True)
                 removed.append(str(temp_match))
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("Failed removing temp match %s: %s", temp_match, e)
     except Exception as e:
         logger.debug("Error sweeping system temp directory: %s", e)
 

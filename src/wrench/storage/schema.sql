@@ -1,5 +1,5 @@
--- schema version 2
-PRAGMA user_version = 2;
+-- schema version 3
+PRAGMA user_version = 3;
 
 CREATE TABLE repos (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -86,3 +86,28 @@ CREATE TABLE app_settings (             -- generic key/value for app-level confi
     key             TEXT PRIMARY KEY,
     value           TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS global_settings (
+    key             TEXT PRIMARY KEY,
+    value_json      TEXT NOT NULL,
+    updated_at      TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS repo_settings_overrides (
+    repo_path       TEXT NOT NULL,
+    key             TEXT NOT NULL,
+    value_json      TEXT NOT NULL,
+    updated_at      TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (repo_path, key)
+);
+
+CREATE TABLE IF NOT EXISTS settings_undo_log (
+    change_id       INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp       TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    repo_path       TEXT,
+    key             TEXT NOT NULL,
+    old_value_json  TEXT NOT NULL,
+    new_value_json  TEXT NOT NULL,
+    undone          INTEGER NOT NULL DEFAULT 0
+);
+

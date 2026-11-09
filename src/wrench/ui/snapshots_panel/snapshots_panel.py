@@ -6,7 +6,7 @@ Displays list of point-in-time snapshots with manual creation, restoration, and 
 from __future__ import annotations
 
 import logging
-import sqlite3
+from typing import Any
 
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
@@ -25,7 +25,7 @@ from PySide6.QtWidgets import (
 from wrench.core import snapshots
 from wrench.core.engine import RepoHandle
 from wrench.core.exceptions import RepoBusyError
-from wrench.storage.db import get_connection
+from wrench.storage import get_connection
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 class SnapshotsPanel(QWidget):
     """Visual panel for viewing and restoring snapshots."""
 
-    def __init__(self, conn: sqlite3.Connection | None = None, parent: QWidget | None = None):
+    def __init__(self, conn: Any = None, parent: QWidget | None = None):
         super().__init__(parent)
         self._conn = conn if conn is not None else get_connection()
         self._repo: RepoHandle | None = None

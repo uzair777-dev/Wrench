@@ -106,7 +106,7 @@ Add the helper function creating a realistic directory forest covering all edge 
 ```python
 def make_repo_forest(tmp_path: Path) -> tuple[Path, dict[str, Path]]:
     """Creates a multi-level directory tree containing various repo configurations for discovery testing.
-    
+
     Returns (root_path, expected_dict) where expected_dict has keys:
     - 'valid': set of paths that MUST be discovered
     - 'skipped': set of paths that MUST NOT be discovered
@@ -152,11 +152,16 @@ def make_repo_forest(tmp_path: Path) -> tuple[Path, dict[str, Path]]:
     # 7. Symlink loop: link pointing to root
     try:
         (forest / "link_to_forest").symlink_to(forest, target_is_directory=True)
-    except (OSError, NotImplementedError):
+    except OSError, NotImplementedError:
         pass
 
     valid = {r1.resolve(), r2.resolve(), wt.resolve(), parent.resolve()}
-    return forest, {"valid": valid, "deep": deep.resolve(), "hidden": hidden.resolve(), "submodule": subm.resolve()}
+    return forest, {
+        "valid": valid,
+        "deep": deep.resolve(),
+        "hidden": hidden.resolve(),
+        "submodule": subm.resolve(),
+    }
 ```
 
 **Step 2: Run pytest to verify fixture parses cleanly**
@@ -183,15 +188,17 @@ import pytest
 from tests.fixtures.git_repos import make_repo_forest
 from wrench.core.discovery import discover_repos
 
+
 def test_discover_repos_finds_valid_repositories(tmp_path):
     root, categorized = make_repo_forest(tmp_path)
     results = discover_repos(root, max_depth=3)
-    
+
     result_paths = {p.resolve() for p in results}
     assert categorized["valid"].issubset(result_paths)
     assert categorized["deep"] not in result_paths
     assert categorized["hidden"] not in result_paths
     assert categorized["submodule"] not in result_paths
+
 
 def test_discover_repos_cancellation(tmp_path):
     root, _ = make_repo_forest(tmp_path)
@@ -199,6 +206,7 @@ def test_discover_repos_cancellation(tmp_path):
     cancel_evt.set()  # Pre-cancelled
     results = discover_repos(root, max_depth=3, cancel_event=cancel_evt)
     assert results == []
+
 
 def test_discover_repos_progress_callback(tmp_path):
     root, categorized = make_repo_forest(tmp_path)
@@ -241,13 +249,13 @@ def discover_repos(
     on_progress: Callable[[int], None] | None = None,
 ) -> list[Path]:
     """Scans root up to max_depth levels deep for Git repositories.
-    
+
     Args:
         root: The starting directory path.
         max_depth: Maximum directory nesting level to traverse (default: 3).
         cancel_event: Optional thread cancellation flag.
         on_progress: Optional callback invoked with the current count of found repos.
-        
+
     Returns:
         Sorted list of resolved Path objects for every discovered repository.
     """
@@ -283,9 +291,7 @@ def discover_repos(
         dirnames[:] = [
             d
             for d in dirnames
-            if not d.startswith(".")
-            and not (current / d).is_symlink()
-            and depth < max_depth
+            if not d.startswith(".") and not (current / d).is_symlink() and depth < max_depth
         ]
 
     return sorted(found)
@@ -318,16 +324,17 @@ def test_clear_missing(db_conn):
     rid = repo_registry.add_repo(db_conn, "/tmp/missing_repo")
     repo_registry.mark_missing(db_conn, rid)
     assert repo_registry.get_repo_by_id(db_conn, rid).is_missing is True
-    
+
     repo_registry.clear_missing(db_conn, rid)
     assert repo_registry.get_repo_by_id(db_conn, rid).is_missing is False
+
 
 def test_clear_missing_by_path(db_conn):
     path = "/tmp/missing_path"
     repo_registry.add_repo(db_conn, path)
     repo_registry.mark_missing(db_conn, path)
     assert repo_registry.get_repo_by_path(db_conn, path).is_missing is True
-    
+
     repo_registry.clear_missing(db_conn, path)
     assert repo_registry.get_repo_by_path(db_conn, path).is_missing is False
 ```
@@ -370,6 +377,7 @@ from pathlib import Path
 from PySide6.QtCore import Qt
 import pytest
 from wrench.ui.dialogs.discover_repos_dialog import DiscoverReposDialog
+
 
 def test_dialog_displays_results_and_selection(qapp):
     repos = [Path("/repo/alpha"), Path("/repo/beta"), Path("/repo/gamma")]
@@ -503,6 +511,7 @@ lazy import json
 lazy import os
 lazy from pathlib import Path
 
+
 def get_json_data(raw: str) -> dict:
     # json is only actually imported and loaded upon first attribute lookup
     return json.loads(raw)
@@ -515,6 +524,7 @@ import subprocess
 from pathlib import Path
 import pytest
 
+
 def test_python_315_native_lazy_import():
     """Verifies that Python 3.15 executes explicit lazy imports without errors."""
     py315_bin = Path(".uv_python/cpython-3.15.0-linux-x86_64-gnu/bin/python3.15")
@@ -524,16 +534,18 @@ def test_python_315_native_lazy_import():
     code = (
         "lazy import json\n"
         "lazy from pathlib import Path\n"
-        "data = json.loads('{\"status\": \"lazy_ok\"}')\n"
+        'data = json.loads(\'{"status": "lazy_ok"}\')\n'
         "print(data['status'])\n"
     )
     res = subprocess.run([str(py315_bin), "-c", code], capture_output=True, text=True)
     assert res.returncode == 0, f"Error: {res.stderr}"
     assert "lazy_ok" in res.stdout
 
+
 def test_lazy_modules_fallback_in_credential_helper():
     """Verifies that __lazy_modules__ is declared on top of the credential helper."""
     from wrench.core import git_credential_helper
+
     assert hasattr(git_credential_helper, "__lazy_modules__")
     assert "secretstorage" in git_credential_helper.__lazy_modules__
 ```

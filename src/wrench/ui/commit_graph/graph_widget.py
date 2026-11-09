@@ -389,7 +389,7 @@ class CommitGraphWidget(QTableView):
     def _disconnect_avatar_loader(self, *_) -> None:
         try:
             get_avatar_loader().avatar_ready.disconnect(self._on_avatar_ready)
-        except (RuntimeError, TypeError):
+        except RuntimeError, TypeError:
             pass
 
     def _on_avatar_ready(self, *_) -> None:
@@ -399,7 +399,7 @@ class CommitGraphWidget(QTableView):
             if not shiboken6.isValid(self):
                 return
             self.viewport().update()
-        except (RuntimeError, AttributeError):
+        except RuntimeError, AttributeError:
             pass
 
     @property

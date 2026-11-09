@@ -333,3 +333,13 @@ class CLITimeoutError(GitCommandError):
             super().__init__(args_or_msg, -1, stderr)
         else:
             super().__init__(["git"], -1, args_or_msg)
+
+
+class LfsUnavailableError(WrenchGitError):
+    """Any git lfs operation while git-lfs extension is absent."""
+
+    def __init__(
+        self,
+        message: str = "Git LFS is not installed. Please install git-lfs to use LFS features.",
+    ):
+        super().__init__(message)

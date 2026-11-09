@@ -2885,10 +2885,10 @@ Flattened, in strict execution order, across every phase — the literal path th
 
 **Phase 5 — LFS & Submodules** *(prerequisites: 4.6.5 checked)*
 
-- [ ] 5.1 `core/lfs_ops.py` — cached cwd-independent `lfs_available()` probe; `_require_lfs` → `LfsUnavailableError`; batched `lfs_files` via `check-attr -z`; `is_lfs_pointer`/`parse_lfs_pointer`; track/pull/push via `run_git` with network timeouts; per-repo `lfs install --local` on open (never global — Flatpak HOME)
-- [ ] 5.2 `core/submodules.py` — list/status via pygit2 (uninitialized never raises); init/update/add via `run_git`; `file://` transport confirmation dialog + per-invocation `-c protocol.file.allow=always`; LFS filters propagated into initialized submodules; credential-gap documented (§8.1)
-- [ ] 5.3 UI per ui-planning §6.3 — Changes-tab badges (batched, once per refresh), pointer-aware diff rendering, `ui/dialogs/submodule_dialog.py`, Repository ▸ Git LFS menu with git-lfs-missing degraded state; all ops via `run_in_background`; `tr()` + `setAccessibleName` throughout
-- [ ] 5.4 **CHECK**: `pytest tests/unit/test_lfs.py tests/unit/test_submodules.py` green WITH and WITHOUT git-lfs on `PATH`; fixtures `make_lfs_repo` (hand-built pointer blob) + `make_submodule_repo` (file:// child); manual QA on a real repo with both features
+- [x] 5.1 `core/lfs_ops.py` — cached cwd-independent `lfs_available()` probe; `_require_lfs` → `LfsUnavailableError`; batched `lfs_files` via `check-attr -z`; `is_lfs_pointer`/`parse_lfs_pointer`; track/pull/push via `run_git` with network timeouts; per-repo `lfs install --local` on open (never global — Flatpak HOME)
+- [x] 5.2 `core/submodules.py` — list/status via pygit2 (uninitialized never raises); init/update/add via `run_git`; `file://` transport confirmation dialog + per-invocation `-c protocol.file.allow=always`; LFS filters propagated into initialized submodules; credential-gap documented (§8.1)
+- [x] 5.3 UI per ui-planning §6.3 — Changes-tab badges (batched, once per refresh), pointer-aware diff rendering, `ui/dialogs/submodule_dialog.py`, Repository ▸ Git LFS menu with git-lfs-missing degraded state; all ops via `run_in_background`; `tr()` + `setAccessibleName` throughout
+- [x] 5.4 **CHECK**: `pytest tests/unit/test_lfs.py tests/unit/test_submodules.py` green WITH and WITHOUT git-lfs on `PATH`; fixtures `make_lfs_repo` (hand-built pointer blob) + `make_submodule_repo` (file:// child); manual QA on a real repo with both features
 
 **Phase 6 — Packaging Hardening & Flathub Submission** *(prerequisites: 5.4 checked)*
 

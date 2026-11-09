@@ -242,7 +242,7 @@ class IssueListTab(QWidget):
     def _disconnect_avatar_loader(self, *_) -> None:
         try:
             get_avatar_loader().avatar_ready.disconnect(self._on_avatar_ready)
-        except (RuntimeError, TypeError):
+        except RuntimeError, TypeError:
             pass
 
     def _on_avatar_ready(self, *_) -> None:
@@ -254,7 +254,7 @@ class IssueListTab(QWidget):
             if not shiboken6.isValid(self.table_view):
                 return
             self.table_view.viewport().update()
-        except (RuntimeError, AttributeError):
+        except RuntimeError, AttributeError:
             pass
 
     def reload_links_and_data(self) -> None:
@@ -374,8 +374,8 @@ class IssueListTab(QWidget):
         if self._active_adapter:
             try:
                 self._active_adapter.close()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("Failed closing active adapter in issue tab: %s", e)
             self._active_adapter = None
         self._active_link = None
         self.search_input.clear()

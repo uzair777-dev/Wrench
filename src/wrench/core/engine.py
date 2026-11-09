@@ -1,3 +1,4 @@
+import logging
 import os
 import re
 import sqlite3
@@ -6,6 +7,7 @@ import threading
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 import pygit2
 
@@ -17,6 +19,13 @@ from .exceptions import (
     RemoteNotFoundError,
     WrenchRepoNotFoundError,
 )
+from .models import (
+    BundleInfo,
+    LfsFileStatus,
+    LFSLock,
+)
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -209,7 +218,42 @@ class RepoHandle:
 
 # Import read_ops, write_ops, identity, reflog after all dataclasses are defined
 from . import identity, read_ops, reflog, write_ops  # noqa: E402
+from .bundles import (  # noqa: E402
+    create_bundle,
+    get_bundle_info,
+    unbundle,
+    verify_bundle,
+)
 from .discovery import discover_repos  # noqa: E402, F401
+from .lfs_ops import (  # noqa: E402
+    is_lfs_installed,
+    is_lfs_pointer,
+    lfs_available,
+    lfs_files,
+    lfs_lock,
+    lfs_locks,
+    lfs_pull,
+    lfs_push,
+    lfs_status,
+    lfs_track,
+    lfs_unlock,
+    lfs_untrack,
+    parse_lfs_pointer,
+)
+from .read_ops import iter_commits as _read_iter_commits  # noqa: E402
+from .reflog_ops import (  # noqa: E402
+    create_branch_from_reflog,
+    list_reflog,
+    reset_to_reflog_entry,
+)
+from .submodules import (  # noqa: E402
+    add_submodule,
+    init_submodule,
+    list_submodules,
+    submodule_status,
+    sync_submodules,
+    update_submodules,
+)
 
 
 def init_repo(path: Path | str) -> RepoHandle:
@@ -247,8 +291,18 @@ def open_repo(path: Path | str) -> RepoHandle:
     try:
         write_ops.run_git(p, ["config", "--local", "credential.helper", "wrench"])
         write_ops.run_git(p, ["config", "--local", "credential.useHttpPath", "true"])
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("Failed configuring credential helper: %s", e)
+
+    # Ensure Git LFS filter is installed locally if repo uses LFS
+    try:
+        gitattributes = p / ".gitattributes"
+        if gitattributes.exists() and lfs_available():
+            content = gitattributes.read_text(encoding="utf-8", errors="replace")
+            if "filter=lfs" in content:
+                write_ops.run_git(p, ["lfs", "install", "--local"], check=False)
+    except Exception as e:
+        logger.debug("Failed configuring local LFS filter: %s", e)
 
     return RepoHandle(pygit2_repo, p)
 
@@ -273,7 +327,7 @@ def get_log(
 
 
 def iter_commits(repo: RepoHandle, *, all_refs: bool = False):
-    return read_ops.iter_commits(repo, all_refs=all_refs)
+    return _read_iter_commits(repo, all_refs=all_refs)
 
 
 def get_commit_diff(repo: RepoHandle, sha: str, path: str | None = None) -> Diff:
@@ -301,7 +355,7 @@ def stage_file(repo: RepoHandle, path: str) -> None:
     else:
         try:
             repo.pygit2_repo.index.remove(path)
-        except (KeyError, OSError):
+        except KeyError, OSError:
             pass
     repo.pygit2_repo.index.write()
 
@@ -313,7 +367,7 @@ def unstage_file(repo: RepoHandle, path: str) -> None:
         try:
             repo.pygit2_repo.index.remove(path)
             repo.pygit2_repo.index.write()
-        except (KeyError, OSError):
+        except KeyError, OSError:
             pass
     else:
         write_ops.run_git(repo.path, ["reset", "HEAD", "--", path])
@@ -633,8 +687,8 @@ def list_remotes(
                 rec = repo_registry.get_repo_by_path(conn, str(repo.path))
                 if rec:
                     repo_id = rec.id
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("Failed resolving repo from path: %s", e)
 
         for remote in repo.pygit2_repo.remotes:
             last_fetch = None
@@ -693,15 +747,15 @@ def _probe_reachability(
         rec = None
         try:
             rec = repo_registry.get_repo_by_path(conn, str(repo_path))
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Failed looking up repo in reachability probe: %s", e)
 
         val = "1" if reachable else "0"
         if rec:
             settings.set_setting(conn, f"repo.{rec.id}.remote_reachable.{remote_name}", val)
         settings.set_setting(conn, f"remote_reachable.{remote_name}", val)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("Failed saving reachability setting: %s", e)
     finally:
         if should_close and conn:
             conn.close()
@@ -724,8 +778,8 @@ def probe_remotes_async(
             if on_complete:
                 try:
                     on_complete()
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug("on_complete callback raised: %s", e)
 
     t = threading.Thread(target=_worker, daemon=True)
     t.start()
@@ -779,6 +833,27 @@ def set_remote_url(repo: RepoHandle, name: str, url: str) -> None:
         raise RemoteNotFoundError(name)
 
     write_ops.run_git(repo.path, ["remote", "set-url", name, url])
+
+
+def get_remote_url(repo: RepoHandle, name: str) -> str:
+    """Get the URL of an existing remote."""
+    res = write_ops.run_git(repo.path, ["remote", "get-url", name], check=False)
+    if res.returncode == 0:
+        return res.stdout.strip()
+    return ""
+
+
+def count_unpushed_commits(repo: RepoHandle, remote: str, branch: str) -> int:
+    """Count number of unpushed commits between local branch and remote tracking ref."""
+    clean_b = (branch or "HEAD").replace("refs/heads/", "")
+    res = write_ops.run_git(
+        repo.path,
+        ["rev-list", f"refs/remotes/{remote}/{clean_b}..refs/heads/{clean_b}"],
+        check=False,
+    )
+    if res.returncode == 0:
+        return len(res.stdout.splitlines())
+    return 0
 
 
 def merge(repo: RepoHandle, source_branch: str) -> MergeResult:
@@ -949,8 +1024,8 @@ def scan_unpushed_large_blobs(
     remote_commit = None
     try:
         remote_commit = pygit_repo.revparse_single(tracking_ref_name)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("Failed resolving tracking ref commit: %s", e)
 
     threshold_bytes = int(threshold_mb * 1024 * 1024)
     found_blobs: dict[str, float] = {}
@@ -964,8 +1039,8 @@ def scan_unpushed_large_blobs(
                 size_mb = obj.size / (1024.0 * 1024.0)
                 if file_path not in found_blobs or size_mb > found_blobs[file_path]:
                     found_blobs[file_path] = size_mb
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Failed checking blob entry: %s", e)
 
     try:
         walker = pygit_repo.walk(head_commit.id, pygit2.enums.SortMode.TOPOLOGICAL)
@@ -988,7 +1063,366 @@ def scan_unpushed_large_blobs(
             if diff:
                 for delta in diff.deltas:
                     _check_blob_entry(delta.new_file.id, delta.new_file.path)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("Failed walking commits for blob scan: %s", e)
 
     return sorted(found_blobs.items(), key=lambda x: x[1], reverse=True)
+
+
+class GitEngine:
+    """Facade class providing unified access to core Git, LFS, Submodule, and Bundle operations."""
+
+    def __init__(self, repo: RepoHandle | None = None, settings: Any = None) -> None:
+        self.repo = repo
+        self._settings = settings
+
+    def get_settings(self) -> Any:
+        if self._settings is not None:
+            return self._settings
+        from wrench.storage.settings_registry import get_settings_registry
+
+        self._settings = get_settings_registry()
+        return self._settings
+
+    def is_feature_enabled(self, key: str, repo_path: str | None = None) -> bool:
+        rp = repo_path or (str(self.repo.path) if self.repo else None)
+        return self.get_settings().is_enabled(key, rp)
+
+    @staticmethod
+    def open_repo(path: Path | str) -> RepoHandle:
+        return open_repo(path)
+
+    @staticmethod
+    def init_repo(path: Path | str, bare: bool = False) -> RepoHandle:
+        return init_repo(path, bare=bare)
+
+    @staticmethod
+    def clone_repo(
+        url: str,
+        dest: Path | str,
+        branch: str | None = None,
+        progress_cb: Callable[[int, int, int], None] | None = None,
+        cancel_event: threading.Event | None = None,
+        recursive: bool = False,
+    ) -> CloneResult:
+        return clone_repo(
+            url,
+            dest,
+            branch=branch,
+            progress_cb=progress_cb,
+            cancel_event=cancel_event,
+            recursive=recursive,
+        )
+
+    def get_status(self, repo: RepoHandle | None = None) -> RepoStatus:
+        target = repo or self.repo
+        if not target:
+            raise ValueError("No repository provided")
+        return get_status(target)
+
+    def stage_file(self, path: str, repo: RepoHandle | None = None) -> None:
+        target = repo or self.repo
+        if not target:
+            raise ValueError("No repository provided")
+        stage_file(target, path)
+
+    def unstage_file(self, path: str, repo: RepoHandle | None = None) -> None:
+        target = repo or self.repo
+        if not target:
+            raise ValueError("No repository provided")
+        unstage_file(target, path)
+
+    def stage_all(self, repo: RepoHandle | None = None) -> None:
+        target = repo or self.repo
+        if not target:
+            raise ValueError("No repository provided")
+        from .write_ops import run_git
+
+        run_git(target.path, ["add", "-A"])
+
+    def unstage_all(self, repo: RepoHandle | None = None) -> None:
+        target = repo or self.repo
+        if not target:
+            raise ValueError("No repository provided")
+        from .write_ops import run_git
+
+        run_git(target.path, ["reset", "HEAD", "--"])
+
+    def commit(
+        self,
+        message: str,
+        amend: bool = False,
+        author: tuple[str, str] | None = None,
+        repo: RepoHandle | None = None,
+    ) -> str:
+        target = repo or self.repo
+        if not target:
+            raise ValueError("No repository provided")
+        return commit(target, message, amend=amend)
+
+    def get_diff(self, path: str, staged: bool = False, repo: RepoHandle | None = None) -> Diff:
+        target = repo or self.repo
+        if not target:
+            raise ValueError("No repository provided")
+        return get_diff(target, path, staged=staged)
+
+    def get_commit_history(
+        self,
+        max_count: int = 100,
+        skip: int = 0,
+        branch: str | None = None,
+        filter_opts: LogFilter | None = None,
+        repo: RepoHandle | None = None,
+    ) -> list[Commit]:
+        target = repo or self.repo
+        if not target:
+            raise ValueError("No repository provided")
+        return get_log(
+            target,
+            limit=max_count,
+            skip=skip,
+            branch=branch,
+            filter_opts=filter_opts,
+        )
+
+    def create_branch(
+        self,
+        name: str,
+        start_point: str | None = None,
+        repo: RepoHandle | None = None,
+    ) -> None:
+        target = repo or self.repo
+        if not target:
+            raise ValueError("No repository provided")
+        create_branch(target, name, from_ref=start_point or "HEAD")
+
+    def checkout_branch(self, name: str, repo: RepoHandle | None = None) -> None:
+        target = repo or self.repo
+        if not target:
+            raise ValueError("No repository provided")
+        switch_branch(target, name)
+
+    def fetch_remote(self, remote: str = "origin", repo: RepoHandle | None = None) -> None:
+        target = repo or self.repo
+        if not target:
+            raise ValueError("No repository provided")
+        fetch(target, remote=remote)
+
+    def pull_remote(
+        self,
+        remote: str = "origin",
+        branch: str | None = None,
+        repo: RepoHandle | None = None,
+    ) -> MergeResult:
+        target = repo or self.repo
+        if not target:
+            raise ValueError("No repository provided")
+        return pull(target, remote=remote, branch=branch or "")
+
+    def push_remote(
+        self,
+        remote: str = "origin",
+        branch: str | None = None,
+        set_upstream: bool = False,
+        force: bool = False,
+        repo: RepoHandle | None = None,
+    ) -> None:
+        target = repo or self.repo
+        if not target:
+            raise ValueError("No repository provided")
+        push(
+            target,
+            remote=remote,
+            branch=branch or "",
+            force=force,
+        )
+
+    def get_remotes(self, repo: RepoHandle | None = None) -> list[Remote]:
+        target = repo or self.repo
+        if not target:
+            raise ValueError("No repository provided")
+        return list_remotes(target)
+
+    # Git LFS
+    @staticmethod
+    def is_lfs_installed() -> bool:
+        return is_lfs_installed()
+
+    @staticmethod
+    def lfs_available() -> bool:
+        return lfs_available()
+
+    @staticmethod
+    def is_lfs_pointer(content: str) -> bool:
+        return is_lfs_pointer(content)
+
+    @staticmethod
+    def parse_lfs_pointer(content: str) -> tuple[str, str] | None:
+        return parse_lfs_pointer(content)
+
+    def lfs_files(self, paths: list[str], repo: RepoHandle | None = None) -> set[str]:
+        target = repo or self.repo
+        if not target:
+            raise ValueError("No repository provided")
+        return lfs_files(target, paths)
+
+    def lfs_track(self, pattern: str, repo: RepoHandle | None = None) -> None:
+        target = repo or self.repo
+        if not target:
+            raise ValueError("No repository provided")
+        lfs_track(target, pattern)
+
+    def lfs_untrack(self, pattern: str, repo: RepoHandle | None = None) -> None:
+        target = repo or self.repo
+        if not target:
+            raise ValueError("No repository provided")
+        lfs_untrack(target, pattern)
+
+    def lfs_pull(self, repo: RepoHandle | None = None) -> None:
+        target = repo or self.repo
+        if not target:
+            raise ValueError("No repository provided")
+        lfs_pull(target)
+
+    def lfs_push(
+        self,
+        remote: str = "origin",
+        branch: str | None = None,
+        repo: RepoHandle | None = None,
+    ) -> None:
+        target = repo or self.repo
+        if not target:
+            raise ValueError("No repository provided")
+        lfs_push(target, remote=remote, branch=branch)
+
+    def lfs_status(self, repo: RepoHandle | None = None) -> list[LfsFileStatus]:
+        target = repo or self.repo
+        if not target:
+            raise ValueError("No repository provided")
+        if not self.is_feature_enabled("lfs.enabled", str(target.path)):
+            return []
+        return lfs_status(target)
+
+    def lfs_locks(self, repo: RepoHandle | None = None) -> list[LFSLock]:
+        target = repo or self.repo
+        if not target:
+            raise ValueError("No repository provided")
+        if not self.is_feature_enabled("lfs.enabled", str(target.path)):
+            return []
+        return lfs_locks(target)
+
+    def lfs_lock(self, path: str, repo: RepoHandle | None = None) -> None:
+        target = repo or self.repo
+        if not target:
+            raise ValueError("No repository provided")
+        lfs_lock(target, path)
+
+    def lfs_unlock(self, path: str, force: bool = False, repo: RepoHandle | None = None) -> None:
+        target = repo or self.repo
+        if not target:
+            raise ValueError("No repository provided")
+        lfs_unlock(target, path, force=force)
+
+    # Submodules
+    def list_submodules(self, repo: RepoHandle | None = None) -> list[Submodule]:
+        target = repo or self.repo
+        if not target:
+            raise ValueError("No repository provided")
+        if not self.is_feature_enabled("submodules.enabled", str(target.path)):
+            return []
+        return list_submodules(target)
+
+    def submodule_status(self, path: str, repo: RepoHandle | None = None) -> SubmoduleStatus:
+        target = repo or self.repo
+        if not target:
+            raise ValueError("No repository provided")
+        return submodule_status(target, path)
+
+    def init_submodule(self, path: str | None = None, repo: RepoHandle | None = None) -> None:
+        target = repo or self.repo
+        if not target:
+            raise ValueError("No repository provided")
+        init_submodule(target, path=path)
+
+    def update_submodules(
+        self,
+        path: str | None = None,
+        recursive: bool = True,
+        repo: RepoHandle | None = None,
+    ) -> None:
+        target = repo or self.repo
+        if not target:
+            raise ValueError("No repository provided")
+        update_submodules(target, path=path, recursive=recursive)
+
+    def sync_submodules(self, path: str | None = None, repo: RepoHandle | None = None) -> None:
+        target = repo or self.repo
+        if not target:
+            raise ValueError("No repository provided")
+        sync_submodules(target, path=path)
+
+    def add_submodule(self, url: str, path: str, repo: RepoHandle | None = None) -> None:
+        target = repo or self.repo
+        if not target:
+            raise ValueError("No repository provided")
+        add_submodule(target, url, path)
+
+    # Git Bundles
+    def create_bundle(
+        self,
+        output_path: Path | str,
+        revs: list[str] | None = None,
+        repo: RepoHandle | None = None,
+    ) -> Path:
+        target = repo or self.repo
+        if not target:
+            raise ValueError("No repository provided")
+        return create_bundle(target, output_path, revs=revs)
+
+    @staticmethod
+    def verify_bundle(bundle_path: Path | str, repo: RepoHandle | None = None) -> bool:
+        return verify_bundle(bundle_path, repo=repo)
+
+    def unbundle(self, bundle_path: Path | str, repo: RepoHandle | None = None) -> list[str]:
+        target = repo or self.repo
+        if not target:
+            raise ValueError("No repository provided")
+        return unbundle(target, bundle_path)
+
+    @staticmethod
+    def get_bundle_info(bundle_path: Path | str, repo: RepoHandle | None = None) -> BundleInfo:
+        return get_bundle_info(bundle_path, repo=repo)
+
+    # Reflog
+    def list_reflog(
+        self,
+        ref: str = "HEAD",
+        limit: int = 100,
+        repo: RepoHandle | None = None,
+    ) -> list[ReflogEntry]:
+        target = repo or self.repo
+        if not target:
+            raise ValueError("No repository provided")
+        return list_reflog(target, ref=ref, limit=limit)
+
+    def reset_to_reflog_entry(
+        self,
+        sha: str,
+        mode: str = "hard",
+        repo: RepoHandle | None = None,
+    ) -> None:
+        target = repo or self.repo
+        if not target:
+            raise ValueError("No repository provided")
+        reset_to_reflog_entry(target, sha, mode=mode)
+
+    def create_branch_from_reflog(
+        self,
+        branch_name: str,
+        sha: str,
+        repo: RepoHandle | None = None,
+    ) -> None:
+        target = repo or self.repo
+        if not target:
+            raise ValueError("No repository provided")
+        create_branch_from_reflog(target, branch_name, sha)

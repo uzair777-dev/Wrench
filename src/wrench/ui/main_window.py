@@ -13,9 +13,9 @@ from __future__ import annotations
 
 import json
 import logging
-import sqlite3
 import threading
 from pathlib import Path
+from typing import Any
 
 from PySide6.QtCore import QByteArray, QEvent, Qt, QTimer
 from PySide6.QtGui import QActionGroup, QGuiApplication, QKeySequence
@@ -56,8 +56,7 @@ from wrench.core.exceptions import (
     WrenchRepoNotFoundError,
 )
 from wrench.core.remote_urls import host_of_instance_url, parse_remote_url
-from wrench.storage import forge_accounts, repo_registry, settings
-from wrench.storage.db import get_connection
+from wrench.storage import forge_accounts, get_connection, repo_registry, settings
 from wrench.ui.dialogs.about_dialog import AboutDialog
 from wrench.ui.dialogs.accounts_dialog import AccountsDialog
 from wrench.ui.dialogs.discover_repos_dialog import DiscoverReposDialog
@@ -90,7 +89,7 @@ logger = logging.getLogger(__name__)
 class MainWindow(QMainWindow):
     """Main application shell."""
 
-    def __init__(self, conn: sqlite3.Connection | None = None, parent=None):
+    def __init__(self, conn: Any = None, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Wrench")
         self.setMinimumSize(900, 600)
@@ -877,7 +876,7 @@ class MainWindow(QMainWindow):
             if declined_raw:
                 try:
                     declined_list = json.loads(declined_raw)
-                except (json.JSONDecodeError, TypeError):
+                except json.JSONDecodeError, TypeError:
                     declined_list = []
 
             decline_key = f"{repo_id}:{remote.name}"
@@ -951,7 +950,7 @@ class MainWindow(QMainWindow):
                     if raw:
                         try:
                             lst = json.loads(raw)
-                        except (json.JSONDecodeError, TypeError):
+                        except json.JSONDecodeError, TypeError:
                             lst = []
                     if _key not in lst:
                         lst.append(_key)
@@ -1352,8 +1351,8 @@ class MainWindow(QMainWindow):
                     cfg_remote = self._current_repo.pygit2_repo.config[cfg_key]
                     if cfg_remote in remotes:
                         return cfg_remote
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("Failed reading branch remote config: %s", e)
 
             # 2. Check pygit2 branch object upstream references
             try:
@@ -1369,10 +1368,10 @@ class MainWindow(QMainWindow):
                             parts = upstream_name[len("refs/remotes/") :].split("/")
                             if parts and parts[0] in remotes:
                                 return parts[0]
-                    except Exception:
-                        pass
-            except Exception:
-                pass
+                    except Exception as e:
+                        logger.debug("Failed parsing upstream name: %s", e)
+            except Exception as e:
+                logger.debug("Failed checking branch upstream references: %s", e)
 
         if "origin" in remotes:
             return "origin"
@@ -1411,8 +1410,8 @@ class MainWindow(QMainWindow):
                 self.status_label.setText(
                     self.tr(f"Opened: {self._current_repo.path.name} ({branch})")
                 )
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("Failed updating status label: %s", e)
 
     def _on_manage_remotes(self) -> None:
         if not self._current_repo:
@@ -1742,32 +1741,17 @@ class MainWindow(QMainWindow):
                         branch=branch,
                         threshold_mb=50.0,
                     )
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug("Failed scanning unpushed large blobs: %s", e)
                 try:
-                    clean_b = (branch or "HEAD").replace("refs/heads/", "")
-                    p = self._current_repo.path
-                    from wrench.core import write_ops
-
-                    rev_res = write_ops.run_git(
-                        p,
-                        ["rev-list", f"refs/remotes/{remote_name}/{clean_b}..refs/heads/{clean_b}"],
-                        check=False,
-                    )
-                    if rev_res.returncode == 0:
-                        has_multiple = len(rev_res.stdout.splitlines()) > 1
-                except Exception:
-                    pass
+                    count = engine.count_unpushed_commits(self._current_repo, remote_name, branch)
+                    has_multiple = count > 1
+                except Exception as e:
+                    logger.debug("Failed counting unpushed commits: %s", e)
                 try:
-                    from wrench.core import write_ops
-
-                    url_res = write_ops.run_git(
-                        self._current_repo.path, ["remote", "get-url", remote_name], check=False
-                    )
-                    if url_res.returncode == 0 and url_res.stdout.strip():
-                        remote_url = url_res.stdout.strip()
-                except Exception:
-                    pass
+                    remote_url = engine.get_remote_url(self._current_repo, remote_name)
+                except Exception as e:
+                    logger.debug("Failed retrieving remote url: %s", e)
 
             dlg = GitNetworkRecoveryDialog(
                 exc,

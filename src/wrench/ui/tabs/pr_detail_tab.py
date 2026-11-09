@@ -14,12 +14,12 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from wrench.core import write_ops
+from wrench.core import engine
 from wrench.core.engine import RepoHandle
 from wrench.forge.capability import ForgeAdapter
 from wrench.forge.models import CIStatus, PullRequest
 from wrench.forge.registry import get_adapter_for_account
-from wrench.storage import db, forge_accounts
+from wrench.storage import forge_accounts, get_connection
 from wrench.ui.forge_panel.badges import CIIconWidget, PRStateBadge, RemoteBadge
 from wrench.ui.forge_panel.review_dialog import SubmitReviewDialog
 from wrench.ui.theme import get_banner_style, is_dark_theme
@@ -174,7 +174,7 @@ class PRDetailTab(QWidget):
             self.checkout_btn.setEnabled(True)
 
     def _load_adapter_and_data(self) -> None:
-        conn = db.get_connection()
+        conn = get_connection()
         try:
             repo_row = conn.execute(
                 "SELECT id FROM repos WHERE path = ?", (self.repo_path,)
@@ -300,12 +300,12 @@ class PRDetailTab(QWidget):
             repo_handle = RepoHandle(self.repo_path)
             # Switch to local branch if it exists, or create local tracking branch
             if branch_name in repo_handle.pygit2_repo.branches.local:
-                write_ops.checkout_branch(repo_handle, branch_name)
+                engine.switch_branch(repo_handle, branch_name)
             else:
                 remote_ref = f"{self.remote_name}/{branch_name}"
                 if remote_ref in repo_handle.pygit2_repo.branches.remote:
-                    write_ops.create_branch(repo_handle, branch_name, remote_ref)
-                    write_ops.checkout_branch(repo_handle, branch_name)
+                    engine.create_branch(repo_handle, branch_name, from_ref=remote_ref)
+                    engine.switch_branch(repo_handle, branch_name)
             self.branch_checkout_requested.emit(branch_name)
         except Exception as e:
             logger.error("Checkout failed for branch %s: %s", branch_name, e)

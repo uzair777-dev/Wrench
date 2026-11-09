@@ -40,3 +40,7 @@ class ForgeRateLimitedError(ForgeError):
     def __init__(self, retry_after_seconds: int):
         super().__init__(f"Rate limited — retry in {retry_after_seconds}s")
         self.retry_after_seconds = retry_after_seconds
+
+
+class ForgeCapabilityNotSupportedError(ForgeError):
+    """Raised when a forge provider does not support an operation."""

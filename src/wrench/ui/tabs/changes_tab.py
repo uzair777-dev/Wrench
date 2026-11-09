@@ -13,7 +13,6 @@ Provides:
 from __future__ import annotations
 
 import logging
-import sqlite3
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -189,7 +188,7 @@ class ChangesTab(QWidget):
     forge_accounts_requested = Signal()
     link_repo_requested = Signal(str)
 
-    def __init__(self, conn: sqlite3.Connection, parent: QWidget | None = None):
+    def __init__(self, conn: Any, parent: QWidget | None = None):
         super().__init__(parent)
         self._conn = conn
         self._repo: RepoHandle | None = None
@@ -206,7 +205,7 @@ class ChangesTab(QWidget):
     def _disconnect_avatar_loader(self, *_) -> None:
         try:
             get_avatar_loader().avatar_ready.disconnect(self._on_avatar_ready)
-        except (RuntimeError, TypeError):
+        except RuntimeError, TypeError:
             pass
 
     def _on_avatar_ready(self, *_) -> None:
@@ -216,7 +215,7 @@ class ChangesTab(QWidget):
             if not shiboken6.isValid(self):
                 return
             self._update_account_btn()
-        except (RuntimeError, AttributeError):
+        except RuntimeError, AttributeError:
             pass
 
     def _init_ui(self) -> None:
@@ -1135,8 +1134,8 @@ class ChangesTab(QWidget):
                     if ep == path:
                         has_conflict = True
                         break
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Failed scanning conflicts for context menu: %s", e)
 
         if has_conflict:
             act_resolve = menu.addAction(self.tr("Resolve Conflict in 3-Way Tool…"))
@@ -1236,8 +1235,8 @@ class ChangesTab(QWidget):
                 from wrench.core.identity import check_identity
 
                 committer_name, committer_email = check_identity(self._repo.path)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("Failed checking committer identity: %s", e)
 
         if committer_name or committer_email:
             remote_urls = None
@@ -1303,8 +1302,8 @@ class ChangesTab(QWidget):
                         fetched_avatar_url, name_or_email=acc.label, size=24
                     )
                     self._update_account_btn()
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug("Failed saving account avatar in changes tab: %s", e)
 
         run_in_background(fn=_fetch, on_finished=_on_done)
 
@@ -1324,8 +1323,8 @@ class ChangesTab(QWidget):
                     if links:
                         link = links[0]
                         acc = forge_accounts.get_account_full(self._conn, link.forge_account_id)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("Failed checking repo forge link: %s", e)
 
         if link and acc:
             header_text = f"{acc.label} ({acc.username or acc.provider})"
@@ -1341,8 +1340,8 @@ class ChangesTab(QWidget):
                     from wrench.core.identity import check_identity
 
                     committer_name, committer_email = check_identity(self._repo.path)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug("Failed checking committer identity for menu: %s", e)
             if committer_name or committer_email:
                 header_text = f"Committer: {committer_name} <{committer_email}>"
             else:

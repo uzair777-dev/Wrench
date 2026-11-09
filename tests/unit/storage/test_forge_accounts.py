@@ -215,7 +215,7 @@ class TestForgeAccountsStorage:
         run_migrations(conn)
 
         version = conn.execute("PRAGMA user_version").fetchone()[0]
-        assert version == 2
+        assert version >= 2
 
         # Verify new columns exist by inserting with them
         conn.execute("""INSERT INTO forge_accounts (

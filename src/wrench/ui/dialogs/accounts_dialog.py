@@ -1378,7 +1378,7 @@ class AccountsDialog(QDialog):
     def _disconnect_avatar_loader(self, *_) -> None:
         try:
             self._avatar_loader.avatar_ready.disconnect(self._on_avatar_ready)
-        except (RuntimeError, TypeError):
+        except RuntimeError, TypeError:
             pass
 
     def _on_avatar_ready(self, url: str, size: int) -> None:
@@ -1403,7 +1403,7 @@ class AccountsDialog(QDialog):
                         )
                         if not pixmap.isNull():
                             user_item.setIcon(QIcon(pixmap))
-                except (RuntimeError, AttributeError):
+                except RuntimeError, AttributeError:
                     pass
 
     def reload_accounts(self) -> None:

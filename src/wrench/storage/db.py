@@ -48,9 +48,9 @@ def run_migrations(conn: sqlite3.Connection) -> None:
         if current_version == 0:
             schema_sql = resources.files("wrench.storage").joinpath("schema.sql").read_text()
             conn.executescript(schema_sql)
-            conn.execute("PRAGMA user_version = 2")
+            conn.execute("PRAGMA user_version = 3")
             conn.commit()
-            logger.info("Applied initial schema (version 2)")
+            logger.info("Applied initial schema (version 3)")
             return
 
         if current_version == 1:
@@ -61,3 +61,36 @@ def run_migrations(conn: sqlite3.Connection) -> None:
             conn.execute("PRAGMA user_version = 2")
             conn.commit()
             logger.info("Applied schema migration to version 2 (TLS account policy)")
+            current_version = 2
+
+        if current_version == 2:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS global_settings (
+                    key             TEXT PRIMARY KEY,
+                    value_json      TEXT NOT NULL,
+                    updated_at      TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+                """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS repo_settings_overrides (
+                    repo_path       TEXT NOT NULL,
+                    key             TEXT NOT NULL,
+                    value_json      TEXT NOT NULL,
+                    updated_at      TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (repo_path, key)
+                )
+                """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS settings_undo_log (
+                    change_id       INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp       TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    repo_path       TEXT,
+                    key             TEXT NOT NULL,
+                    old_value_json  TEXT NOT NULL,
+                    new_value_json  TEXT NOT NULL,
+                    undone          INTEGER NOT NULL DEFAULT 0
+                )
+                """)
+            conn.execute("PRAGMA user_version = 3")
+            conn.commit()
+            logger.info("Applied schema migration to version 3 (Universal settings registry)")

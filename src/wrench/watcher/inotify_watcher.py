@@ -155,8 +155,8 @@ class RepoWatcher(QObject):
             try:
                 self._observer.stop()
                 self._observer.join(timeout=0.5)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("Error stopping observer: %s", e)
             self._observer = None
         if self._fallback:
             self._fallback.stop()

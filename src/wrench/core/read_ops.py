@@ -4,6 +4,7 @@ All read operations (status, diff, log, blame) go through this module.
 UI code never calls this module directly — it goes through core.engine.
 """
 
+import logging
 from collections.abc import Iterator
 from datetime import datetime, timezone
 
@@ -22,6 +23,8 @@ from .engine import (
     RepoHandle,
     RepoStatus,
 )
+
+logger = logging.getLogger(__name__)
 
 # pygit2 status flags for INDEX (staged) changes
 _STAGED_FLAGS = {
@@ -67,8 +70,8 @@ def get_status(repo: RepoHandle) -> RepoStatus:
     r = repo.pygit2_repo
     try:
         r.index.read()
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("Failed reading index in get_status: %s", e)
 
     # Determine branch state
     is_detached = r.head_is_detached
@@ -100,7 +103,7 @@ def get_status(repo: RepoHandle) -> RepoStatus:
             branch = r.branches.get(current_branch)
             if branch and branch.upstream:
                 ahead, behind = r.ahead_behind(r.head.target, branch.upstream.target)
-        except (KeyError, pygit2.GitError):
+        except KeyError, pygit2.GitError:
             pass
 
     # Conflicts
@@ -108,8 +111,8 @@ def get_status(repo: RepoHandle) -> RepoStatus:
     try:
         if r.index.conflicts is not None:
             has_conflicts = any(True for _ in r.index.conflicts)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("Failed checking index conflicts: %s", e)
 
     # Merge / Rebase state from pygit2 repository state
     pygit_state = r.state()
@@ -160,8 +163,8 @@ def get_diff(repo: RepoHandle, path: str, *, staged: bool) -> Diff:
     r = repo.pygit2_repo
     try:
         r.index.read()
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("Failed reading index in get_status: %s", e)
 
     if staged:
         if r.head_is_unborn:
@@ -310,8 +313,8 @@ def get_ref_labels(repo: RepoHandle) -> dict[str, list[RefLabel]]:
         try:
             target_commit = branch.peel(pygit2.Commit)
             add_label(str(target_commit.id), RefLabel(name=branch_name, kind="branch"))
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Failed resolving branch commit for label: %s", e)
 
     # 2. Tags
     for ref_name in r.references:
@@ -329,8 +332,8 @@ def get_ref_labels(repo: RepoHandle) -> dict[str, list[RefLabel]]:
                     target_commit = ref.peel(pygit2.Commit)
                     add_label(str(target_commit.id), RefLabel(name=tag_name, kind="tag"))
 
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("Failed resolving tag commit for label: %s", e)
 
     # 3. HEAD
     if not r.head_is_unborn:
@@ -340,8 +343,8 @@ def get_ref_labels(repo: RepoHandle) -> dict[str, list[RefLabel]]:
                 add_label(str(head_target), RefLabel(name="HEAD", kind="head"))
             else:
                 add_label(str(head_target), RefLabel(name="HEAD", kind="head"))
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Failed resolving HEAD target for label: %s", e)
 
     return labels
 
@@ -368,8 +371,8 @@ def iter_commits(repo: RepoHandle, *, all_refs: bool = False) -> Iterator[Commit
                 if target not in pushed_oids:
                     walker.push(target)
                     pushed_oids.add(target)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("Failed peeling branch commit in walker: %s", e)
 
     for git_commit in walker:
         author_date = datetime.fromtimestamp(
@@ -409,8 +412,8 @@ def _commit_touches_path(r: pygit2.Repository, commit_sha: str, path: str) -> bo
                 path.rstrip("/") + "/"
             ) or delta.old_file.path.startswith(path.rstrip("/") + "/"):
                 return True
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("Failed checking commit path touch: %s", e)
     return False
 
 
@@ -475,7 +478,7 @@ def blame_file(repo: RepoHandle, path: str) -> list[BlameLine]:
         blob = tree[path]
         file_content = r[blob.id].data.decode("utf-8", errors="replace")
         file_lines = file_content.splitlines()
-    except (KeyError, pygit2.GitError):
+    except KeyError, pygit2.GitError:
         file_lines = []
 
     for hunk in blame_result:

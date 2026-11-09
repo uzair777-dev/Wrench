@@ -6,6 +6,7 @@ not garnish.
 """
 
 import importlib.metadata
+import logging
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QTimer, QUrl
@@ -22,6 +23,8 @@ from PySide6.QtWidgets import (
 )
 
 from wrench.ui.quotes import ABOUT_WISDOM, random_quote
+
+logger = logging.getLogger(__name__)
 
 
 class AboutDialog(QDialog):
@@ -156,8 +159,8 @@ class AboutDialog(QDialog):
                 sections.append("Wrench License Text:")
                 sections.append("═" * 50)
                 sections.append(license_path.read_text(encoding="utf-8")[:4000])
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("Failed reading LICENSE text: %s", e)
 
         return "\n".join(sections)
 

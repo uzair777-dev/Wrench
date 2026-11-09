@@ -220,8 +220,8 @@ class AutoStashAndRetryAction(RecoveryAction):
                     success=True,
                     message="Finished operation. Stash preserved in stash list.",
                 )
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Stash pop attempt failed: %s", e)
 
         if op_error:
             return ActionResult(

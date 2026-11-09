@@ -12,6 +12,7 @@ lazy import httpx
 from wrench import credentials
 from wrench.forge.exceptions import (
     ForgeAuthenticationError,
+    ForgeCapabilityNotSupportedError,
     ForgeError,
     ForgeInsufficientScopeError,
     ForgeRateLimitedError,
@@ -172,7 +173,7 @@ class ForgeAdapter(ABC):
                         ]
                         if details:
                             msg += f": {', '.join(details)}"
-            except (ValueError, KeyError):
+            except ValueError, KeyError:
                 pass
             if not msg:
                 msg = resp.text[:300]
@@ -273,15 +274,17 @@ class ForgeAdapter(ABC):
     def get_ci_status(self, owner: str, repo: str, ref: str) -> CIStatus: ...
 
     def list_issues(self, owner: str, repo: str, state: str = "open") -> list[Issue]:
-        raise NotImplementedError(f"{self.provider_id} does not support issues")
+        raise ForgeCapabilityNotSupportedError(f"{self.provider_id} does not support issues")
 
     def get_pull_request(self, owner: str, repo: str, pr_id: str) -> PullRequest:
         """Fetch details for a single pull request by ID or number."""
-        raise NotImplementedError(f"{self.provider_id} does not support get_pull_request")
+        raise ForgeCapabilityNotSupportedError(
+            f"{self.provider_id} does not support get_pull_request"
+        )
 
     def get_issue(self, owner: str, repo: str, issue_id: str) -> Issue:
         """Fetch details for a single issue by ID or number."""
-        raise NotImplementedError(f"{self.provider_id} does not support issues")
+        raise ForgeCapabilityNotSupportedError(f"{self.provider_id} does not support issues")
 
     def get_primary_email(self) -> str | None:
         """Fetch the primary verified email of the authenticated user.

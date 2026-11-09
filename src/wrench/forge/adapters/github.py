@@ -1,5 +1,6 @@
 """FR-5.2: GitHub adapter."""
 
+import logging
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -7,6 +8,8 @@ import httpx
 
 from wrench.forge.capability import ForgeAdapter, ForgeCapability
 from wrench.forge.models import CIStatus, Issue, PullRequest
+
+logger = logging.getLogger(__name__)
 
 
 class GitHubAdapter(ForgeAdapter):
@@ -151,8 +154,8 @@ class GitHubAdapter(ForgeAdapter):
                 target_url = statuses[0].get("target_url") if statuses else None
                 desc = statuses[0].get("description") if statuses else None
                 return CIStatus(state=state, url=target_url, description=desc)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Failed fetching commit combined status: %s", e)
 
         # Check Check Runs
         try:
@@ -176,8 +179,8 @@ class GitHubAdapter(ForgeAdapter):
                 url = runs[0].get("html_url")
                 desc = f"{len(runs)} checks: {state}"
                 return CIStatus(state=state, url=url, description=desc)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Failed fetching commit combined status: %s", e)
 
         return CIStatus(state="unknown", url=None, description=None)
 

@@ -21,7 +21,6 @@ from pathlib import Path
 import pygit2
 
 from . import ssh_agent
-from .engine import CloneResult, MergeResult, RebaseResult
 from .exceptions import (
     AuthFailedError,
     AuthRequiredError,
@@ -44,6 +43,7 @@ from .exceptions import (
     WorkflowScopeRequiredError,
 )
 from .git_credential_helper import _host_of
+from .models import CloneResult, MergeResult, RebaseResult
 
 logger = logging.getLogger(__name__)
 
@@ -533,8 +533,8 @@ def _extract_conflicts(repo_path: Path) -> list[str]:
                 for entry in entry_tuple:
                     if entry is not None and entry.path not in conflicts:
                         conflicts.append(entry.path)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("Failed extracting conflicts from pygit2 index: %s", e)
     return sorted(conflicts)
 
 
@@ -700,8 +700,8 @@ def push(
             url_res = run_git(p, ["remote", "get-url", remote], check=False)
             if url_res.returncode == 0 and url_res.stdout.strip():
                 remote_url = url_res.stdout.strip()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Failed getting remote URL: %s", e)
         raise _classify_git_error(args, code, stderr, remote_url=remote_url)
 
 
@@ -826,8 +826,8 @@ def pull(
             url_res = run_git(p, ["remote", "get-url", remote], check=False)
             if url_res.returncode == 0 and url_res.stdout.strip():
                 remote_url = url_res.stdout.strip()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Failed getting remote URL: %s", e)
         raise _classify_git_error(args, code, stderr, remote_url=remote_url)
 
 
@@ -864,8 +864,8 @@ def fetch(
             url_res = run_git(p, ["remote", "get-url", remote], check=False)
             if url_res.returncode == 0 and url_res.stdout.strip():
                 remote_url = url_res.stdout.strip()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Failed getting remote URL: %s", e)
         raise _classify_git_error(args, code, stderr, remote_url=remote_url)
 
     # Record fetch timestamp in settings
@@ -885,8 +885,8 @@ def fetch(
             rec = None
             try:
                 rec = repo_registry.get_repo_by_path(conn, str(p))
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("Failed getting repo record in fetch: %s", e)
 
             if rec:
                 settings.set_setting(conn, f"repo.{rec.id}.remote_last_fetch.{remote}", now_iso)
@@ -991,8 +991,8 @@ def merge(repo_path: Path | str, source_branch: str) -> MergeResult:
     try:
         handle = engine.open_repo(p)
         snapshots.take_snapshot(handle, "pre_risky_op")
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("Failed taking pre_risky_op snapshot: %s", e)
 
     result = run_git(p, ["merge", source_branch], check=False)
 
@@ -1038,8 +1038,8 @@ def rebase(repo_path: Path | str, onto: str) -> RebaseResult:
     try:
         handle = engine.open_repo(p)
         snapshots.take_snapshot(handle, "pre_risky_op")
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("Failed taking pre_risky_op snapshot: %s", e)
 
     result = run_git(p, ["rebase", onto], check=False)
 

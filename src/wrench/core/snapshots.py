@@ -4,6 +4,7 @@ Captures working directory + index state as git dangling commit objects
 referenced by refs/wrench/snapshots/{id} without modifying the active working tree.
 """
 
+import logging
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -13,6 +14,8 @@ from wrench.storage import snapshots as storage_snapshots
 
 from .engine import RepoHandle
 from .write_ops import run_git
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -51,9 +54,34 @@ def _resolve_repo_id(
             if row:
                 return row["id"]
             return storage_repo_registry.add_repo(conn, str(repo.path))
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Failed resolving repo_id for snapshot: %s", e)
     return None
+
+
+def maybe_create_safety_snapshot(
+    repo: RepoHandle,
+    op_name: str,
+    *,
+    conn: sqlite3.Connection | None = None,
+    repo_id: int | None = None,
+) -> Snapshot | None:
+    """Create safety snapshot before risky operation if safety.pre_op_snapshot.enabled is True."""
+    try:
+        from wrench.storage.settings_registry import get_settings_registry
+
+        settings = get_settings_registry(conn)
+        if not settings.get_bool("safety.pre_op_snapshot.enabled", str(repo.path)):
+            return None
+    except Exception as e:
+        logger.debug("Failed checking safety.pre_op_snapshot.enabled: %s", e)
+    return take_snapshot(
+        repo,
+        trigger_type="pre_risky_op",
+        label=f"Before {op_name}",
+        conn=conn,
+        repo_id=repo_id,
+    )
 
 
 def take_snapshot(
@@ -68,6 +96,16 @@ def take_snapshot(
 
     Uses `git stash create` to capture working tree without touching it.
     """
+    if trigger_type == "pre_risky_op":
+        try:
+            from wrench.storage.settings_registry import get_settings_registry
+
+            if not get_settings_registry(conn).get_bool(
+                "safety.pre_op_snapshot.enabled", str(repo.path)
+            ):
+                return None
+        except Exception as e:
+            logger.debug("Failed checking safety.pre_op_snapshot.enabled: %s", e)
     r = repo.pygit2_repo
     if r.head_is_unborn:
         return None

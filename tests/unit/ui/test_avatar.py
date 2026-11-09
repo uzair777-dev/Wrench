@@ -152,7 +152,7 @@ def test_avatar_loader_uses_browser_headers():
     loader = AvatarLoader()
     test_url = "https://example.com/headers_test.png"
 
-    with patch("wrench.ui.widgets.avatar.httpx.get") as mock_get:
+    with patch("wrench.forge.registry.httpx.get") as mock_get:
         mock_resp = MagicMock()
         mock_resp.content = b"fake_bytes"
         mock_get.return_value = mock_resp

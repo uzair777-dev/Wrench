@@ -5,17 +5,16 @@ from __future__ import annotations
 import hashlib
 import logging
 import re
-import sqlite3
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
-import httpx
 from PySide6.QtCore import QObject, Qt, Signal
 from PySide6.QtGui import QColor, QImage, QPainter, QPainterPath, QPixmap
 from PySide6.QtWidgets import QLabel, QWidget
 
 from wrench.core import paths
+from wrench.forge.registry import fetch_avatar_bytes
 from wrench.storage import forge_accounts, settings
 from wrench.ui.theme import get_avatar_bg_color, get_avatar_fg_color, is_dark_theme
 from wrench.ui.workers import run_in_background
@@ -39,7 +38,7 @@ def resolve_author_avatar_url(
     name: str,
     email: str,
     remote_urls: list[str] | None = None,
-    db_conn: sqlite3.Connection | None = None,
+    db_conn: Any = None,
 ) -> str | None:
     """Multi-tier author avatar resolution pipeline (FR-5.14).
 
@@ -78,8 +77,8 @@ def resolve_author_avatar_url(
                     url = settings.get_setting(db_conn, f"account.{acc.id}.avatar_url")
                     if url:
                         break
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Failed listing accounts in avatar resolution: %s", e)
 
     # Tier 2: GitHub noreply email pattern
     if not url and norm_email and "users.noreply.github.com" in norm_email:
@@ -295,9 +294,7 @@ class AvatarLoader(QObject):
 
     def _fetch_avatar_bytes(self, url: str) -> bytes:
         """Fetch raw image bytes with standard browser headers."""
-        resp = httpx.get(url, headers=AVATAR_HEADERS, timeout=10.0, follow_redirects=True)
-        resp.raise_for_status()
-        return resp.content
+        return fetch_avatar_bytes(url, headers=AVATAR_HEADERS, timeout=10.0)
 
     def _on_fetch_success(self, url: str, data: bytes) -> None:
         self._in_flight.discard(url)
@@ -362,7 +359,7 @@ class AvatarWidget(QLabel):
     def _disconnect_avatar_loader(self, *_) -> None:
         try:
             self._loader.avatar_ready.disconnect(self._on_avatar_ready)
-        except (RuntimeError, TypeError):
+        except RuntimeError, TypeError:
             pass
 
     def set_avatar(self, url: str | None, name_or_email: str) -> None:
@@ -393,5 +390,5 @@ class AvatarWidget(QLabel):
         try:
             if url == self._url and (size == self._size or size == 0):
                 self._refresh()
-        except (RuntimeError, AttributeError):
+        except RuntimeError, AttributeError:
             pass

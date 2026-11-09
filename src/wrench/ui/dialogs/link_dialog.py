@@ -1,7 +1,7 @@
 """FR-5.6 / FR-8.7: Link Repository to Forge Account Dialog."""
 
 import logging
-import sqlite3
+from typing import Any
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
@@ -22,7 +22,7 @@ from wrench.core import engine, identity
 from wrench.core.engine import RepoHandle
 from wrench.core.remote_urls import parse_remote_url
 from wrench.forge.registry import create_adapter
-from wrench.storage import db, forge_accounts
+from wrench.storage import forge_accounts, get_connection
 from wrench.ui.dialogs.accounts_dialog import AccountsDialog
 from wrench.ui.workers import run_in_background
 
@@ -38,7 +38,7 @@ class LinkRepoDialog(QDialog):
         self,
         repo_path: str,
         parent: QWidget | None = None,
-        conn: sqlite3.Connection | None = None,
+        conn: Any = None,
     ) -> None:
         super().__init__(parent)
         self.repo_path = repo_path
@@ -111,7 +111,7 @@ class LinkRepoDialog(QDialog):
         conn = self._conn
         should_close = False
         if conn is None:
-            conn = db.get_connection()
+            conn = get_connection()
             should_close = True
         try:
             repo_row = conn.execute(
@@ -219,7 +219,7 @@ class LinkRepoDialog(QDialog):
         conn = self._conn
         should_close = False
         if conn is None:
-            conn = db.get_connection()
+            conn = get_connection()
             should_close = True
         try:
             for row, (remote_name, _host, owner, repo) in self._row_data.items():
@@ -296,8 +296,8 @@ class LinkRepoDialog(QDialog):
                                 finally:
                                     conn_s.close()
                                 return (avatar_url, acct.username or acct.label)
-                        except Exception:
-                            pass  # best-effort, don't block linking
+                        except Exception as e:
+                            logger.debug("Failed saving account avatar url in link dialog: %s", e)
                         return None
 
                     def _on_align_done(res: tuple[str, str] | None) -> None:

@@ -123,6 +123,7 @@ def get_status(repo: RepoHandle) -> RepoStatus:
     staged: list[FileChange] = []
     unstaged: list[FileChange] = []
     untracked: list[str] = []
+    partially_staged: list[FileChange] = []
 
     status_dict = r.status()
     for filepath, flags in status_dict.items():
@@ -130,15 +131,37 @@ def get_status(repo: RepoHandle) -> RepoStatus:
             untracked.append(filepath)
             continue
 
+        staged_type: str | None = None
         for flag, change_type in _STAGED_FLAGS.items():
             if flags & flag:
-                staged.append(FileChange(path=filepath, change_type=change_type))
+                staged_type = change_type
                 break
 
+        unstaged_type: str | None = None
         for flag, change_type in _UNSTAGED_FLAGS.items():
             if flags & flag:
-                unstaged.append(FileChange(path=filepath, change_type=change_type))
+                unstaged_type = change_type
                 break
+
+        is_partial = bool(staged_type and unstaged_type)
+
+        if staged_type:
+            fc_staged = FileChange(
+                path=filepath,
+                change_type=staged_type,
+                is_partially_staged=is_partial,
+            )
+            staged.append(fc_staged)
+            if is_partial:
+                partially_staged.append(fc_staged)
+
+        if unstaged_type:
+            fc_unstaged = FileChange(
+                path=filepath,
+                change_type=unstaged_type,
+                is_partially_staged=is_partial,
+            )
+            unstaged.append(fc_unstaged)
 
     head_sha = str(r.head.target) if not head_is_unborn and hasattr(r, "head") and r.head else None
 
@@ -155,6 +178,7 @@ def get_status(repo: RepoHandle) -> RepoStatus:
         head_sha=head_sha,
         merge_in_progress=merge_in_progress,
         rebase_in_progress=rebase_in_progress,
+        partially_staged=partially_staged,
     )
 
 

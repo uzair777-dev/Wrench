@@ -89,11 +89,14 @@ class FileListItemWidget(QWidget):
         self.checkbox.toggled.connect(self.checked_changed.emit)
         layout.addWidget(self.checkbox)
 
-        # Change type badge (M, A, D, R, ?, ⚠ C)
+        # Change type badge (M, A, D, R, ?, ⚠ C, MM, AM, MD, AD)
         self._change_type = change_type
         self.badge = QLabel(change_type, self)
-        self.badge.setMinimumWidth(24)
+        min_width = 30 if len(change_type) >= 2 else 24
+        self.badge.setMinimumWidth(min_width)
         self.badge.setAlignment(Qt.AlignCenter)
+        if len(change_type) >= 2:
+            self.badge.setToolTip(self.tr("Partially Staged: changes in index and working tree"))
         self._apply_badge_style(change_type)
         layout.addWidget(self.badge)
 
@@ -110,7 +113,10 @@ class FileListItemWidget(QWidget):
         self.label.setToolTip(path)
         layout.addWidget(self.label, 1)
 
-        self.setToolTip(f"{change_type}: {path}")
+        if len(change_type) >= 2:
+            self.setToolTip(self.tr(f"{change_type} (Partially Staged): {path}"))
+        else:
+            self.setToolTip(f"{change_type}: {path}")
 
     def changeEvent(self, event: QEvent) -> None:
         super().changeEvent(event)
@@ -827,14 +833,31 @@ class ChangesTab(QWidget):
         # Build list of all changed items (staged, unstaged, untracked)
         items: list[tuple[str, str]] = []  # (path, change_type)
 
-        # Stage / Unstaged / Untracked files
+        unstaged_map = {f.path: f.status_code for f in self._current_status.unstaged}
+
+        seen_paths: set[str] = set()
+
+        # Staged and partially staged files
         for f in self._current_status.staged:
-            items.append((f.path, f.status_code))
-        for f in self._current_status.unstaged:
-            if not any(f.path == p for p, _ in items):
+            if f.path in seen_paths:
+                continue
+            seen_paths.add(f.path)
+            if f.path in unstaged_map:
+                composite = f"{f.status_code}{unstaged_map[f.path]}"
+                items.append((f.path, composite))
+            else:
                 items.append((f.path, f.status_code))
+
+        # Purely unstaged files
+        for f in self._current_status.unstaged:
+            if f.path not in seen_paths:
+                seen_paths.add(f.path)
+                items.append((f.path, f.status_code))
+
+        # Untracked files
         for filepath in self._current_status.untracked:
-            if not any(filepath == p for p, _ in items):
+            if filepath not in seen_paths:
+                seen_paths.add(filepath)
                 items.append((filepath, "?"))
 
         total_files = len(items)
@@ -1050,19 +1073,78 @@ class ChangesTab(QWidget):
             staged_paths = (
                 {f.path for f in self._current_status.staged} if self._current_status else set()
             )
+            partially_staged_paths = (
+                self._current_status.partially_staged_paths if self._current_status else set()
+            )
 
-            # Stage newly selected files and unstage deselected files
+            # Collect checked and unchecked items
+            checked_widgets: list[FileListItemWidget] = []
+            unchecked_widgets: list[FileListItemWidget] = []
             for i in range(self.files_list.count()):
                 w = self.files_list.itemWidget(self.files_list.item(i))
                 if isinstance(w, FileListItemWidget):
                     if w.is_checked():
-                        # Only stage if not already staged/partially staged to preserve hunk staging
-                        if w.path not in staged_paths:
-                            engine.stage_file(self._repo, w.path)
+                        checked_widgets.append(w)
                     else:
-                        # If unchecked but staged, unstage it
-                        if w.path in staged_paths:
-                            engine.unstage_file(self._repo, w.path)
+                        unchecked_widgets.append(w)
+
+            # Unstage deselected files
+            for w in unchecked_widgets:
+                if w.path in staged_paths:
+                    engine.unstage_file(self._repo, w.path)
+
+            # Stage newly selected files that were not already staged
+            for w in checked_widgets:
+                if w.path not in staged_paths:
+                    engine.stage_file(self._repo, w.path)
+
+            # Resolve partially staged checked files
+            partially_staged_checked = [
+                w.path for w in checked_widgets if w.path in partially_staged_paths
+            ]
+            if partially_staged_checked:
+                from wrench.storage.settings_registry import get_settings_registry
+
+                registry = get_settings_registry(self._conn)
+                mode = registry.get(
+                    "safety.commit_partially_staged_mode",
+                    repo_path=str(self._repo.path),
+                )
+
+                if mode == "stage_all":
+                    for p in partially_staged_checked:
+                        engine.stage_file(self._repo, p)
+                elif mode == "staged_only":
+                    pass
+                else:  # "prompt"
+                    from wrench.ui.dialogs.partial_staging_dialog import (
+                        PartialStagingChoice,
+                        PartialStagingDialog,
+                    )
+
+                    choice, remember = PartialStagingDialog.prompt(
+                        parent=self,
+                        file_paths=partially_staged_checked,
+                        commit_message=full_msg,
+                    )
+                    if choice == PartialStagingChoice.CANCEL:
+                        return
+                    if choice == PartialStagingChoice.STAGE_ALL_AND_COMMIT:
+                        for p in partially_staged_checked:
+                            engine.stage_file(self._repo, p)
+                        if remember:
+                            registry.set_value(
+                                "safety.commit_partially_staged_mode",
+                                "stage_all",
+                                repo_path=str(self._repo.path),
+                            )
+                    elif choice == PartialStagingChoice.COMMIT_STAGED_ONLY:
+                        if remember:
+                            registry.set_value(
+                                "safety.commit_partially_staged_mode",
+                                "staged_only",
+                                repo_path=str(self._repo.path),
+                            )
 
             engine.commit(self._repo, full_msg, amend=is_amend)
 
@@ -1102,7 +1184,11 @@ class ChangesTab(QWidget):
             )
 
             def _on_recovery_done(action_id: str) -> None:
-                if action_id in ("commit_no_verify", "auto_format_and_retry"):
+                if action_id in (
+                    "commit_no_verify",
+                    "auto_format_and_retry",
+                    "stage_hook_modifications_and_retry",
+                ):
                     self.commit_msg_input.clear()
                     self.commit_desc_input.clear()
                     self.amend_cb.setChecked(False)

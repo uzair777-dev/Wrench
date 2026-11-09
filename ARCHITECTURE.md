@@ -437,7 +437,7 @@ Wrench is engineered around six non-negotiable architectural tenets:
 - **`crash_handler.py` & `core/recovery/`**: Local-first crash resilience & error recovery framework:
   - `crash_handler.py`: Global unhandled exception hook capturing stack traces and auto-saving in-flight session drafts.
   - `classifier.py`: Structured error classification (`diagnose_error`) mapping raw CLI/libgit2 errors into 11 discrete categories (locks, pre-commit hook failures, hook reformatting exits, dirty working tree clashes, corrupt index) with tailored `DiagnosticReport` objects.
-  - `actions.py`: Typed `RecoveryAction` instances executing safe self-healing workflows, including `StageHookModificationsAndRetryAction`, virtualenv-aware `AutoFormatAndRetryAction` (`find_project_binary`), `ReleaseStaleLockAction`, and `CommitNoVerifyAction`.
+  - `actions.py`: Typed `RecoveryAction` instances executing safe self-healing workflows, including `StageHookModificationsAndRetryAction`, `RunPreCommitFixAction`, virtualenv-aware `AutoFormatAndRetryAction` (`find_project_binary`), `ReleaseStaleLockAction`, and `CommitNoVerifyAction`.
   - `process_guard.py`: Inspects `/proc` to verify whether process holding lock files is alive or defunct.
   - `sweeper.py`: Sweeps stale temporary staging files and orphan locks.
   - `transaction.py`: Transactional rollback guard for complex multi-step git operations.

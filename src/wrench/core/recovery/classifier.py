@@ -17,6 +17,8 @@ from .actions import (
     RebuildCorruptIndexAction,
     RecoveryAction,
     ReleaseStaleLockAction,
+    RunPreCommitFixAction,
+    StageHookModificationsAndRetryAction,
     WaitForRepoReleaseAction,
 )
 
@@ -100,10 +102,30 @@ def diagnose_error(
 
     # 2. Git Hooks & Pre-Commit Linter Failures
     if (
+        "Files were modified by this hook" in combined_err
+        or "files were modified by this hook" in combined_err.lower()
+    ):
+        hook_names = re.findall(r"hook id:\s*([a-zA-Z0-9_\-]+)", combined_err)
+        hooks_info = f" ({', '.join(hook_names)})" if hook_names else ""
+        return DiagnosticReport(
+            category=ErrorCategory.HOOK_FAILURE,
+            title=f"Pre-Commit Formatter Formatted Files{hooks_info}",
+            description=(
+                "Your pre-commit formatter automatically formatted files and "
+                "aborted the commit. The fixes are already saved on disk—you can "
+                "stage them and complete the commit."
+            ),
+            technical_details=combined_err,
+            actions=[
+                StageHookModificationsAndRetryAction(),
+                CommitNoVerifyAction(),
+            ],
+        )
+
+    if (
         "hook id:" in combined_err
         or "pre-commit" in combined_err
         or "commit-msg" in combined_err
-        or "Files were modified by this hook" in combined_err
         or ("ruff" in combined_err and "Failed" in combined_err)
         or ("black" in combined_err and "Failed" in combined_err)
     ):
@@ -120,6 +142,7 @@ def diagnose_error(
             technical_details=combined_err,
             actions=[
                 AutoFormatAndRetryAction(),
+                RunPreCommitFixAction(),
                 CommitNoVerifyAction(),
             ],
         )

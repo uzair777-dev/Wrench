@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import shutil
 import subprocess
 import time
@@ -68,6 +69,90 @@ class ReleaseStaleLockAction(RecoveryAction):
         )
 
 
+def find_project_binary(repo_path: Path | str, binary_name: str) -> Path | None:
+    """Hierarchically resolve a tool binary: .venv -> venv -> env -> node_modules -> PATH."""
+    p = Path(repo_path)
+    candidates = [
+        p / ".venv" / "bin" / binary_name,
+        p / "venv" / "bin" / binary_name,
+        p / "env" / "bin" / binary_name,
+        p / ".env" / "bin" / binary_name,
+        p / "node_modules" / ".bin" / binary_name,
+    ]
+    for c in candidates:
+        if c.is_file() and os.access(c, os.X_OK):
+            return c
+    venv_env = os.environ.get("VIRTUAL_ENV")
+    if venv_env:
+        c = Path(venv_env) / "bin" / binary_name
+        if c.is_file() and os.access(c, os.X_OK):
+            return c
+    sys_which = shutil.which(binary_name)
+    return Path(sys_which) if sys_which else None
+
+
+class StageHookModificationsAndRetryAction(RecoveryAction):
+    action_id = "stage_hook_modifications_and_retry"
+    title = "Stage Formatted Files & Complete Commit"
+    description = "Stages the files modified by pre-commit formatters and completes the commit."
+    is_primary = True
+
+    def execute(self, repo_path: Path | str, context: dict | None = None) -> ActionResult:
+        p = Path(repo_path)
+        ctx = context or {}
+        commit_msg = ctx.get("message")
+
+        # 1. Stage updated working tree files
+        try:
+            subprocess.run(
+                ["git", "add", "-u"],
+                cwd=str(p),
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+        except Exception as e:
+            return ActionResult(
+                success=False,
+                message="Failed to stage formatted working-tree files.",
+                error=str(e),
+            )
+
+        # 2. Retry the commit if message is available
+        if commit_msg:
+            try:
+                subprocess.run(
+                    ["git", "commit", "-m", commit_msg],
+                    cwd=str(p),
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                    timeout=25,
+                )
+                return ActionResult(
+                    success=True,
+                    message="Files re-staged and commit completed successfully!",
+                )
+            except subprocess.CalledProcessError as e:
+                return ActionResult(
+                    success=False,
+                    message="Files re-staged, but committing still failed.",
+                    error=e.stderr or e.stdout or str(e),
+                )
+            except Exception as e:
+                return ActionResult(
+                    success=False,
+                    message="Unexpected error retrying commit.",
+                    error=str(e),
+                )
+
+        return ActionResult(
+            success=True,
+            message="Formatted files re-staged in index. Ready to commit.",
+        )
+
+
 class AutoFormatAndRetryAction(RecoveryAction):
     action_id = "auto_format_and_retry"
     title = "Auto-Format & Retry Commit"
@@ -81,37 +166,50 @@ class AutoFormatAndRetryAction(RecoveryAction):
         # 1. Run Python formatters if pyproject.toml / .venv / python files exist
         py_files = list(p.glob("**/*.py"))
         if py_files:
-            # Try black
-            try:
-                res = subprocess.run(
-                    ["black", "."],
-                    cwd=str(p),
-                    capture_output=True,
-                    text=True,
-                    timeout=15,
-                )
-                if res.returncode == 0:
-                    formatted_tools.append("black")
-            except FileNotFoundError:
-                pass
-            except Exception as e:
-                logger.debug("black failed: %s", e)
+            # Try black (via project virtualenv or PATH)
+            black_bin = find_project_binary(p, "black")
+            if black_bin:
+                try:
+                    res = subprocess.run(
+                        [str(black_bin), "."],
+                        cwd=str(p),
+                        capture_output=True,
+                        text=True,
+                        timeout=20,
+                    )
+                    if res.returncode == 0:
+                        formatted_tools.append("black")
+                except Exception as e:
+                    logger.debug("black failed: %s", e)
 
-            # Try ruff format
-            try:
-                res = subprocess.run(
-                    ["ruff", "format", "."],
-                    cwd=str(p),
-                    capture_output=True,
-                    text=True,
-                    timeout=15,
-                )
-                if res.returncode == 0:
-                    formatted_tools.append("ruff format")
-            except FileNotFoundError:
-                pass
-            except Exception as e:
-                logger.debug("ruff format failed: %s", e)
+            # Try ruff format & fix
+            ruff_bin = find_project_binary(p, "ruff")
+            if ruff_bin:
+                try:
+                    res = subprocess.run(
+                        [str(ruff_bin), "check", "--fix", "."],
+                        cwd=str(p),
+                        capture_output=True,
+                        text=True,
+                        timeout=20,
+                    )
+                    if res.returncode == 0:
+                        formatted_tools.append("ruff check --fix")
+                except Exception as e:
+                    logger.debug("ruff check --fix failed: %s", e)
+
+                try:
+                    res = subprocess.run(
+                        [str(ruff_bin), "format", "."],
+                        cwd=str(p),
+                        capture_output=True,
+                        text=True,
+                        timeout=20,
+                    )
+                    if res.returncode == 0:
+                        formatted_tools.append("ruff format")
+                except Exception as e:
+                    logger.debug("ruff format failed: %s", e)
 
         # 2. Stage updated files if files were staged
         try:
@@ -127,6 +225,70 @@ class AutoFormatAndRetryAction(RecoveryAction):
         return ActionResult(
             success=True,
             message=f"Code auto-formatted with {tools_str} and re-staged. Ready to commit.",
+        )
+
+
+class RunPreCommitFixAction(RecoveryAction):
+    action_id = "run_pre_commit_fix"
+    title = "Run Pre-Commit Auto-Fix"
+    description = "Runs pre-commit / linters with auto-fix enabled and re-stages modified files."
+    is_primary = False
+
+    def execute(self, repo_path: Path | str, context: dict | None = None) -> ActionResult:
+        p = Path(repo_path)
+        tools_run: list[str] = []
+
+        # 1. Check for pre-commit executable
+        precommit_bin = find_project_binary(p, "pre-commit")
+        if precommit_bin:
+            try:
+                subprocess.run(
+                    [str(precommit_bin), "run", "--all-files"],
+                    cwd=str(p),
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                )
+                tools_run.append("pre-commit")
+            except Exception as e:
+                logger.debug("pre-commit execution failed: %s", e)
+
+        # 2. Check for ruff check --fix
+        ruff_bin = find_project_binary(p, "ruff")
+        if ruff_bin and "pre-commit" not in tools_run:
+            try:
+                subprocess.run(
+                    [str(ruff_bin), "check", "--fix", "."],
+                    cwd=str(p),
+                    capture_output=True,
+                    text=True,
+                    timeout=20,
+                )
+                tools_run.append("ruff check --fix")
+            except Exception as e:
+                logger.debug("ruff check --fix execution failed: %s", e)
+
+        # 3. Stage any modifications produced by the fixes
+        try:
+            subprocess.run(
+                ["git", "add", "-u"],
+                cwd=str(p),
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+        except Exception as e:
+            return ActionResult(
+                success=False,
+                message="Ran auto-fixes, but failed to re-stage modified files.",
+                error=str(e),
+            )
+
+        tools_str = ", ".join(tools_run) if tools_run else "auto-fixes"
+        return ActionResult(
+            success=True,
+            message=f"Executed {tools_str} and re-staged modified files. Ready to commit.",
         )
 
 

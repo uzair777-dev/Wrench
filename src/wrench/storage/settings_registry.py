@@ -734,6 +734,41 @@ DEFAULT_SETTING_SPECS: dict[str, SettingSpec] = {
         max_value=32768,
     ),
     # 12. Safety & Backups
+    "safety.commit_partially_staged_mode": SettingSpec(
+        key="safety.commit_partially_staged_mode",
+        category="Safety & Backups",
+        label="Partially Staged Commit Behavior",
+        description=(
+            "Behavior when committing checked files that have both staged "
+            "hunks and unstaged working-tree modifications."
+        ),
+        setting_type=SettingType.CHOICE,
+        default="prompt",
+        choices=("prompt", "stage_all", "staged_only"),
+        scope=SettingScope.REPO_OVERRIDABLE,
+    ),
+    "safety.auto_stage_hook_modifications": SettingSpec(
+        key="safety.auto_stage_hook_modifications",
+        category="Safety & Backups",
+        label="Auto-Stage Hook Formatter Output",
+        description=(
+            "Automatically offer 1-click re-staging and commit retry when "
+            "formatters modify files and abort commit."
+        ),
+        setting_type=SettingType.BOOL,
+        default=True,
+    ),
+    "safety.precommit_tool_search_paths": SettingSpec(
+        key="safety.precommit_tool_search_paths",
+        category="Safety & Backups",
+        label="Virtualenv Tool Discovery",
+        description=(
+            "Search local project virtual environments (.venv, venv, node_modules) "
+            "for linters and formatters before system PATH."
+        ),
+        setting_type=SettingType.BOOL,
+        default=True,
+    ),
     "safety.pre_op_snapshot.enabled": SettingSpec(
         key="safety.pre_op_snapshot.enabled",
         category="Safety & Backups",

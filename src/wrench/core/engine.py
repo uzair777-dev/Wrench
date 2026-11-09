@@ -33,11 +33,32 @@ class FileChange:
     path: str
     change_type: str  # 'added' | 'modified' | 'deleted' | 'renamed'
     old_path: str | None = None
+    is_partially_staged: bool = False
 
     @property
     def status_code(self) -> str:
         codes = {"added": "A", "modified": "M", "deleted": "D", "renamed": "R"}
         return codes.get(self.change_type, "M")
+
+
+@dataclass(frozen=True)
+class FileStatusInfo:
+    """Rich status descriptor for a repository path."""
+
+    path: str
+    staged_code: str  # e.g., "M", "A", "D", "R", " "
+    unstaged_code: str  # e.g., "M", "D", "?", " "
+    is_partially_staged: bool  # True if both staged_code.strip() and unstaged_code.strip()
+    is_untracked: bool = False
+    staged_hunks_count: int = 0
+    unstaged_hunks_count: int = 0
+
+    @property
+    def composite_badge(self) -> str:
+        """Returns visual status symbol (e.g., 'MM', 'AM', 'M', 'M', '??')."""
+        s = self.staged_code.strip() or " "
+        u = self.unstaged_code.strip() or " "
+        return f"{s}{u}".strip() if self.is_partially_staged else (s if s != " " else u)
 
 
 @dataclass
@@ -54,6 +75,7 @@ class RepoStatus:
     head_sha: str | None = None
     merge_in_progress: bool = False
     rebase_in_progress: bool = False
+    partially_staged: list[FileChange] = field(default_factory=list)
 
     @property
     def branch_name(self) -> str | None:
@@ -62,6 +84,10 @@ class RepoStatus:
     @property
     def is_detached_head(self) -> bool:
         return self.is_detached
+
+    @property
+    def partially_staged_paths(self) -> set[str]:
+        return {f.path for f in self.partially_staged}
 
 
 @dataclass

@@ -179,6 +179,10 @@ BADGE_STYLES = {
         "R": ("#8839ef", "#f3e8ff"),  # Renamed: Mauve on soft purple
         "?": ("#7c7f93", "#e6e9ef"),  # Untracked: Slate on soft gray
         "⚠ C": ("#c2410c", "#ffedd5"),  # Conflict: Terracotta on soft amber
+        "MM": ("#d20f39", "#fce7f3"),  # Partially Staged: Rose on soft pink
+        "AM": ("#179299", "#ccfbf1"),  # Added+Modified: Teal on soft teal
+        "MD": ("#df8e1d", "#fef3c7"),  # Modified+Deleted: Amber on soft yellow
+        "AD": ("#fe640b", "#ffedd5"),  # Added+Deleted: Rust on soft peach
     },
     "dark": {
         "M": ("#89b4fa", "#1e2942"),  # Modified: Pastel sky on dark blue
@@ -187,6 +191,10 @@ BADGE_STYLES = {
         "R": ("#cba6f7", "#2c1e3d"),  # Renamed: Pastel mauve on dark purple
         "?": ("#9399b2", "#282a3a"),  # Untracked: Pastel slate on dark slate
         "⚠ C": ("#fab387", "#3d261e"),  # Conflict: Pastel peach on dark amber
+        "MM": ("#f5c2e7", "#3d1f33"),  # Partially Staged: Catppuccin Pink on plum
+        "AM": ("#94e2d5", "#1c3836"),  # Added+Modified: Catppuccin Teal on dark teal
+        "MD": ("#f9e2af", "#3a301d"),  # Modified+Deleted: Catppuccin Yellow on dark amber
+        "AD": ("#fab387", "#3d261e"),  # Added+Deleted: Catppuccin Peach on dark peach
     },
 }
 
@@ -194,8 +202,14 @@ BADGE_STYLES = {
 def get_badge_colors(change_type: str, is_dark: bool) -> tuple[str, str]:
     """Returns (foreground_color, background_color) for a status badge."""
     mode_key = "dark" if is_dark else "light"
+    styles = BADGE_STYLES[mode_key]
+    if change_type in styles:
+        return styles[change_type]
+    # For any partially staged composite code (e.g. 2 chars), fallback to MM style
+    if len(change_type) == 2 and "MM" in styles:
+        return styles["MM"]
     default_colors = ("#9399b2", "#282a3a") if is_dark else ("#7c7f93", "#e6e9ef")
-    return BADGE_STYLES[mode_key].get(change_type, default_colors)
+    return default_colors
 
 
 # --- Conflict Alert Banner Styling ---

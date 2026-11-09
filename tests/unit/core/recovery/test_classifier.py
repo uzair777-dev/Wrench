@@ -21,6 +21,16 @@ class TestClassifier:
         assert any(a.action_id == "auto_format_and_retry" for a in report.actions)
         assert any(a.action_id == "commit_no_verify" for a in report.actions)
 
+    def test_classify_pre_commit_formatter_modified_files(self):
+        err = "git command failed (exit 1): commit -m test"
+        stderr = "hook id: black\nFiles were modified by this hook\n"
+        report = diagnose_error(err, stderr=stderr)
+
+        assert report.category == ErrorCategory.HOOK_FAILURE
+        assert "Formatter Formatted Files" in report.title
+        assert report.primary_action is not None
+        assert report.primary_action.action_id == "stage_hook_modifications_and_retry"
+
     def test_classify_stale_lock(self):
         report = diagnose_error(StaleLockDetectedError("/path/to/.git/index.lock"))
         assert report.category == ErrorCategory.STALE_LOCK

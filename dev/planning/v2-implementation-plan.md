@@ -2084,6 +2084,7 @@ class TangledAdapter:
 - [x] **VP-0.1:** Create `src/wrench/storage/settings_registry.py` with `SettingSpec`, SQLite tables (`global_settings`, `repo_settings_overrides`), and `DEFAULT_SETTING_SPECS` for all v1 features.  
 - [x] **VP-0.2:** Wire all v1 modules (`inotify_watcher.py`, `forge/registry.py`, `snapshots.py`, `history_tab.py`, `changes_tab.py`) to obey `SettingsRegistry` with zero-overhead short-circuiting when disabled.  
 - [x] **VP-0.3:** Build searchable, dynamic `SettingsDialog` (`Ctrl+,`) with per-repo overrides, `Minimalist Local-Only Mode` preset, and JSON import/export.  
+- [x] **VP-0.4:** Implement Intent-Preserving Staging Resolver & Pre-Commit Hook Lifecycle Engine (`PartialStagingDialog`, `[MM]` composite badges, virtualenv binary discovery, and 1-click auto-stage formatter recovery).  
 - [ ] **VP-1.1:** Register `VP-1` settings and implement `cherry_pick_commits`, `revert_commits`, `sequencer_action`, and `reset_branch` in `core`.  
 - [ ] **VP-1.2:** Build `reset_dialog.py` visual file-impact preview and wire Cherry-Pick/Revert/Reset into `HistoryTab`.  
 - [ ] **VP-2.1:** Register `VP-2` settings and implement `rebase_sequencer.py` and `rebase_editor_helper.py`.  

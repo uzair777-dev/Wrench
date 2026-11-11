@@ -48,23 +48,28 @@ class GraphRow:
     ref_labels: list[RefLabel] = field(default_factory=list)
 
 
-def compute_graph_layout(
+@dataclass
+class GraphLayoutState:
+    """Mutable incremental DAG lane state preserved across paginated fetches."""
+
+    lanes: list[Lane | None] = field(default_factory=list)
+    color_counter: int = 0
+
+
+def compute_graph_layout_step(
     commits: list[Commit],
     ref_labels: dict[str, list[RefLabel]] | None = None,
-) -> list[GraphRow]:
-    """Assign lanes and connectors for commits in topological walk order.
-
-    Implements Rules R1–R5 with slot recycling to avoid unbounded lane index growth.
-    """
+    state: GraphLayoutState | None = None,
+) -> tuple[list[GraphRow], GraphLayoutState]:
+    """Incrementally assign lanes and connectors without recomputing prior rows."""
     ref_map = ref_labels or {}
-    lanes: list[Lane | None] = []
-    color_counter = 0
+    active_state = state if state is not None else GraphLayoutState()
+    lanes = active_state.lanes
     rows: list[GraphRow] = []
 
     def allocate_lane(sha: str) -> int:
-        nonlocal color_counter
-        color = GRAPH_COLORS[color_counter % len(GRAPH_COLORS)]
-        color_counter += 1
+        color = GRAPH_COLORS[active_state.color_counter % len(GRAPH_COLORS)]
+        active_state.color_counter += 1
 
         # Slot recycling: re-use first available None slot
         for idx, lane in enumerate(lanes):
@@ -189,6 +194,18 @@ def compute_graph_layout(
             )
         )
 
+    return rows, active_state
+
+
+def compute_graph_layout(
+    commits: list[Commit],
+    ref_labels: dict[str, list[RefLabel]] | None = None,
+) -> list[GraphRow]:
+    """Assign lanes and connectors for commits in topological walk order.
+
+    Implements Rules R1-R5 with slot recycling to avoid unbounded lane index growth.
+    """
+    rows, _ = compute_graph_layout_step(commits, ref_labels=ref_labels, state=None)
     return rows
 
 

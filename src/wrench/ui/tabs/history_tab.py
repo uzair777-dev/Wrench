@@ -29,6 +29,7 @@ from PySide6.QtWidgets import (
 
 from wrench.core import engine
 from wrench.core.engine import Commit, LogFilter, RepoHandle
+from wrench.storage.settings_registry import SettingsRegistry
 from wrench.ui.commit_graph.detail_panel import CommitDetailPanel
 from wrench.ui.commit_graph.graph_widget import CommitGraphWidget
 
@@ -45,15 +46,29 @@ class HistoryTab(QWidget):
     create_branch_requested = Signal(str)
     create_tag_requested = Signal(str)
 
-    def __init__(self, parent: QWidget | None = None):
+    def __init__(
+        self,
+        parent: QWidget | None = None,
+        *,
+        settings_registry: SettingsRegistry | None = None,
+    ):
         super().__init__(parent)
         self._repo: RepoHandle | None = None
+        self._settings_registry: SettingsRegistry | None = settings_registry
         self._debounce_timer = QTimer(self)
         self._debounce_timer.setSingleShot(True)
         self._debounce_timer.setInterval(300)
         self._debounce_timer.timeout.connect(self._on_search_debounced)
 
         self._init_ui()
+        if self._settings_registry is not None:
+            self.set_settings_registry(self._settings_registry)
+
+    def set_settings_registry(self, registry: SettingsRegistry | None) -> None:
+        """Bind or replace the SettingsRegistry used by graph pagination and diff preview."""
+        self._settings_registry = registry
+        self.graph_widget.set_settings_registry(registry)
+        self.detail_panel.diff_widget.set_settings_registry(registry)
 
     @property
     def graph_scrollbar(self) -> QScrollBar:
@@ -309,7 +324,7 @@ class HistoryTab(QWidget):
         if hasattr(self, "detail_panel"):
             self.detail_panel.refresh_theme()
         if hasattr(self, "graph_widget"):
-            self.graph_widget.viewport().update()
+            self.graph_widget.invalidate_paint_caches()
         if hasattr(self, "empty_title"):
             self.empty_title.setStyleSheet(
                 "font-size: 16px; font-weight: bold; color: palette(placeholder-text);"

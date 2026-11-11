@@ -235,15 +235,13 @@ class TestMainWindowRemotes:
     def test_clone_repo_routes_through_background_worker(self, test_db, tmp_path):
         win = MainWindow(conn=test_db)
 
+        def _accept_clone_dlg(dlg):
+            dlg.url_input.setText("https://github.com/org/repo.git")
+            dlg.dest_parent_input.setText(str(tmp_path))
+            return 1  # QDialog.DialogCode.Accepted
+
         with (
-            patch(
-                "wrench.ui.main_window.QInputDialog.getText",
-                return_value=("https://github.com/org/repo.git", True),
-            ),
-            patch(
-                "wrench.ui.main_window.QFileDialog.getExistingDirectory",
-                return_value=str(tmp_path),
-            ),
+            patch.object(win, "_exec_dialog", side_effect=_accept_clone_dlg),
             patch("wrench.ui.main_window.run_in_background") as mock_bg,
             patch("wrench.ui.main_window.BusyOperationDialog"),
         ):

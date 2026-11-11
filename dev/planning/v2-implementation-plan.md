@@ -1501,6 +1501,76 @@ class BlameLine:
 
 - [ ] `Stash Staged Only (--staged)` stashes only indexed changes; `stash_action_by_index` succeeds even when a branch named `stash` exists; marking a tracked file `--skip-worktree` moves it to `SkipWorktreePanel`, and disabling `staging.skip_worktree_ui.enabled` hides the panel and skips `git ls-files -v`.
 
+#### Deep Engineering Specification for `VP-22` — Full Issue & PR Conversation Threads, Nested Replies, Reactions & Universal `#` Mentions (`FR-2.12`, `FR-5.11`, `FR-5.12`, `FR-5.13`, `FR-5.14`)
+
+* **Feature Toggle Keys (`SettingsRegistry`):**
+  * `forge.review_comments_enabled` (`True`, category `"Forges & Code Review"`)
+  * `forge.conversation_threads_enabled` (`True`, category `"Forges & Code Review"`)
+  * `forge.reactions_enabled` (`True`, category `"Forges & Code Review"`)
+  * `forge.commit_mention_autocomplete` (`True`, category `"Forges & Code Review"`)
+  * `forge.cross_reference_links_enabled` (`True`, category `"Forges & Code Review"`)
+
+* **Step A: Data Models (`src/wrench/core/models.py` — Append-Only per `FLASH-1`)**
+  * `ReactionSummary(reaction_code: str, emoji: str, count: int, users: tuple[str, ...] = (), viewer_has_reacted: bool = False, viewer_reaction_id: str | None = None)`
+    * Canonical `reaction_code` values: `("+1", "-1", "laugh", "hooray", "confused", "heart", "rocket", "eyes")`.
+  * `ForgeComment(id: str, target_type: str, target_number: int, author: str, author_avatar_url: str, author_role: str, body: str, created_at: str, updated_at: str, in_reply_to_id: str | None = None, thread_id: str | None = None, is_resolved: bool = False, is_outdated: bool = False, file_path: str | None = None, diff_line: int | None = None, diff_side: str = "RIGHT", diff_hunk: str = "", review_state: str | None = None, reactions: tuple[ReactionSummary, ...] = (), viewer_can_edit: bool = False, html_url: str = "")`
+  * `ForgeTimelineEvent(id: str, event_type: str, actor: str, created_at: str, summary_text: str, linked_sha: str | None = None, linked_number: int | None = None, label_name: str | None = None, label_color: str | None = None)`
+    * `event_type` in `("committed", "merged", "closed", "reopened", "labeled", "unlabeled", "assigned", "review_requested", "cross_referenced", "renamed")`.
+  * `ConversationThread(repo_slug: str, target_type: str, target_number: int, op_comment: ForgeComment, comments: tuple[ForgeComment, ...], timeline_events: tuple[ForgeTimelineEvent, ...], participants: tuple[str, ...], fetched_at: str)`
+  * `MentionCandidate(kind: str, key: str, title: str, subtitle: str, state: str = "")` (`kind` in `("issue", "pr", "user", "emoji")`).
+
+* **Step B: SQLite SWR Schema & Cache (`src/wrench/storage/schema.sql` & `src/wrench/storage/cache.py`)**
+  * Create table `forge_conversation_cache`:
+    `CREATE TABLE IF NOT EXISTS forge_conversation_cache (repo_path TEXT NOT NULL, forge_type TEXT NOT NULL, target_type TEXT NOT NULL, target_number INTEGER NOT NULL, thread_json TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (repo_path, forge_type, target_type, target_number));`
+  * Create table `forge_mention_index` (fast local lookup for `#` and `@` autocomplete & hover cards):
+    `CREATE TABLE IF NOT EXISTS forge_mention_index (repo_path TEXT NOT NULL, kind TEXT NOT NULL, item_key TEXT NOT NULL, title TEXT NOT NULL, state TEXT NOT NULL, author TEXT NOT NULL, labels_json TEXT NOT NULL, body_preview TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (repo_path, kind, item_key));`
+  * Automatically populate `forge_mention_index` whenever `list_prs()`, `list_issues()`, or `get_commit_log()` runs so `#` and `@` autocomplete and hover cards respond in `< 2 ms` with zero network blocking.
+
+* **Step C: ForgeAdapter Contract & Implementations (`src/wrench/forge/base.py`, `github.py`, and active adapters)**
+  * Extend `ForgeAdapter` with complete thread, reply, edit, reaction, and review methods:
+    1. `get_conversation_thread(repo_slug: str, target_type: str, number: int) -> ConversationThread`
+       * Fetches issue/PR comments, review summaries, inline diff comments, timeline events, and reaction summaries; merges and sorts chronologically while grouping sub-threads by `in_reply_to_id` / `thread_id`.
+    2. `post_comment(repo_slug: str, target_type: str, number: int, body: str, in_reply_to_id: str | None = None) -> ForgeComment`
+    3. `edit_comment(repo_slug: str, target_type: str, comment_id: str, new_body: str, is_op: bool = False, number: int | None = None) -> ForgeComment`
+       * Used both for manual comment editing AND for in-place `- [ ]` ➔ `- [x]` task list checkbox toggling!
+    4. `delete_comment(repo_slug: str, target_type: str, comment_id: str) -> bool`
+    5. `toggle_reaction(repo_slug: str, subject_type: str, subject_id: str, reaction_code: str, currently_reacted: bool, reaction_id: str | None = None) -> tuple[ReactionSummary, ...]`
+       * On GitHub: `POST /repos/{owner}/{repo}/issues/comments/{id}/reactions` (`{"content": reaction_code}`) or `DELETE .../reactions/{reaction_id}` (and equivalent endpoints for Issue OP `/issues/{number}/reactions` and PR review comments `/pulls/comments/{id}/reactions`).
+       * On GitLab: Award Emoji API (`/award_emoji`). On Forgejo/Gitea/Codeberg: `/reactions` endpoint.
+    6. `set_thread_resolved(repo_slug: str, pr_number: int, thread_id: str, resolved: bool) -> bool`
+    7. `submit_pr_review(repo_slug: str, pr_number: int, event: str, body: str, comments: list[dict] | None = None) -> ForgeComment` (`event` in `("COMMENT", "APPROVE", "REQUEST_CHANGES")`).
+
+* **Step D: Conversation Timeline, Reaction Bar & Reply Composer Widgets (`src/wrench/ui/widgets/conversation_timeline.py`)**
+  * Implement:
+    1. `ReactionBarWidget(QWidget)`: Renders reaction pills + `[😊 +]` picker button; emits `reaction_toggled(subject_type, subject_id, reaction_code)` with immediate optimistic UI counter update.
+    2. `CommentCardWidget(QFrame)`: Renders author, role badge, timestamp, rendered Markdown body with clickable links & interactive `- [ ]` checkboxes, `[Quote Reply]`, `[Reply]`, `[Edit]`, `[Delete]`, and `ReactionBarWidget`. If the comment contains a `suggestion` block on a PR, renders `[Apply Suggestion]`.
+    3. `ReviewThreadGroupWidget(QFrame)`: Collapsible container for inline diff comment + nested `in_reply_to_id` replies + `[Resolve / Unresolve]` button + inline sub-thread reply input.
+    4. `TimelineEventRow(QWidget)`: Compact row for commit/merge/close/label/cross-reference events with clickable commit SHAs and `#number` links.
+    5. `CommentComposerWidget(QFrame)`: `[Write]` / `[Preview]` tabs, formatting toolbar, `RefMentionCompleter` integration, `Ctrl+Return` shortcut, `[Comment]`, `[Close/Reopen with Comment]`, and (on PRs) `[Submit Review ▾]` (`Comment`, `Approve`, `Request Changes`).
+    6. `ConversationTimelineWidget(QWidget)`: Orchestrates the scrollable stream + bottom composer inside both `src/wrench/ui/issues_view.py` and `src/wrench/ui/prs_view.py`.
+
+* **Step E: Universal `#` / `@` / `:` Autocomplete & Cross-Reference Hover Cards (`src/wrench/ui/widgets/mention_completer.py`)**
+  * Implement `RefMentionCompleter(QObject)`:
+    * Attaches to any `QLineEdit` or `QPlainTextEdit` (`ChangesView` commit summary & description, `CommentComposerWidget`, inline diff reply inputs).
+    * Detects trigger token (`#`, `!`, `@`, `:`) before the cursor and displays a non-blocking frameless `QListView` popup populated from `forge_mention_index` (`< 2 ms`).
+    * Implements `parse_closing_issue_refs(commit_message: str) -> list[int]` so `ChangesView` displays the live `🔗 Will close Issue #N on push` badge whenever `Fixes #N` / `Closes #N` / `Resolves #N` is typed.
+  * Implement `CrossRefLinkHandler` & `IssuePrHoverCard(QFrame)`:
+    * Linkifies `#<num>`, `!<num>`, `GH-<num>`, and 7–40 hex commit SHAs across `HistoryView`, `IssuesView`, `PRsView`, and `BlameView`.
+    * Hovering (`250 ms` `QTimer`) shows `IssuePrHoverCard` populated from `forge_mention_index`.
+    * Clicking `#<num>` emits `MainWindow.navigate_to_issue_or_pr(number)` which switches tabs and opens that thread; clicking a commit SHA emits `MainWindow.navigate_to_commit(sha)` which switches to `HistoryView` and selects the commit.
+
+* **Step F: Automated Verification (`tests/unit/test_conversation_threads.py` & `tests/ui/test_conversation_timeline_ui.py`)**
+  * Unit tests (`httpx.MockTransport` + temporary SQLite DB):
+    * Test `get_conversation_thread` merging comments, nested `in_reply_to_id` replies, review states, and timeline events in chronological order.
+    * Test `post_comment`, `edit_comment` (including `- [ ]` ➔ `- [x]` checkbox toggle), `delete_comment`, `toggle_reaction` (`+1`, `rocket`, etc.), and `submit_pr_review`.
+    * Test `parse_closing_issue_refs("Fixes #42 and resolves #19")` ➔ `[42, 19]` and `forge_mention_index` fuzzy queries for `#`, `@`, and `:`.
+    * Test SWR SQLite caching in `forge_conversation_cache` (offline instant load + background update).
+  * Headless UI tests (`QT_QPA_PLATFORM=offscreen`, zero blocking `.exec()` calls per `FLASH-4`):
+    * Test `ConversationTimelineWidget` rendering OP card, comments, nested replies, timeline events, and optimistic reaction pill toggling in both `IssuesView` and `PRsView`.
+    * Test `[Quote Reply]` pre-filling `CommentComposerWidget`, `Ctrl+Return` submitting a comment, and `#` / `@` trigger in `RefMentionCompleter` inside `ChangesView` commit box.
+    * Test clicking `#42` link in a commit message navigating to `IssuesView`/`PRsView` thread `#42`, and disabling `forge.conversation_threads_enabled` in `SettingsRegistry` hiding thread extensions cleanly (`OPT-1`).
+
+
 ## VP-23 — Conflict Memory (`git rerere`), Patch Mailboxes (`format-patch`/`am`) & `Ctrl+K` Custom Actions (`FR-3.9`, `FR-8.6`, `FR-8.7`)
 
 **Why this position:** Completes v2 with `git rerere` conflict memory ([Sublime Merge \#814](https://github.com/sublimehq/sublime_merge/issues/814)), mailing-list patch export/import, and user-defined custom commands ([Lazygit \#3930](https://github.com/jesseduffield/lazygit/issues/3930)) inside a global `Ctrl+K` Command Palette. **Prerequisites:** `VP-22` acceptance check passed. **Mandatory UI Spec Reference:** MUST read and implement `ui-planning.md §6.6` (`git rerere` Merge Banner), `§6.24` (`CommandPaletteDialog` `Ctrl+K`), and `§8 Step 49`. **Mandatory Optimizations Reminder for Lower-Tier Models (`DO NOT SKIP`):**

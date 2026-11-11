@@ -4,12 +4,20 @@ All read operations (status, diff, log, blame) go through this module.
 UI code never calls this module directly — it goes through core.engine.
 """
 
+import hashlib
 import logging
+import os
+import re
+import subprocess
+import threading
+from collections import OrderedDict
 from collections.abc import Iterator
 from datetime import datetime, timezone
+from pathlib import Path
 
 import pygit2
 
+from . import ssh_agent
 from .engine import (
     BlameLine,
     Commit,
@@ -23,8 +31,140 @@ from .engine import (
     RepoHandle,
     RepoStatus,
 )
+from .models import LogPage
+from .paths import resolve_git_dir
 
 logger = logging.getLogger(__name__)
+
+_HUNK_HDR_RE = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
+_PORCELAIN_CONFLICT_CODES = frozenset({"DD", "AU", "UD", "UA", "DU", "AA", "UU"})
+_PORCELAIN_STAGED_MAP = {
+    "A": "added",
+    "M": "modified",
+    "D": "deleted",
+    "R": "renamed",
+    "C": "added",
+    "T": "modified",
+}
+_PORCELAIN_UNSTAGED_MAP = {
+    "M": "modified",
+    "D": "deleted",
+    "R": "renamed",
+    "T": "modified",
+}
+_GIT_NAME_STATUS_MAP = {
+    "A": "added",
+    "M": "modified",
+    "D": "deleted",
+    "R": "renamed",
+    "C": "added",
+    "T": "modified",
+}
+
+
+def _git_read_env() -> dict[str, str]:
+    """Build non-interactive subprocess environment for read fallbacks (SEC-1)."""
+    env = os.environ.copy()
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    env["GIT_ASKPASS"] = ""
+    env["LC_ALL"] = "C"
+    ssh_agent.configure_ssh_env(env)
+    return env
+
+
+def _is_sparse_checkout_active(r: pygit2.Repository, repo_path: Path) -> bool:
+    """Return True if core.sparseCheckout is active with an existing sparse-checkout file."""
+    try:
+        if not bool(r.config.get_bool("core.sparsecheckout")):
+            return False
+    except (KeyError, pygit2.GitError, ValueError) as exc:
+        logger.debug("Sparse checkout config check fell back to False: %s", exc)
+        return False
+    try:
+        git_dir = resolve_git_dir(repo_path)
+        return (git_dir / "info" / "sparse-checkout").is_file()
+    except Exception as exc:
+        logger.debug("Unable to resolve git dir for sparse status check: %s", exc)
+        return False
+
+
+def _git_status_sparse(
+    repo_path: Path,
+) -> tuple[bool, list[FileChange], list[FileChange], list[str], list[FileChange]] | None:
+    """Query git status honoring sparse-checkout skip-worktree bits via NUL-delimited CLI."""
+    try:
+        res = subprocess.run(
+            ["git", "status", "--porcelain=v1", "-z", "-unormal"],
+            cwd=repo_path,
+            capture_output=True,
+            text=False,
+            env=_git_read_env(),
+            timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        logger.warning("Sparse git status fallback failed: %s", exc)
+        return None
+
+    if res.returncode != 0:
+        logger.debug("Sparse git status returned %d", res.returncode)
+        return None
+
+    has_conflicts = False
+    staged: list[FileChange] = []
+    unstaged: list[FileChange] = []
+    untracked: list[str] = []
+    partially_staged: list[FileChange] = []
+
+    tokens = res.stdout.split(b"\x00")
+    i = 0
+    while i < len(tokens):
+        rec = tokens[i]
+        i += 1
+        if not rec or len(rec) < 4:
+            continue
+        xy = rec[:2].decode("ascii", errors="replace")
+        filepath = rec[3:].decode("utf-8", errors="replace")
+        orig_path: str | None = None
+        if xy[0] in ("R", "C") or xy[1] in ("R", "C"):
+            if i < len(tokens):
+                orig_path = tokens[i].decode("utf-8", errors="replace")
+                i += 1
+
+        if xy == "??":
+            untracked.append(filepath)
+            continue
+        if xy == "!!":
+            continue
+        if xy in _PORCELAIN_CONFLICT_CODES:
+            has_conflicts = True
+
+        staged_type = _PORCELAIN_STAGED_MAP.get(xy[0])
+        unstaged_type = _PORCELAIN_UNSTAGED_MAP.get(xy[1])
+        is_partial = bool(staged_type and unstaged_type)
+
+        if staged_type:
+            fc_staged = FileChange(
+                path=filepath,
+                change_type=staged_type,
+                old_path=orig_path if staged_type == "renamed" else None,
+                is_partially_staged=is_partial,
+            )
+            staged.append(fc_staged)
+            if is_partial:
+                partially_staged.append(fc_staged)
+
+        if unstaged_type:
+            unstaged.append(
+                FileChange(
+                    path=filepath,
+                    change_type=unstaged_type,
+                    old_path=orig_path if unstaged_type == "renamed" else None,
+                    is_partially_staged=is_partial,
+                )
+            )
+
+    return has_conflicts, staged, unstaged, untracked, partially_staged
+
 
 # pygit2 status flags for INDEX (staged) changes
 _STAGED_FLAGS = {
@@ -125,43 +265,50 @@ def get_status(repo: RepoHandle) -> RepoStatus:
     untracked: list[str] = []
     partially_staged: list[FileChange] = []
 
-    status_dict = r.status()
-    for filepath, flags in status_dict.items():
-        if flags & pygit2.GIT_STATUS_WT_NEW:
-            untracked.append(filepath)
-            continue
+    sparse_parsed = (
+        _git_status_sparse(repo.path) if _is_sparse_checkout_active(r, repo.path) else None
+    )
+    if sparse_parsed is not None:
+        sparse_conflicts, staged, unstaged, untracked, partially_staged = sparse_parsed
+        has_conflicts = has_conflicts or sparse_conflicts
+    else:
+        status_dict = r.status()
+        for filepath, flags in status_dict.items():
+            if flags & pygit2.GIT_STATUS_WT_NEW:
+                untracked.append(filepath)
+                continue
 
-        staged_type: str | None = None
-        for flag, change_type in _STAGED_FLAGS.items():
-            if flags & flag:
-                staged_type = change_type
-                break
+            staged_type: str | None = None
+            for flag, change_type in _STAGED_FLAGS.items():
+                if flags & flag:
+                    staged_type = change_type
+                    break
 
-        unstaged_type: str | None = None
-        for flag, change_type in _UNSTAGED_FLAGS.items():
-            if flags & flag:
-                unstaged_type = change_type
-                break
+            unstaged_type: str | None = None
+            for flag, change_type in _UNSTAGED_FLAGS.items():
+                if flags & flag:
+                    unstaged_type = change_type
+                    break
 
-        is_partial = bool(staged_type and unstaged_type)
+            is_partial = bool(staged_type and unstaged_type)
 
-        if staged_type:
-            fc_staged = FileChange(
-                path=filepath,
-                change_type=staged_type,
-                is_partially_staged=is_partial,
-            )
-            staged.append(fc_staged)
-            if is_partial:
-                partially_staged.append(fc_staged)
+            if staged_type:
+                fc_staged = FileChange(
+                    path=filepath,
+                    change_type=staged_type,
+                    is_partially_staged=is_partial,
+                )
+                staged.append(fc_staged)
+                if is_partial:
+                    partially_staged.append(fc_staged)
 
-        if unstaged_type:
-            fc_unstaged = FileChange(
-                path=filepath,
-                change_type=unstaged_type,
-                is_partially_staged=is_partial,
-            )
-            unstaged.append(fc_unstaged)
+            if unstaged_type:
+                fc_unstaged = FileChange(
+                    path=filepath,
+                    change_type=unstaged_type,
+                    is_partially_staged=is_partial,
+                )
+                unstaged.append(fc_unstaged)
 
     head_sha = str(r.head.target) if not head_is_unborn and hasattr(r, "head") and r.head else None
 
@@ -182,93 +329,53 @@ def get_status(repo: RepoHandle) -> RepoStatus:
     )
 
 
-def get_diff(repo: RepoHandle, path: str, *, staged: bool) -> Diff:
-    """Get the diff for a single file in working tree / index."""
-    r = repo.pygit2_repo
-    try:
-        r.index.read()
-    except Exception as e:
-        logger.debug("Failed reading index in get_status: %s", e)
-
-    if staged:
-        if r.head_is_unborn:
-            diff = r.index.diff_to_tree()
-        else:
-            head_tree = r.head.peel(pygit2.Tree)
-            diff = r.index.diff_to_tree(head_tree)
-    else:
-        diff = r.diff(flags=pygit2.GIT_DIFF_INCLUDE_UNTRACKED)
-
-    for patch in diff:
-        delta = patch.delta
-        if delta.new_file.path == path or delta.old_file.path == path:
-            if delta.is_binary:
-                return Diff(path=path, is_binary=True, hunks=[])
-
-            hunks: list[Hunk] = []
-            for i, hunk in enumerate(patch.hunks):
-                lines: list[DiffLine] = []
-                for line in hunk.lines:
-                    lines.append(
-                        DiffLine(
-                            content=line.content.rstrip("\n"),
-                            origin=line.origin,
-                            old_lineno=line.old_lineno if line.old_lineno >= 0 else None,
-                            new_lineno=line.new_lineno if line.new_lineno >= 0 else None,
-                        )
-                    )
-                hunks.append(
-                    Hunk(
-                        id=f"hunk-{i}",
-                        old_start=hunk.old_start,
-                        old_count=hunk.old_lines,
-                        new_start=hunk.new_start,
-                        new_count=hunk.new_lines,
-                        lines=lines,
-                    )
-                )
-
-            return Diff(path=path, is_binary=False, hunks=hunks)
-
-    return Diff(path=path, is_binary=False, hunks=[])
+_BINARY_DIFF_FLAG = getattr(pygit2, "GIT_DIFF_FLAG_BINARY", 1)
 
 
-def get_commit_diff(repo: RepoHandle, sha: str, path: str | None = None) -> Diff:
-    """Get diff of a historical commit against its first parent (or empty tree for root)."""
-    r = repo.pygit2_repo
-    commit = r.get(sha)
-    if not commit or not isinstance(commit, pygit2.Commit):
-        return Diff(path=path or "", is_binary=False, hunks=[])
+def _patch_to_diff(
+    patch: pygit2.Patch,
+    target_path: str,
+    *,
+    max_lines: int | None = None,
+    max_bytes: int | None = None,
+) -> Diff:
+    """Convert a pygit2 Patch into Diff, enforcing optional line/byte caps early."""
+    delta = patch.delta
+    if delta.is_binary or bool(delta.flags & _BINARY_DIFF_FLAG):
+        return Diff(path=target_path, is_binary=True, hunks=[])
 
-    if commit.parents:
-        parent_tree = commit.parents[0].tree
-    else:
-        empty_tree_id = r.TreeBuilder().write()
-        parent_tree = r[empty_tree_id]
+    hunks: list[Hunk] = []
+    collected_lines = 0
+    collected_bytes = 0
+    total_lines = 0
+    truncated = False
 
-    diff = r.diff(parent_tree, commit.tree)
-
-    for patch in diff:
-        delta = patch.delta
-        target_path = delta.new_file.path or delta.old_file.path
-        if path is not None and target_path != path:
+    for i, hunk in enumerate(patch.hunks):
+        hunk_lines = hunk.lines
+        total_lines += len(hunk_lines)
+        if truncated:
             continue
 
-        if delta.is_binary:
-            return Diff(path=target_path, is_binary=True, hunks=[])
-
-        hunks: list[Hunk] = []
-        for i, hunk in enumerate(patch.hunks):
-            lines: list[DiffLine] = []
-            for line in hunk.lines:
-                lines.append(
-                    DiffLine(
-                        content=line.content.rstrip("\n"),
-                        origin=line.origin,
-                        old_lineno=line.old_lineno if line.old_lineno >= 0 else None,
-                        new_lineno=line.new_lineno if line.new_lineno >= 0 else None,
-                    )
+        lines: list[DiffLine] = []
+        for line in hunk_lines:
+            if (max_lines is not None and collected_lines >= max_lines) or (
+                max_bytes is not None and collected_bytes >= max_bytes
+            ):
+                truncated = True
+                break
+            content = line.content.rstrip("\n")
+            lines.append(
+                DiffLine(
+                    content=content,
+                    origin=line.origin,
+                    old_lineno=line.old_lineno if line.old_lineno >= 0 else None,
+                    new_lineno=line.new_lineno if line.new_lineno >= 0 else None,
                 )
+            )
+            collected_lines += 1
+            collected_bytes += len(content.encode("utf-8", errors="replace"))
+
+        if lines:
             hunks.append(
                 Hunk(
                     id=f"hunk-{i}",
@@ -280,13 +387,350 @@ def get_commit_diff(repo: RepoHandle, sha: str, path: str | None = None) -> Diff
                 )
             )
 
-        if path is not None:
-            return Diff(path=target_path, is_binary=False, hunks=hunks)
+    if truncated:
+        return Diff(
+            path=target_path,
+            is_binary=False,
+            hunks=hunks,
+            is_truncated=True,
+            total_lines=total_lines,
+            truncated_reason=(
+                f"Showing first {collected_lines:,} of {total_lines:,} lines "
+                "(diff exceeded display cap)"
+            ),
+        )
 
-        # If path was None and we found the first patch, return it
-        return Diff(path=target_path, is_binary=False, hunks=hunks)
+    return Diff(
+        path=target_path,
+        is_binary=False,
+        hunks=hunks,
+        is_truncated=False,
+        total_lines=total_lines,
+        truncated_reason=None,
+    )
 
-    return Diff(path=path or "", is_binary=False, hunks=[])
+
+def _parse_git_unified_diff(
+    raw_text: str,
+    target_path: str,
+    *,
+    max_lines: int | None = None,
+    max_bytes: int | None = None,
+) -> Diff:
+    """Parse git unified diff output into Diff model, honoring caps and binary markers."""
+    hunks: list[Hunk] = []
+    collected_lines = 0
+    collected_bytes = 0
+    total_lines = 0
+    truncated = False
+
+    cur_hunk_idx = 0
+    cur_old_start = 0
+    cur_old_count = 0
+    cur_new_start = 0
+    cur_new_count = 0
+    cur_old_no = 0
+    cur_new_no = 0
+    old_rem = 0
+    new_rem = 0
+    cur_lines: list[DiffLine] | None = None
+
+    def _flush_hunk() -> None:
+        nonlocal cur_hunk_idx, cur_lines
+        if cur_lines:
+            hunks.append(
+                Hunk(
+                    id=f"hunk-{cur_hunk_idx}",
+                    old_start=cur_old_start,
+                    old_count=cur_old_count,
+                    new_start=cur_new_start,
+                    new_count=cur_new_count,
+                    lines=cur_lines,
+                )
+            )
+        cur_lines = None
+
+    lines = raw_text.split("\n")
+    if lines and lines[-1] == "":
+        lines = lines[:-1]
+
+    for line in lines:
+        in_hunk = old_rem > 0 or new_rem > 0
+        if not in_hunk:
+            if (line.startswith("Binary files ") and line.endswith(" differ")) or (
+                line == "GIT binary patch"
+            ):
+                return Diff(path=target_path, is_binary=True, hunks=[])
+
+            hdr_match = _HUNK_HDR_RE.match(line)
+            if hdr_match:
+                _flush_hunk()
+                cur_old_start = int(hdr_match.group(1))
+                cur_old_count = int(hdr_match.group(2)) if hdr_match.group(2) is not None else 1
+                cur_new_start = int(hdr_match.group(3))
+                cur_new_count = int(hdr_match.group(4)) if hdr_match.group(4) is not None else 1
+                cur_old_no = cur_old_start
+                cur_new_no = cur_new_start
+                old_rem = cur_old_count
+                new_rem = cur_new_count
+                cur_lines = [] if not truncated else None
+                cur_hunk_idx = len(hunks)
+            continue
+
+        if line == r"\ No newline at end of file":
+            continue
+
+        origin = line[:1]
+        content = line[1:]
+        if origin == " " and old_rem > 0 and new_rem > 0:
+            old_no: int | None = cur_old_no
+            new_no: int | None = cur_new_no
+            cur_old_no += 1
+            cur_new_no += 1
+            old_rem -= 1
+            new_rem -= 1
+        elif origin == "+" and new_rem > 0:
+            old_no = None
+            new_no = cur_new_no
+            cur_new_no += 1
+            new_rem -= 1
+        elif origin == "-" and old_rem > 0:
+            old_no = cur_old_no
+            new_no = None
+            cur_old_no += 1
+            old_rem -= 1
+        else:
+            continue
+
+        total_lines += 1
+        if truncated or cur_lines is None:
+            continue
+
+        if (max_lines is not None and collected_lines >= max_lines) or (
+            max_bytes is not None and collected_bytes >= max_bytes
+        ):
+            truncated = True
+            _flush_hunk()
+            continue
+
+        cur_lines.append(
+            DiffLine(
+                content=content,
+                origin=origin,
+                old_lineno=old_no,
+                new_lineno=new_no,
+            )
+        )
+        collected_lines += 1
+        collected_bytes += len(content.encode("utf-8", errors="replace"))
+
+    _flush_hunk()
+
+    if truncated:
+        return Diff(
+            path=target_path,
+            is_binary=False,
+            hunks=hunks,
+            is_truncated=True,
+            total_lines=total_lines,
+            truncated_reason=(
+                f"Showing first {collected_lines:,} of {total_lines:,} lines "
+                "(diff exceeded display cap)"
+            ),
+        )
+
+    return Diff(
+        path=target_path,
+        is_binary=False,
+        hunks=hunks,
+        is_truncated=False,
+        total_lines=total_lines,
+        truncated_reason=None,
+    )
+
+
+def _run_git_diff_fallback(
+    repo_path: Path,
+    args: list[str],
+    target_path: str,
+    *,
+    max_lines: int | None = None,
+    max_bytes: int | None = None,
+) -> Diff:
+    """Fallback diff via git CLI (shell=False) when partial-clone objects are missing locally."""
+    try:
+        res = subprocess.run(
+            ["git", *args],
+            cwd=repo_path,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            env=_git_read_env(),
+            timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        logger.debug("git diff fallback failed for '%s': %s", target_path, exc)
+        return Diff(path=target_path, is_binary=False, hunks=[])
+
+    if res.returncode != 0 or not res.stdout:
+        return Diff(path=target_path, is_binary=False, hunks=[])
+
+    return _parse_git_unified_diff(
+        res.stdout,
+        target_path,
+        max_lines=max_lines,
+        max_bytes=max_bytes,
+    )
+
+
+def _git_commit_file_stats_fallback(repo_path: Path, sha: str) -> list[FileStat]:
+    """Fallback commit file list via git diff-tree --name-status for treeless clones."""
+    try:
+        res = subprocess.run(
+            ["git", "diff-tree", "-z", "--no-commit-id", "--name-status", "-r", "--root", sha],
+            cwd=repo_path,
+            capture_output=True,
+            text=False,
+            env=_git_read_env(),
+            timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        logger.debug("git diff-tree stats fallback failed for %s: %s", sha[:8], exc)
+        return []
+
+    if res.returncode != 0 or not res.stdout:
+        return []
+
+    tokens = res.stdout.split(b"\x00")
+    stats: list[FileStat] = []
+    i = 0
+    while i < len(tokens):
+        code_raw = tokens[i]
+        i += 1
+        if not code_raw:
+            continue
+        code = code_raw.decode("ascii", errors="replace")
+        letter = code[:1]
+        change_type = _GIT_NAME_STATUS_MAP.get(letter, "modified")
+        if letter in ("R", "C"):
+            if i + 1 >= len(tokens):
+                break
+            _old_p = tokens[i]
+            new_p = tokens[i + 1].decode("utf-8", errors="replace")
+            i += 2
+            file_path = new_p
+        else:
+            if i >= len(tokens):
+                break
+            file_path = tokens[i].decode("utf-8", errors="replace")
+            i += 1
+        stats.append(
+            FileStat(
+                path=file_path,
+                change_type=change_type,
+                additions=0,
+                deletions=0,
+            )
+        )
+    return stats
+
+
+def get_diff(
+    repo: RepoHandle,
+    path: str,
+    *,
+    staged: bool,
+    max_lines: int | None = None,
+    max_bytes: int | None = None,
+) -> Diff:
+    """Get the diff for a single file in working tree / index."""
+    r = repo.pygit2_repo
+    try:
+        r.index.read()
+    except Exception as e:
+        logger.debug("Failed reading index in get_status: %s", e)
+
+    try:
+        if staged:
+            if r.head_is_unborn:
+                diff = r.index.diff_to_tree()
+            else:
+                head_tree = r.head.peel(pygit2.Tree)
+                diff = r.index.diff_to_tree(head_tree)
+        else:
+            diff = r.diff(flags=pygit2.GIT_DIFF_INCLUDE_UNTRACKED)
+
+        for idx, delta in enumerate(diff.deltas):
+            if delta.new_file.path == path or delta.old_file.path == path:
+                return _patch_to_diff(
+                    diff[idx],
+                    path,
+                    max_lines=max_lines,
+                    max_bytes=max_bytes,
+                )
+
+        return Diff(path=path, is_binary=False, hunks=[])
+    except (KeyError, pygit2.GitError) as exc:
+        logger.debug("pygit2 get_diff fallback for '%s': %s", path, exc)
+        git_args = ["diff", "--cached", "--", path] if staged else ["diff", "--", path]
+        return _run_git_diff_fallback(
+            repo.path,
+            git_args,
+            path,
+            max_lines=max_lines,
+            max_bytes=max_bytes,
+        )
+
+
+def get_commit_diff(
+    repo: RepoHandle,
+    sha: str,
+    path: str | None = None,
+    *,
+    max_lines: int | None = None,
+    max_bytes: int | None = None,
+) -> Diff:
+    """Get diff of a historical commit against its first parent (or empty tree for root)."""
+    r = repo.pygit2_repo
+    try:
+        commit = r.get(sha)
+        if not commit or not isinstance(commit, pygit2.Commit):
+            return Diff(path=path or "", is_binary=False, hunks=[])
+
+        if commit.parents:
+            parent_tree = commit.parents[0].tree
+        else:
+            empty_tree_id = r.TreeBuilder().write()
+            parent_tree = r[empty_tree_id]
+
+        diff = r.diff(parent_tree, commit.tree)
+
+        for idx, delta in enumerate(diff.deltas):
+            target_path = delta.new_file.path or delta.old_file.path
+            if path is not None and target_path != path:
+                continue
+
+            return _patch_to_diff(
+                diff[idx],
+                target_path,
+                max_lines=max_lines,
+                max_bytes=max_bytes,
+            )
+
+        return Diff(path=path or "", is_binary=False, hunks=[])
+    except (KeyError, pygit2.GitError) as exc:
+        logger.debug("pygit2 get_commit_diff fallback for %s (%s): %s", sha[:8], path, exc)
+        git_args = ["diff-tree", "-p", "--no-commit-id", "--root", sha]
+        if path:
+            git_args.extend(["--", path])
+        return _run_git_diff_fallback(
+            repo.path,
+            git_args,
+            path or "",
+            max_lines=max_lines,
+            max_bytes=max_bytes,
+        )
 
 
 def get_commit_file_stats(repo: RepoHandle, sha: str) -> list[FileStat]:
@@ -296,31 +740,48 @@ def get_commit_file_stats(repo: RepoHandle, sha: str) -> list[FileStat]:
     if not commit or not isinstance(commit, pygit2.Commit):
         return []
 
-    if commit.parents:
-        parent_tree = commit.parents[0].tree
-    else:
-        empty_tree_id = r.TreeBuilder().write()
-        parent_tree = r[empty_tree_id]
+    diff = None
+    try:
+        if commit.parents:
+            parent_tree = commit.parents[0].tree
+        else:
+            empty_tree_id = r.TreeBuilder().write()
+            parent_tree = r[empty_tree_id]
 
-    diff = r.diff(parent_tree, commit.tree)
-    stats: list[FileStat] = []
+        diff = r.diff(parent_tree, commit.tree)
+        stats: list[FileStat] = []
 
-    for patch in diff:
-        delta = patch.delta
-        file_path = delta.new_file.path or delta.old_file.path
-        change_type = _DELTA_STATUS_MAP.get(delta.status, "modified")
-        additions = patch.line_stats[1]
-        deletions = patch.line_stats[2]
-        stats.append(
-            FileStat(
-                path=file_path,
-                change_type=change_type,
-                additions=additions,
-                deletions=deletions,
+        for patch in diff:
+            delta = patch.delta
+            file_path = delta.new_file.path or delta.old_file.path
+            change_type = _DELTA_STATUS_MAP.get(delta.status, "modified")
+            additions = patch.line_stats[1]
+            deletions = patch.line_stats[2]
+            stats.append(
+                FileStat(
+                    path=file_path,
+                    change_type=change_type,
+                    additions=additions,
+                    deletions=deletions,
+                )
             )
-        )
 
-    return stats
+        return stats
+    except (KeyError, pygit2.GitError) as exc:
+        logger.debug(
+            "pygit2 get_commit_file_stats fallback for %s (partial clone): %s", sha[:8], exc
+        )
+        if diff is not None:
+            return [
+                FileStat(
+                    path=delta.new_file.path or delta.old_file.path,
+                    change_type=_DELTA_STATUS_MAP.get(delta.status, "modified"),
+                    additions=0,
+                    deletions=0,
+                )
+                for delta in diff.deltas
+            ]
+        return _git_commit_file_stats_fallback(repo.path, sha)
 
 
 def get_ref_labels(repo: RepoHandle) -> dict[str, list[RefLabel]]:
@@ -427,8 +888,7 @@ def _commit_touches_path(r: pygit2.Repository, commit_sha: str, path: str) -> bo
             parent_tree = r[empty_tree_id]
 
         diff = r.diff(parent_tree, commit.tree)
-        for patch in diff:
-            delta = patch.delta
+        for delta in diff.deltas:
             if delta.new_file.path == path or delta.old_file.path == path:
                 return True
             # Also check directory prefix match
@@ -439,6 +899,183 @@ def _commit_touches_path(r: pygit2.Repository, commit_sha: str, path: str) -> bo
     except Exception as e:
         logger.debug("Failed checking commit path touch: %s", e)
     return False
+
+
+_WALKER_CACHE_MAXSIZE = 8
+_WALKER_CACHE_LOCK = threading.Lock()
+# Keyed by (repo_path, repo_obj_id, head_sha, all_refs, filter_key)
+# Value is (walker, buffered_next_commit, expected_cursor_sha, refs_digest)
+_ACTIVE_WALKER_CACHE: OrderedDict[tuple[object, ...], tuple[object, Commit | None, str, str]] = (
+    OrderedDict()
+)
+
+
+def _commit_from_pygit2(git_commit: pygit2.Commit) -> Commit:
+    author_date = datetime.fromtimestamp(
+        git_commit.author.time,
+        tz=timezone.utc,
+    ).isoformat()
+    return Commit(
+        sha=str(git_commit.id),
+        message=git_commit.message.strip(),
+        author_name=git_commit.author.name,
+        author_email=git_commit.author.email,
+        author_date=author_date,
+        parent_shas=[str(p) for p in git_commit.parent_ids],
+    )
+
+
+def _matches_log_filter(
+    r: pygit2.Repository,
+    commit: Commit,
+    log_filter: LogFilter | None,
+) -> bool:
+    if not log_filter:
+        return True
+    if log_filter.author:
+        author_lower = log_filter.author.lower()
+        if (
+            author_lower not in commit.author_name.lower()
+            and author_lower not in commit.author_email.lower()
+        ):
+            return False
+    if log_filter.message_substring:
+        if log_filter.message_substring.lower() not in commit.message.lower():
+            return False
+    if log_filter.date_from and commit.author_date < log_filter.date_from:
+        return False
+    if log_filter.date_to and commit.author_date > log_filter.date_to:
+        return False
+    if log_filter.path and not _commit_touches_path(r, commit.sha, log_filter.path):
+        return False
+    return True
+
+
+def _repo_refs_digest(r: pygit2.Repository, all_refs: bool) -> str:
+    h = hashlib.blake2b(digest_size=16)
+    h.update(str(r.head.target).encode("utf-8"))
+    if all_refs:
+        for branch_name in sorted(r.branches.local):
+            try:
+                tip = r.branches.local[branch_name].peel(pygit2.Commit).id
+                h.update(f"{branch_name}:{tip};".encode("utf-8"))
+            except (KeyError, pygit2.GitError) as exc:
+                logger.debug("Skipping branch '%s' in refs digest: %s", branch_name, exc)
+    return h.hexdigest()
+
+
+def _create_walker(r: pygit2.Repository, *, all_refs: bool):
+    walker = r.walk(r.head.target, pygit2.GIT_SORT_TOPOLOGICAL | pygit2.GIT_SORT_TIME)
+    if all_refs:
+        pushed_oids: set[pygit2.Oid] = {r.head.target}
+        for branch_name in r.branches.local:
+            try:
+                b = r.branches.local[branch_name]
+                target = b.peel(pygit2.Commit).id
+                if target not in pushed_oids:
+                    walker.push(target)
+                    pushed_oids.add(target)
+            except (KeyError, pygit2.GitError) as exc:
+                logger.debug("Failed peeling branch commit in walker: %s", exc)
+    return walker
+
+
+def get_log_page(
+    repo: RepoHandle,
+    filter: LogFilter | None = None,
+    *,
+    limit: int = 500,
+    cursor_sha: str | None = None,
+    all_refs: bool = False,
+) -> LogPage:
+    """Fetch a bounded page of commits without loading full repository history."""
+    if limit <= 0:
+        return LogPage(commits=(), next_cursor_sha=None, has_more=False, scanned_count=0)
+
+    r = repo.pygit2_repo
+    if r.head_is_unborn:
+        return LogPage(commits=(), next_cursor_sha=None, has_more=False, scanned_count=0)
+
+    head_sha = str(r.head.target)
+    refs_digest = _repo_refs_digest(r, all_refs)
+    filter_key = (
+        filter.author if filter else None,
+        filter.message_substring if filter else None,
+        filter.date_from if filter else None,
+        filter.date_to if filter else None,
+        filter.path if filter else None,
+    )
+    cache_key = (str(repo.path), id(r), head_sha, bool(all_refs), filter_key)
+
+    walker = None
+    buffered_commit: Commit | None = None
+    scanned_count = 0
+
+    if cursor_sha is not None:
+        with _WALKER_CACHE_LOCK:
+            cached = _ACTIVE_WALKER_CACHE.get(cache_key)
+            if cached is not None:
+                c_walker, c_buf, c_cursor, c_digest = cached
+                if c_cursor == cursor_sha and c_digest == refs_digest:
+                    _ACTIVE_WALKER_CACHE.pop(cache_key, None)
+                    walker = c_walker
+                    buffered_commit = c_buf
+                else:
+                    _ACTIVE_WALKER_CACHE.pop(cache_key, None)
+
+        if walker is None:
+            walker = _create_walker(r, all_refs=all_refs)
+            seen_cursor = False
+            for raw_commit in walker:
+                scanned_count += 1
+                if str(raw_commit.id) == cursor_sha:
+                    seen_cursor = True
+                    break
+            if not seen_cursor:
+                return LogPage(
+                    commits=(),
+                    next_cursor_sha=None,
+                    has_more=False,
+                    scanned_count=scanned_count,
+                )
+    else:
+        walker = _create_walker(r, all_refs=all_refs)
+
+    collected: list[Commit] = []
+    peek_commit: Commit | None = None
+
+    if buffered_commit is not None:
+        if _matches_log_filter(r, buffered_commit, filter):
+            collected.append(buffered_commit)
+
+    if len(collected) <= limit:
+        for raw_commit in walker:
+            scanned_count += 1
+            commit = _commit_from_pygit2(raw_commit)
+            if not _matches_log_filter(r, commit, filter):
+                continue
+            if len(collected) < limit:
+                collected.append(commit)
+            else:
+                peek_commit = commit
+                break
+
+    has_more = peek_commit is not None
+    next_cursor_sha = collected[-1].sha if has_more and collected else None
+
+    if has_more and next_cursor_sha is not None:
+        with _WALKER_CACHE_LOCK:
+            _ACTIVE_WALKER_CACHE[cache_key] = (walker, peek_commit, next_cursor_sha, refs_digest)
+            _ACTIVE_WALKER_CACHE.move_to_end(cache_key)
+            while len(_ACTIVE_WALKER_CACHE) > _WALKER_CACHE_MAXSIZE:
+                _ACTIVE_WALKER_CACHE.popitem(last=False)
+
+    return LogPage(
+        commits=tuple(collected),
+        next_cursor_sha=next_cursor_sha,
+        has_more=has_more,
+        scanned_count=scanned_count,
+    )
 
 
 def get_log(

@@ -7,6 +7,7 @@ from PySide6.QtCore import QEvent, Signal
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QComboBox,
+    QFrame,
     QHBoxLayout,
     QLabel,
     QPushButton,
@@ -17,14 +18,18 @@ from PySide6.QtWidgets import (
 
 from wrench.core import engine
 from wrench.core.engine import Diff, RepoHandle
+from wrench.storage.settings_registry import SettingsRegistry, peek_settings_registry
 from wrench.ui.theme import (
     DIFF_STYLES,
     DIFF_TEXT_COLOR,
     SECONDARY_TEXT,
+    get_banner_style,
     is_dark_theme,
 )
 
 logger = logging.getLogger(__name__)
+
+DEFAULT_MAX_DIFF_LINES = 5000
 
 
 class DiffWidget(QWidget):
@@ -32,14 +37,23 @@ class DiffWidget(QWidget):
 
     file_staged = Signal(str, bool)  # path, is_staged
     hunk_staged = Signal(str, str)  # path, hunk_id
+    full_diff_requested = Signal()
 
-    def __init__(self, parent: QWidget | None = None):
+    def __init__(
+        self,
+        parent: QWidget | None = None,
+        *,
+        settings_registry: SettingsRegistry | None = None,
+    ):
         super().__init__(parent)
         self._repo: RepoHandle | None = None
         self._current_path: str | None = None
         self._staged: bool = False
         self._diff: Diff | None = None
         self._read_only: bool = False
+        self._force_full_diff: bool = False
+        self._refreshing_theme: bool = False
+        self._settings_registry: SettingsRegistry | None = settings_registry
 
         self._init_ui()
 
@@ -75,12 +89,67 @@ class DiffWidget(QWidget):
 
         layout.addWidget(self.toolbar)
 
+        # Inline non-modal large-diff truncation banner
+        self.truncation_banner = QFrame(self)
+        self.truncation_banner.setFrameShape(QFrame.Shape.StyledPanel)
+        self.truncation_banner.setVisible(False)
+        banner_layout = QHBoxLayout(self.truncation_banner)
+        banner_layout.setContentsMargins(8, 4, 8, 4)
+        banner_layout.setSpacing(8)
+
+        self.truncation_label = QLabel(self.truncation_banner)
+        self.truncation_label.setWordWrap(True)
+        banner_layout.addWidget(self.truncation_label, 1)
+
+        self.load_full_diff_btn = QPushButton(self.tr("Load Full Diff"), self.truncation_banner)
+        self.load_full_diff_btn.clicked.connect(self._on_load_full_diff_clicked)
+        banner_layout.addWidget(self.load_full_diff_btn)
+
+        layout.addWidget(self.truncation_banner)
+
         # Main text view
         self.editor = QTextEdit(self)
         self.editor.setReadOnly(True)
         self.editor.setFont(QFont("Monospace", 10))
         self.editor.setLineWrapMode(QTextEdit.NoWrap)
         layout.addWidget(self.editor)
+
+    def set_settings_registry(self, registry: SettingsRegistry | None) -> None:
+        self._settings_registry = registry
+
+    def _effective_max_lines(self) -> int | None:
+        return None if self._force_full_diff else DEFAULT_MAX_DIFF_LINES
+
+    def _effective_max_bytes(self) -> int | None:
+        if self._force_full_diff:
+            return None
+        reg = self._settings_registry or peek_settings_registry()
+        repo_str = str(self._repo.path) if self._repo else None
+        kb = 2048
+        if reg is not None:
+            val = reg.get_int("performance.max_diff_file_size_kb", repo_str)
+            if val > 0:
+                kb = val
+        return max(1024, kb * 1024)
+
+    def _apply_banner_theme(self, is_dark: bool) -> None:
+        style = get_banner_style("warning", is_dark)
+        self.truncation_banner.setStyleSheet(
+            f"QFrame {{ background-color: {style['bg']}; border: 1px solid {style['border']}; "
+            f"border-radius: 4px; }}"
+        )
+        self.truncation_label.setStyleSheet(
+            f"color: {style['fg']}; font-weight: bold; border: none; background: transparent;"
+        )
+
+    def _on_load_full_diff_clicked(self) -> None:
+        prev_diff = self._diff
+        self._force_full_diff = True
+        self.full_diff_requested.emit()
+        if not self._read_only:
+            self.refresh()
+        elif self._diff is prev_diff and self._diff is not None:
+            self._render_diff()
 
     def set_repo(self, repo: RepoHandle):
         self._repo = repo
@@ -89,13 +158,23 @@ class DiffWidget(QWidget):
         self._read_only = False
         self._current_path = path
         self._staged = staged
+        self._force_full_diff = False
         self.refresh()
 
-    def set_diff_model(self, diff: Diff, *, title: str = "", read_only: bool = True):
+    def set_diff_model(
+        self,
+        diff: Diff,
+        *,
+        title: str = "",
+        read_only: bool = True,
+        reset_force: bool = True,
+    ):
         """Display an explicit Diff model directly (used for historical commits)."""
         self._diff = diff
         self._read_only = read_only
         self._current_path = diff.path
+        if reset_force:
+            self._force_full_diff = False
         self.title_label.setText(title or f"Diff: {diff.path}")
         self.hunk_combo.setVisible(False)
         self.stage_hunk_btn.setVisible(False)
@@ -116,6 +195,7 @@ class DiffWidget(QWidget):
             self.hunk_combo.setVisible(False)
             self.stage_hunk_btn.setVisible(False)
             self.file_action_btn.setVisible(False)
+            self.truncation_banner.setVisible(False)
             return
 
         mode_str = "Staged" if self._staged else "Unstaged"
@@ -126,10 +206,17 @@ class DiffWidget(QWidget):
         self.file_action_btn.setVisible(True)
 
         try:
-            self._diff = engine.get_diff(self._repo, self._current_path, staged=self._staged)
+            self._diff = engine.get_diff(
+                self._repo,
+                self._current_path,
+                staged=self._staged,
+                max_lines=self._effective_max_lines(),
+                max_bytes=self._effective_max_bytes(),
+            )
         except Exception as e:
             logger.exception("Failed to get diff for %s: %s", self._current_path, e)
             self.editor.setPlainText(f"Error loading diff:\n{e}")
+            self.truncation_banner.setVisible(False)
             return
 
         self._render_diff()
@@ -137,25 +224,33 @@ class DiffWidget(QWidget):
     def changeEvent(self, event: QEvent) -> None:
         """Handles theme and palette changes immediately."""
         super().changeEvent(event)
+        if getattr(self, "_refreshing_theme", False):
+            return
         if event.type() in (
             QEvent.PaletteChange,
             QEvent.ApplicationPaletteChange,
             QEvent.ThemeChange,
-            QEvent.StyleChange,
         ):
-            self.refresh_theme()
+            self._refreshing_theme = True
+            try:
+                self.refresh_theme()
+            finally:
+                self._refreshing_theme = False
 
     def refresh_theme(self) -> None:
         """Re-renders current diff and UI under the updated theme."""
+        self._apply_banner_theme(is_dark_theme(self))
         if self._diff:
             self._render_diff()
 
     def _render_diff(self):
         if not self._diff:
             self.editor.clear()
+            self.truncation_banner.setVisible(False)
             return
 
         is_dark = is_dark_theme(self)
+        self._apply_banner_theme(is_dark)
         mode_key = "dark" if is_dark else "light"
         styles = DIFF_STYLES[mode_key]
 
@@ -173,6 +268,7 @@ class DiffWidget(QWidget):
             )
             self.hunk_combo.setVisible(False)
             self.stage_hunk_btn.setVisible(False)
+            self.truncation_banner.setVisible(False)
             return
 
         if not self._diff.hunks:
@@ -181,6 +277,7 @@ class DiffWidget(QWidget):
             )
             self.hunk_combo.setVisible(False)
             self.stage_hunk_btn.setVisible(False)
+            self.truncation_banner.setVisible(False)
             return
 
         # Populate hunks combo only if interactive
@@ -197,29 +294,82 @@ class DiffWidget(QWidget):
             self.stage_hunk_btn.setText("Unstage Hunk" if self._staged else "Stage Hunk")
             self.stage_hunk_btn.setVisible(True)
 
-        # Build colored diff HTML
+        # Build colored diff HTML with viewport-safe line cap unless full diff forced
         text_color = DIFF_TEXT_COLOR["dark" if is_dark else "light"]
         pre_tag = (
             f"<pre style='font-family: monospace; font-size: 12px; line-height: 1.4; "
             f"margin: 0; padding: 6px; color: {text_color};'>"
         )
-        html_lines = [pre_tag]
+        in_mem_total = sum(len(h.lines) for h in self._diff.hunks)
+        total_lines = max(getattr(self._diff, "total_lines", 0) or 0, in_mem_total)
+        cap = None if self._force_full_diff else DEFAULT_MAX_DIFF_LINES
+        use_compact_css = cap is None and in_mem_total > DEFAULT_MAX_DIFF_LINES
+
+        if use_compact_css:
+            html_lines = [
+                "<html><head><style>"
+                f".h{{{hunk_style}}}.a{{{add_style}}}.d{{{del_style}}}.c{{{ctx_style}}}"
+                "</style></head><body>",
+                pre_tag,
+            ]
+        else:
+            html_lines = [pre_tag]
+
+        rendered_lines = 0
+        was_view_capped = False
         for hunk in self._diff.hunks:
+            if cap is not None and rendered_lines >= cap:
+                was_view_capped = True
+                break
             hunk_hdr = (
                 f"@@ -{hunk.old_start},{hunk.old_count} +{hunk.new_start},{hunk.new_count} @@"
             )
-            html_lines.append(f"<div style='{hunk_style}'>{html.escape(hunk_hdr)}</div>")
+            if use_compact_css:
+                html_lines.append(f"<span class='h'>{html.escape(hunk_hdr)}</span>\n")
+            else:
+                html_lines.append(f"<div style='{hunk_style}'>{html.escape(hunk_hdr)}</div>")
             for line in hunk.lines:
+                if cap is not None and rendered_lines >= cap:
+                    was_view_capped = True
+                    break
                 escaped = html.escape(f"{line.origin} {line.content}")
-                if line.origin == "+":
-                    html_lines.append(f"<div style='{add_style}'>{escaped}</div>")
-                elif line.origin == "-":
-                    html_lines.append(f"<div style='{del_style}'>{escaped}</div>")
+                if use_compact_css:
+                    cls = "a" if line.origin == "+" else ("d" if line.origin == "-" else "c")
+                    html_lines.append(f"<span class='{cls}'>{escaped}</span>\n")
                 else:
-                    html_lines.append(f"<div style='{ctx_style}'>{escaped}</div>")
+                    if line.origin == "+":
+                        html_lines.append(f"<div style='{add_style}'>{escaped}</div>")
+                    elif line.origin == "-":
+                        html_lines.append(f"<div style='{del_style}'>{escaped}</div>")
+                    else:
+                        html_lines.append(f"<div style='{ctx_style}'>{escaped}</div>")
+                rendered_lines += 1
 
-        html_lines.append("</pre>")
-        self.editor.setHtml("".join(html_lines))
+        if use_compact_css:
+            html_lines.append("</pre></body></html>")
+        else:
+            html_lines.append("</pre>")
+
+        self.editor.setUpdatesEnabled(False)
+        try:
+            self.editor.setHtml("".join(html_lines))
+        finally:
+            self.editor.setUpdatesEnabled(True)
+
+        is_model_truncated = bool(getattr(self._diff, "is_truncated", False))
+        show_banner = (not self._force_full_diff) and (is_model_truncated or was_view_capped)
+        if show_banner:
+            reason = getattr(self._diff, "truncated_reason", None)
+            self.truncation_label.setText(
+                reason
+                or self.tr(
+                    f"Showing first {rendered_lines:,} of {total_lines:,} lines "
+                    "for smooth scrolling."
+                )
+            )
+            self.truncation_banner.setVisible(True)
+        else:
+            self.truncation_banner.setVisible(False)
 
     def _on_stage_hunk_clicked(self):
         if self._read_only or not self._repo or not self._current_path or not self._diff:

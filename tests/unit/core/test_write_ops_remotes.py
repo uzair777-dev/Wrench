@@ -458,4 +458,5 @@ class TestRemoteOperations:
             ]
             assert args[4] == "clone"
             assert args[5] == "--progress"
-            assert args[6] == "https://github.com/org/repo.git"
+            assert args[6] == "--"
+            assert args[7] == "https://github.com/org/repo.git"

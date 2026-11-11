@@ -1,0 +1,410 @@
+"""Partial Clone Dialog with Filter Mode & Sparse-Checkout Options (§6.2, SEC-2/SEC-3)."""
+
+from __future__ import annotations
+
+import logging
+from pathlib import Path
+from typing import Any
+
+import shiboken6
+from PySide6.QtCore import QEvent, Qt, Slot
+from PySide6.QtWidgets import (
+    QCheckBox,
+    QComboBox,
+    QDialog,
+    QFileDialog,
+    QFormLayout,
+    QFrame,
+    QGroupBox,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QListWidget,
+    QListWidgetItem,
+    QPushButton,
+    QToolButton,
+    QVBoxLayout,
+    QWidget,
+)
+
+from wrench.core import engine
+from wrench.core.remote_urls import host_of_instance_url, parse_remote_url
+from wrench.storage import forge_accounts
+from wrench.storage.settings_registry import SettingsRegistry, peek_settings_registry
+from wrench.ui.theme import (
+    PRIMARY_BUTTON_STYLES,
+    SECONDARY_TEXT,
+    get_banner_style,
+    is_dark_theme,
+)
+from wrench.ui.widgets.cli_preview_bar import CliCommandPreviewBar
+
+logger = logging.getLogger(__name__)
+
+
+class CloneDialog(QDialog):
+    """Clone dialog with partial clone filters, sparse checkout, and account picker."""
+
+    def __init__(
+        self,
+        parent: QWidget | None = None,
+        *,
+        settings_registry: SettingsRegistry | None = None,
+        conn: Any = None,
+        initial_url: str = "",
+        initial_dest_parent: str = "",
+    ) -> None:
+        super().__init__(parent)
+        self._registry: SettingsRegistry | None = settings_registry
+        self._connected_registry: SettingsRegistry | None = None
+        self._conn = conn
+        self._matched_accounts: list[Any] = []
+        self._applying_theme: bool = False
+
+        self.setWindowTitle(self.tr("Clone Git Repository"))
+        self.setMinimumWidth(560)
+        self.resize(620, 420)
+
+        self._init_ui()
+        self._apply_theme()
+        self._ensure_registry_connection()
+        self._apply_default_filter_from_registry()
+        self._sync_sparse_option_visibility()
+
+        if initial_url:
+            self.url_input.setText(initial_url)
+        if initial_dest_parent:
+            self.dest_parent_input.setText(initial_dest_parent)
+
+        self._refresh_account_candidates()
+        self._update_resolved_dest_and_preview()
+        self.destroyed.connect(self._disconnect_registry)
+
+    def _init_ui(self) -> None:
+        root = QVBoxLayout(self)
+        root.setContentsMargins(14, 14, 14, 14)
+        root.setSpacing(10)
+
+        # Header
+        header = QHBoxLayout()
+        title_label = QLabel(self.tr("Clone Git Repository"), self)
+        title_label.setStyleSheet("font-size: 15px; font-weight: bold;")
+        header.addWidget(title_label)
+        header.addStretch()
+
+        self.settings_btn = QToolButton(self)
+        self.settings_btn.setText("⚙")
+        self.settings_btn.setToolTip(self.tr("Open Partial-Clone & Remote Preferences"))
+        self.settings_btn.clicked.connect(self._on_open_settings_clicked)
+        header.addWidget(self.settings_btn)
+        root.addLayout(header)
+
+        # Inline non-modal error banner
+        self.error_banner = QFrame(self)
+        self.error_banner.setFrameShape(QFrame.Shape.StyledPanel)
+        self.error_banner.setVisible(False)
+        err_layout = QHBoxLayout(self.error_banner)
+        err_layout.setContentsMargins(8, 6, 8, 6)
+        self.error_label = QLabel(self.error_banner)
+        self.error_label.setWordWrap(True)
+        err_layout.addWidget(self.error_label)
+        root.addWidget(self.error_banner)
+
+        # Form inputs
+        form = QFormLayout()
+        form.setSpacing(8)
+
+        self.url_input = QLineEdit(self)
+        self.url_input.setPlaceholderText(
+            self.tr("https://github.com/org/repo.git or git@github.com:org/repo.git")
+        )
+        self.url_input.textChanged.connect(self._on_inputs_changed)
+        form.addRow(self.tr("Repository URL:"), self.url_input)
+
+        dest_row = QHBoxLayout()
+        dest_row.setSpacing(6)
+        self.dest_parent_input = QLineEdit(self)
+        self.dest_parent_input.setPlaceholderText(self.tr("Parent directory…"))
+        self.dest_parent_input.textChanged.connect(self._on_inputs_changed)
+        dest_row.addWidget(self.dest_parent_input, 1)
+
+        self.browse_btn = QPushButton(self.tr("Browse…"), self)
+        self.browse_btn.clicked.connect(self._on_browse_dest)
+        dest_row.addWidget(self.browse_btn)
+        form.addRow(self.tr("Clone Into:"), dest_row)
+
+        self.resolved_dest_label = QLabel("", self)
+        form.addRow(self.tr("Destination Path:"), self.resolved_dest_label)
+
+        self.filter_combo = QComboBox(self)
+        self.filter_combo.addItem(self.tr("Full Clone (All Objects)"), "none")
+        self.filter_combo.addItem(
+            self.tr("Blobless Partial Clone (--filter=blob:none — Recommended for Monorepos)"),
+            "blob:none",
+        )
+        self.filter_combo.addItem(
+            self.tr("Treeless Partial Clone (--filter=tree:0 — Ultra-Light)"),
+            "tree:0",
+        )
+        self.filter_combo.currentIndexChanged.connect(self._update_resolved_dest_and_preview)
+        form.addRow(self.tr("Partial Clone Filter:"), self.filter_combo)
+
+        root.addLayout(form)
+
+        # Inline multi-account disambiguation group (FR-5.9)
+        self.account_group = QGroupBox(self.tr("Forge Account (Multiple Matches Found)"), self)
+        self.account_group.setVisible(False)
+        acc_layout = QVBoxLayout(self.account_group)
+        acc_layout.setSpacing(4)
+        self.account_hint_label = QLabel(
+            self.tr("Select which stored forge account should authenticate and link this clone:"),
+            self.account_group,
+        )
+        self.account_hint_label.setWordWrap(True)
+        acc_layout.addWidget(self.account_hint_label)
+        self.account_list = QListWidget(self.account_group)
+        self.account_list.setAccessibleName(self.tr("Forge accounts"))
+        self.account_list.setMaximumHeight(110)
+        acc_layout.addWidget(self.account_list)
+        root.addWidget(self.account_group)
+
+        # Sparse-checkout toggle
+        self.sparse_checkbox = QCheckBox(
+            self.tr("Initialize Sparse-Checkout and pick directories after clone (--sparse)"),
+            self,
+        )
+        self.sparse_checkbox.toggled.connect(self._update_resolved_dest_and_preview)
+        root.addWidget(self.sparse_checkbox)
+
+        # Equivalent CLI Command Preview Footer (§5.3, SEC-3)
+        self.preview_bar = CliCommandPreviewBar(self, settings_registry=self._registry)
+        root.addWidget(self.preview_bar)
+
+        # Action footer
+        footer = QHBoxLayout()
+        footer.addStretch()
+
+        self.cancel_btn = QPushButton(self.tr("Cancel"), self)
+        self.cancel_btn.clicked.connect(self.reject)
+        footer.addWidget(self.cancel_btn)
+
+        self.clone_btn = QPushButton(self.tr("Clone Repository"), self)
+        self.clone_btn.setDefault(True)
+        self.clone_btn.clicked.connect(self._on_clone_clicked)
+        footer.addWidget(self.clone_btn)
+
+        root.addLayout(footer)
+
+    def _apply_theme(self) -> None:
+        if self._applying_theme:
+            return
+        self._applying_theme = True
+        try:
+            is_dark = is_dark_theme(self)
+            err_style = get_banner_style("error", is_dark)
+            self.error_banner.setStyleSheet(
+                f"QFrame {{ background-color: {err_style['bg']}; "
+                f"border: 1px solid {err_style['border']}; border-radius: 4px; }}"
+            )
+            self.error_label.setStyleSheet(
+                f"color: {err_style['fg']}; font-weight: bold; "
+                "border: none; background: transparent;"
+            )
+            muted = SECONDARY_TEXT["dark" if is_dark else "light"]
+            self.resolved_dest_label.setStyleSheet(f"color: {muted}; font-size: 12px;")
+            if not is_dark:
+                self.clone_btn.setStyleSheet(PRIMARY_BUTTON_STYLES["light"])
+            else:
+                self.clone_btn.setStyleSheet("")
+        finally:
+            self._applying_theme = False
+
+    def changeEvent(self, event: QEvent) -> None:
+        super().changeEvent(event)
+        if event.type() in (
+            QEvent.Type.PaletteChange,
+            QEvent.Type.ApplicationPaletteChange,
+            QEvent.Type.ThemeChange,
+        ):
+            self._apply_theme()
+
+    def closeEvent(self, event) -> None:
+        self._disconnect_registry()
+        super().closeEvent(event)
+
+    def _ensure_registry_connection(self) -> None:
+        reg = self._registry or peek_settings_registry()
+        if reg is self._connected_registry:
+            return
+        self._disconnect_registry()
+        if reg is not None:
+            reg.setting_changed.connect(
+                self._on_setting_changed, Qt.ConnectionType.QueuedConnection
+            )
+            self._connected_registry = reg
+
+    def _disconnect_registry(self, *_) -> None:
+        reg = self._connected_registry
+        if reg is None:
+            return
+        try:
+            reg.setting_changed.disconnect(self._on_setting_changed)
+        except RuntimeError, TypeError:
+            pass
+        self._connected_registry = None
+
+    @Slot(str, object, object)
+    def _on_setting_changed(self, key: str, _value: Any, _repo_path: Any) -> None:
+        if not shiboken6.isValid(self):
+            return
+        if key == "clone.default_filter_mode":
+            self._apply_default_filter_from_registry()
+        elif key == "monorepo.sparse_checkout_ui.enabled":
+            self._sync_sparse_option_visibility()
+
+    def _apply_default_filter_from_registry(self) -> None:
+        reg = self._registry or peek_settings_registry()
+        if reg is None:
+            return
+        default_mode = str(reg.get("clone.default_filter_mode") or "none")
+        self.set_filter_mode(default_mode)
+
+    def _sync_sparse_option_visibility(self) -> None:
+        reg = self._registry or peek_settings_registry()
+        enabled = True if reg is None else reg.is_enabled("monorepo.sparse_checkout_ui.enabled")
+        if not enabled:
+            self.sparse_checkbox.setChecked(False)
+        self.sparse_checkbox.setVisible(enabled)
+        self._update_resolved_dest_and_preview()
+
+    def set_filter_mode(self, mode: str) -> None:
+        """Select filter option ('none', 'blob:none', or 'tree:0')."""
+        idx = self.filter_combo.findData(mode)
+        if idx >= 0:
+            self.filter_combo.setCurrentIndex(idx)
+
+    def clone_url(self) -> str:
+        return self.url_input.text().strip()
+
+    def dest_parent(self) -> str:
+        return self.dest_parent_input.text().strip()
+
+    def repo_name(self) -> str:
+        clean_url = self.clone_url()
+        raw_name = clean_url.rstrip("/").split("/")[-1] if clean_url else "repository"
+        if raw_name.endswith(".git"):
+            raw_name = raw_name[:-4]
+        return raw_name or "repository"
+
+    def target_dest(self) -> str:
+        parent_dir = self.dest_parent()
+        if not parent_dir:
+            return self.repo_name()
+        return str(Path(parent_dir) / self.repo_name())
+
+    def filter_spec(self) -> str:
+        return str(self.filter_combo.currentData() or "none")
+
+    def sparse_enabled(self) -> bool:
+        return bool(not self.sparse_checkbox.isHidden() and self.sparse_checkbox.isChecked())
+
+    def selected_account_id(self) -> int | None:
+        if self.account_group.isHidden():
+            return None
+        current = self.account_list.currentItem()
+        if current is None:
+            return None
+        val = current.data(Qt.ItemDataRole.UserRole)
+        return int(val) if val is not None else None
+
+    def _on_inputs_changed(self) -> None:
+        self.error_banner.setVisible(False)
+        self._refresh_account_candidates()
+        self._update_resolved_dest_and_preview()
+
+    def _refresh_account_candidates(self) -> None:
+        clean_url = self.clone_url()
+        self._matched_accounts = []
+        self.account_list.clear()
+
+        if self._conn is None or not clean_url:
+            self.account_group.setVisible(False)
+            return
+
+        parts = parse_remote_url(clean_url)
+        if not parts or parts.protocol not in ("https", "http") or not parts.host:
+            self.account_group.setVisible(False)
+            return
+
+        try:
+            all_accounts = forge_accounts.list_accounts(self._conn)
+        except Exception as exc:
+            logger.debug("Could not inspect forge accounts during clone setup: %s", exc)
+            all_accounts = []
+
+        candidates = [a for a in all_accounts if host_of_instance_url(a.instance_url) == parts.host]
+        if len(candidates) < 2:
+            self.account_group.setVisible(False)
+            return
+
+        self._matched_accounts = candidates
+        for acc in candidates:
+            item = QListWidgetItem(
+                f"{acc.label} ({acc.provider} — {acc.username or 'no username'})"
+            )
+            item.setData(Qt.ItemDataRole.UserRole, acc.id)
+            self.account_list.addItem(item)
+        self.account_list.setCurrentRow(0)
+        self.account_group.setVisible(True)
+
+    def _update_resolved_dest_and_preview(self) -> None:
+        dest_str = self.target_dest() if self.dest_parent() else "<choose destination>"
+        self.resolved_dest_label.setText(dest_str)
+
+        clean_url = self.clone_url() or "<url>"
+        args: list[str] = ["clone", "--progress"]
+        fspec = self.filter_spec()
+        if fspec and fspec != "none":
+            args.extend(["--filter", fspec])
+        if self.sparse_enabled():
+            args.append("--sparse")
+        args.extend(["--", clean_url, dest_str])
+        self.preview_bar.set_command(args)
+
+    def _on_browse_dest(self) -> None:
+        chosen = QFileDialog.getExistingDirectory(
+            self,
+            self.tr("Select Destination Folder"),
+            self.dest_parent() or str(Path.home()),
+        )
+        if chosen:
+            self.dest_parent_input.setText(chosen)
+
+    def _show_error(self, message: str) -> None:
+        self.error_label.setText(engine.redact_secrets(message))
+        self.error_banner.setVisible(True)
+
+    def _on_clone_clicked(self) -> None:
+        raw_url = self.url_input.text()
+        try:
+            clean_url = engine.validate_clone_url(raw_url)
+        except ValueError as exc:
+            self._show_error(str(exc))
+            return
+
+        if not self.dest_parent():
+            self._show_error(self.tr("Please select a destination folder to clone into."))
+            return
+
+        self.url_input.setText(clean_url)
+        self.error_banner.setVisible(False)
+        self.accept()
+
+    def _on_open_settings_clicked(self) -> None:
+        p = self.parent()
+        while p is not None:
+            opener = getattr(p, "open_settings_at_category", None)
+            if callable(opener):
+                opener("Remotes & LFS", "clone.default_filter_mode")
+                return
+            p = p.parent()

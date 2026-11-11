@@ -1,15 +1,16 @@
-"""Tests for Phase 4.1 clone-time account picker and rollback logic."""
+"""Tests for Phase 4.1 clone-time account picker and rollback logic via CloneDialog."""
 
 import sqlite3
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
-from PySide6.QtWidgets import QApplication, QDialog, QFileDialog, QInputDialog
+from PySide6.QtWidgets import QApplication, QDialog
 
 from wrench.core.exceptions import GitCommandError
 from wrench.storage import forge_accounts, repo_registry
 from wrench.storage.db import run_migrations
+from wrench.ui.dialogs.clone_dialog import CloneDialog
 from wrench.ui.main_window import MainWindow
 
 
@@ -34,7 +35,7 @@ def db_conn(tmp_path: Path):
 
 def _sync_run_in_background(fn, *args, on_finished=None, on_failed=None, **kwargs):
     try:
-        res = fn(*args)
+        res = fn(*args, **{k: v for k, v in kwargs.items() if k in ("filter_spec", "sparse")})
         if on_finished:
             on_finished(res)
     except Exception as exc:
@@ -56,28 +57,44 @@ def _add_dummy_account(conn, label, username, instance_url="https://github.com")
         )
 
 
+def _drive_clone_dialog(url: str, target_dir: Path, *, accept: bool = True, row: int = 0):
+    observed: list[bool] = []
+
+    def _exec(dlg):
+        if isinstance(dlg, CloneDialog):
+            dlg.url_input.setText(url)
+            dlg.dest_parent_input.setText(str(target_dir))
+            # Check visibility via isHidden() since modal mock never calls .show()
+            observed.append(not dlg.account_group.isHidden())
+            if not dlg.account_group.isHidden() and dlg.account_list.count() > row:
+                dlg.account_list.setCurrentRow(row)
+            return QDialog.DialogCode.Accepted if accept else QDialog.DialogCode.Rejected
+        return QDialog.DialogCode.Accepted
+
+    return _exec, observed
+
+
 class TestClonePicker:
     def test_clone_zero_accounts_proceeds_anonymous(self, db_conn, tmp_path):
-        """With zero matching accounts, clone proceeds without picker dialog."""
+        """With zero matching accounts, picker stays hidden and clone stays anonymous."""
         win = MainWindow(conn=db_conn)
         target_dir = tmp_path / "clone_dest"
+        exec_fn, picker_visible = _drive_clone_dialog(
+            "https://github.com/org/repo.git", target_dir, accept=True
+        )
 
         with (
-            patch.object(
-                QInputDialog, "getText", return_value=("https://github.com/org/repo.git", True)
-            ),
-            patch.object(QFileDialog, "getExistingDirectory", return_value=str(target_dir)),
+            patch.object(win, "_exec_dialog", side_effect=exec_fn),
             patch(
                 "wrench.ui.main_window.run_in_background", side_effect=_sync_run_in_background
             ) as mock_bg,
             patch("wrench.core.engine.clone_repo", return_value=MagicMock()) as mock_clone,
             patch.object(win, "_on_repo_changed"),
             patch.object(win.changes_tab, "load_repos"),
-            patch("PySide6.QtWidgets.QDialog.exec") as mock_dialog_exec,
         ):
             win._on_clone_repo()
 
-            assert mock_dialog_exec.call_count == 0
+            assert picker_visible == [False]
             assert mock_bg.called
             assert mock_clone.called
             expected_dest = str(target_dir / "repo")
@@ -86,27 +103,26 @@ class TestClonePicker:
         win.close()
 
     def test_clone_single_account_no_picker(self, db_conn, tmp_path):
-        """With exactly one matching account, no picker is shown."""
+        """With exactly one matching account, account picker stays hidden."""
         _add_dummy_account(db_conn, "Work Account", "alice")
         win = MainWindow(conn=db_conn)
         target_dir = tmp_path / "clone_dest"
+        exec_fn, picker_visible = _drive_clone_dialog(
+            "https://github.com/org/repo.git", target_dir, accept=True
+        )
 
         with (
-            patch.object(
-                QInputDialog, "getText", return_value=("https://github.com/org/repo.git", True)
-            ),
-            patch.object(QFileDialog, "getExistingDirectory", return_value=str(target_dir)),
+            patch.object(win, "_exec_dialog", side_effect=exec_fn),
             patch(
                 "wrench.ui.main_window.run_in_background", side_effect=_sync_run_in_background
             ) as mock_bg,
             patch("wrench.core.engine.clone_repo", return_value=MagicMock()),
             patch.object(win, "_on_repo_changed"),
             patch.object(win.changes_tab, "load_repos"),
-            patch("PySide6.QtWidgets.QDialog.exec") as mock_dialog_exec,
         ):
             win._on_clone_repo()
 
-            assert mock_dialog_exec.call_count == 0
+            assert picker_visible == [False]
             assert mock_bg.called
             expected_dest = str(target_dir / "repo")
             record = repo_registry.get_repo_by_path(db_conn, expected_dest)
@@ -114,25 +130,22 @@ class TestClonePicker:
         win.close()
 
     def test_clone_two_accounts_picker_cancelled(self, db_conn, tmp_path):
-        """Cancelling the picker creates no directory, no clone worker, no registry row."""
+        """Cancelling when multiple accounts match creates no directory, worker, or registry row."""
         _add_dummy_account(db_conn, "Account 1", "alice")
         _add_dummy_account(db_conn, "Account 2", "bob")
         win = MainWindow(conn=db_conn)
         target_dir = tmp_path / "clone_dest"
+        exec_fn, picker_visible = _drive_clone_dialog(
+            "https://github.com/org/repo.git", target_dir, accept=False
+        )
 
         with (
-            patch.object(
-                QInputDialog, "getText", return_value=("https://github.com/org/repo.git", True)
-            ),
-            patch.object(QFileDialog, "getExistingDirectory", return_value=str(target_dir)),
+            patch.object(win, "_exec_dialog", side_effect=exec_fn),
             patch("wrench.ui.main_window.run_in_background") as mock_bg,
-            patch(
-                "PySide6.QtWidgets.QDialog.exec", return_value=QDialog.Rejected
-            ) as mock_dialog_exec,
         ):
             win._on_clone_repo()
 
-            assert mock_dialog_exec.called
+            assert picker_visible == [True]
             assert not mock_bg.called
             expected_dest = str(target_dir / "repo")
             record = repo_registry.get_repo_by_path(db_conn, expected_dest)
@@ -145,20 +158,20 @@ class TestClonePicker:
         _add_dummy_account(db_conn, "Account 2", "bob")
         win = MainWindow(conn=db_conn)
         target_dir = tmp_path / "clone_dest"
+        exec_fn, picker_visible = _drive_clone_dialog(
+            "https://github.com/org/myrepo.git", target_dir, accept=True, row=0
+        )
 
         with (
-            patch.object(
-                QInputDialog, "getText", return_value=("https://github.com/org/myrepo.git", True)
-            ),
-            patch.object(QFileDialog, "getExistingDirectory", return_value=str(target_dir)),
+            patch.object(win, "_exec_dialog", side_effect=exec_fn),
             patch("wrench.ui.main_window.run_in_background", side_effect=_sync_run_in_background),
             patch("wrench.core.engine.clone_repo", return_value=MagicMock()),
             patch.object(win, "_on_repo_changed"),
             patch.object(win.changes_tab, "load_repos"),
-            patch("PySide6.QtWidgets.QDialog.exec", return_value=QDialog.Accepted),
         ):
             win._on_clone_repo()
 
+            assert picker_visible == [True]
             expected_dest = str(target_dir / "myrepo")
             record = repo_registry.get_repo_by_path(db_conn, expected_dest)
             assert record is not None
@@ -175,6 +188,9 @@ class TestClonePicker:
         _add_dummy_account(db_conn, "Account 2", "bob")
         win = MainWindow(conn=db_conn)
         target_dir = tmp_path / "clone_dest"
+        exec_fn, _ = _drive_clone_dialog(
+            "https://github.com/org/failrepo.git", target_dir, accept=True
+        )
 
         clone_error = GitCommandError(["clone"], 128, "fatal: repository not found")
 
@@ -182,19 +198,14 @@ class TestClonePicker:
             raise clone_error
 
         with (
-            patch.object(
-                QInputDialog, "getText", return_value=("https://github.com/org/failrepo.git", True)
-            ),
-            patch.object(QFileDialog, "getExistingDirectory", return_value=str(target_dir)),
+            patch.object(win, "_exec_dialog", side_effect=exec_fn),
             patch("wrench.ui.main_window.run_in_background", side_effect=_sync_run_in_background),
             patch("wrench.core.engine.clone_repo", side_effect=fake_clone),
             patch.object(win, "_route_remote_error") as mock_route,
-            patch("PySide6.QtWidgets.QDialog.exec", return_value=QDialog.Accepted),
         ):
             win._on_clone_repo()
 
             expected_dest = str(target_dir / "failrepo")
-            # Must be rolled back
             record = repo_registry.get_repo_by_path(db_conn, expected_dest)
             assert record is None, "Pre-created repo row must be rolled back on clone failure"
             assert mock_route.called
@@ -202,28 +213,27 @@ class TestClonePicker:
         win.close()
 
     def test_clone_ssh_url_no_picker_even_with_multiple_accounts(self, db_conn, tmp_path):
-        """SSH URLs do not trigger account matching or picker (HTTPS only rule)."""
+        """SSH URLs do not trigger account matching or inline picker (HTTPS only rule)."""
         _add_dummy_account(db_conn, "Account 1", "alice")
         _add_dummy_account(db_conn, "Account 2", "bob")
         win = MainWindow(conn=db_conn)
         target_dir = tmp_path / "clone_dest"
+        exec_fn, picker_visible = _drive_clone_dialog(
+            "git@github.com:org/sshrepo.git", target_dir, accept=True
+        )
 
         with (
-            patch.object(
-                QInputDialog, "getText", return_value=("git@github.com:org/sshrepo.git", True)
-            ),
-            patch.object(QFileDialog, "getExistingDirectory", return_value=str(target_dir)),
+            patch.object(win, "_exec_dialog", side_effect=exec_fn),
             patch(
                 "wrench.ui.main_window.run_in_background", side_effect=_sync_run_in_background
             ) as mock_bg,
             patch("wrench.core.engine.clone_repo", return_value=MagicMock()),
             patch.object(win, "_on_repo_changed"),
             patch.object(win.changes_tab, "load_repos"),
-            patch("PySide6.QtWidgets.QDialog.exec") as mock_dialog_exec,
         ):
             win._on_clone_repo()
 
-            assert mock_dialog_exec.call_count == 0
+            assert picker_visible == [False]
             assert mock_bg.called
             expected_dest = str(target_dir / "sshrepo")
             record = repo_registry.get_repo_by_path(db_conn, expected_dest)

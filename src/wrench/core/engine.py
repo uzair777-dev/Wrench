@@ -21,8 +21,13 @@ from .exceptions import (
 )
 from .models import (
     BundleInfo,
+    CommitGraphStats,
     LfsFileStatus,
     LFSLock,
+    LogPage,
+    SparseCheckoutState,
+    TreeDirectoryEntry,
+    WatcherStatusInfo,  # noqa: F401
 )
 
 logger = logging.getLogger(__name__)
@@ -153,6 +158,9 @@ class Diff:
     path: str
     is_binary: bool
     hunks: list[Hunk]
+    is_truncated: bool = False
+    total_lines: int = 0
+    truncated_reason: str | None = None
 
 
 @dataclass
@@ -243,7 +251,7 @@ class RepoHandle:
 
 
 # Import read_ops, write_ops, identity, reflog after all dataclasses are defined
-from . import identity, read_ops, reflog, write_ops  # noqa: E402
+from . import identity, read_ops, reflog, sparse_checkout, write_ops  # noqa: E402
 from .bundles import (  # noqa: E402
     create_bundle,
     get_bundle_info,
@@ -266,11 +274,17 @@ from .lfs_ops import (  # noqa: E402
     lfs_untrack,
     parse_lfs_pointer,
 )
+from .paths import resolve_git_dir  # noqa: E402, F401
 from .read_ops import iter_commits as _read_iter_commits  # noqa: E402
 from .reflog_ops import (  # noqa: E402
     create_branch_from_reflog,
     list_reflog,
     reset_to_reflog_entry,
+)
+from .security_sanitizer import (  # noqa: E402, F401
+    redact_secrets,
+    validate_clone_url,
+    validate_git_ref,
 )
 from .submodules import (  # noqa: E402
     add_submodule,
@@ -294,11 +308,25 @@ def clone_repo(
     *,
     progress_cb=None,
     cancel_event=None,
+    branch: str | None = None,
+    recursive: bool = False,
+    filter_spec: str | None = None,
+    sparse: bool = False,
 ) -> CloneResult:
-    return write_ops.clone_repo(url, dest, progress_cb=progress_cb, cancel_event=cancel_event)
+    return write_ops.clone_repo(
+        url,
+        dest,
+        progress_cb=progress_cb,
+        cancel_event=cancel_event,
+        branch=branch,
+        recursive=recursive,
+        filter_spec=filter_spec,
+        sparse=sparse,
+    )
 
 
 clone = clone_repo
+clone_repository = clone_repo
 
 
 def open_repo(path: Path | str) -> RepoHandle:
@@ -337,8 +365,21 @@ def get_status(repo: RepoHandle) -> RepoStatus:
     return read_ops.get_status(repo)
 
 
-def get_diff(repo: RepoHandle, path: str, *, staged: bool) -> Diff:
-    return read_ops.get_diff(repo, path, staged=staged)
+def get_diff(
+    repo: RepoHandle,
+    path: str,
+    *,
+    staged: bool,
+    max_lines: int | None = None,
+    max_bytes: int | None = None,
+) -> Diff:
+    return read_ops.get_diff(
+        repo,
+        path,
+        staged=staged,
+        max_lines=max_lines,
+        max_bytes=max_bytes,
+    )
 
 
 def get_log(
@@ -352,12 +393,42 @@ def get_log(
     return read_ops.get_log(repo, filter, limit=limit, offset=offset, all_refs=all_refs)
 
 
+def get_log_page(
+    repo: RepoHandle,
+    filter: LogFilter | None = None,
+    *,
+    limit: int = 500,
+    cursor_sha: str | None = None,
+    all_refs: bool = False,
+) -> LogPage:
+    return read_ops.get_log_page(
+        repo,
+        filter,
+        limit=limit,
+        cursor_sha=cursor_sha,
+        all_refs=all_refs,
+    )
+
+
 def iter_commits(repo: RepoHandle, *, all_refs: bool = False):
     return _read_iter_commits(repo, all_refs=all_refs)
 
 
-def get_commit_diff(repo: RepoHandle, sha: str, path: str | None = None) -> Diff:
-    return read_ops.get_commit_diff(repo, sha, path=path)
+def get_commit_diff(
+    repo: RepoHandle,
+    sha: str,
+    path: str | None = None,
+    *,
+    max_lines: int | None = None,
+    max_bytes: int | None = None,
+) -> Diff:
+    return read_ops.get_commit_diff(
+        repo,
+        sha,
+        path=path,
+        max_lines=max_lines,
+        max_bytes=max_bytes,
+    )
 
 
 def get_commit_file_stats(repo: RepoHandle, sha: str) -> list[FileStat]:
@@ -1130,6 +1201,8 @@ class GitEngine:
         progress_cb: Callable[[int, int, int], None] | None = None,
         cancel_event: threading.Event | None = None,
         recursive: bool = False,
+        filter_spec: str | None = None,
+        sparse: bool = False,
     ) -> CloneResult:
         return clone_repo(
             url,
@@ -1138,6 +1211,8 @@ class GitEngine:
             progress_cb=progress_cb,
             cancel_event=cancel_event,
             recursive=recursive,
+            filter_spec=filter_spec,
+            sparse=sparse,
         )
 
     def get_status(self, repo: RepoHandle | None = None) -> RepoStatus:
@@ -1186,11 +1261,25 @@ class GitEngine:
             raise ValueError("No repository provided")
         return commit(target, message, amend=amend)
 
-    def get_diff(self, path: str, staged: bool = False, repo: RepoHandle | None = None) -> Diff:
+    def get_diff(
+        self,
+        path: str,
+        staged: bool = False,
+        repo: RepoHandle | None = None,
+        *,
+        max_lines: int | None = None,
+        max_bytes: int | None = None,
+    ) -> Diff:
         target = repo or self.repo
         if not target:
             raise ValueError("No repository provided")
-        return get_diff(target, path, staged=staged)
+        return get_diff(
+            target,
+            path,
+            staged=staged,
+            max_lines=max_lines,
+            max_bytes=max_bytes,
+        )
 
     def get_commit_history(
         self,
@@ -1206,9 +1295,29 @@ class GitEngine:
         return get_log(
             target,
             limit=max_count,
-            skip=skip,
-            branch=branch,
-            filter_opts=filter_opts,
+            offset=skip,
+            all_refs=(branch is None),
+            filter=filter_opts,
+        )
+
+    def get_log_page(
+        self,
+        filter: LogFilter | None = None,
+        *,
+        limit: int = 500,
+        cursor_sha: str | None = None,
+        all_refs: bool = False,
+        repo: RepoHandle | None = None,
+    ) -> LogPage:
+        target = repo or self.repo
+        if not target:
+            raise ValueError("No repository provided")
+        return get_log_page(
+            target,
+            filter=filter,
+            limit=limit,
+            cursor_sha=cursor_sha,
+            all_refs=all_refs,
         )
 
     def create_branch(
@@ -1452,3 +1561,157 @@ class GitEngine:
         if not target:
             raise ValueError("No repository provided")
         create_branch_from_reflog(target, branch_name, sha)
+
+    # Monorepo Sparse-Checkout & Commit-Graph Maintenance (VP-16)
+    @staticmethod
+    def is_unborn_repo(repo_path: Path | str) -> bool:
+        return is_unborn_repo(repo_path)
+
+    @staticmethod
+    def is_sparse_checkout_enabled(repo_path: Path | str) -> bool:
+        return is_sparse_checkout_enabled(repo_path)
+
+    @staticmethod
+    def get_sparse_checkout_state(repo_path: Path | str) -> SparseCheckoutState:
+        return get_sparse_checkout_state(repo_path)
+
+    @staticmethod
+    def init_sparse_checkout(repo_path: Path | str, cone: bool = True) -> None:
+        init_sparse_checkout(repo_path, cone=cone)
+
+    @staticmethod
+    def list_sparse_directories(repo_path: Path | str) -> list[str]:
+        return list_sparse_directories(repo_path)
+
+    @staticmethod
+    def set_sparse_directories(
+        repo_path: Path | str,
+        dirs: list[str],
+        *,
+        cone: bool = True,
+    ) -> None:
+        set_sparse_directories(repo_path, dirs, cone=cone)
+
+    @staticmethod
+    def disable_sparse_checkout(repo_path: Path | str) -> None:
+        disable_sparse_checkout(repo_path)
+
+    @staticmethod
+    def list_head_top_directories(repo_path: Path | str, max_depth: int = 2) -> list[str]:
+        return list_head_top_directories(repo_path, max_depth=max_depth)
+
+    @staticmethod
+    def list_tree_subdirectories(
+        repo_path: Path | str,
+        parent_rel_path: str = "",
+    ) -> list[TreeDirectoryEntry]:
+        return list_tree_subdirectories(repo_path, parent_rel_path=parent_rel_path)
+
+    @staticmethod
+    def write_commit_graph(
+        repo_path: Path | str,
+        *,
+        reachable: bool = True,
+        changed_paths: bool = True,
+        timeout: int = 120,
+    ) -> CommitGraphStats:
+        return write_commit_graph(
+            repo_path,
+            reachable=reachable,
+            changed_paths=changed_paths,
+            timeout=timeout,
+        )
+
+    def maybe_write_commit_graph(
+        self,
+        repo_path: Path | str | None = None,
+        *,
+        settings_registry: Any = None,
+    ) -> CommitGraphStats:
+        target_path = (
+            Path(repo_path) if repo_path is not None else (self.repo.path if self.repo else None)
+        )
+        if target_path is None:
+            raise ValueError("No repository provided")
+        return maybe_write_commit_graph(
+            target_path,
+            settings_registry=settings_registry or self._settings,
+        )
+
+
+def is_unborn_repo(repo_path: Path | str) -> bool:
+    """Return True if the repository exists and has an unborn HEAD."""
+    try:
+        return bool(pygit2.Repository(str(Path(repo_path))).head_is_unborn)
+    except pygit2.GitError as exc:
+        raise WrenchRepoNotFoundError(str(exc)) from exc
+
+
+def is_sparse_checkout_enabled(repo_path: Path | str) -> bool:
+    return sparse_checkout.is_sparse_checkout_enabled(repo_path)
+
+
+def get_sparse_checkout_state(repo_path: Path | str) -> SparseCheckoutState:
+    return sparse_checkout.get_sparse_checkout_state(repo_path)
+
+
+def init_sparse_checkout(repo_path: Path | str, cone: bool = True) -> None:
+    sparse_checkout.init_sparse_checkout(repo_path, cone=cone)
+
+
+def list_sparse_directories(repo_path: Path | str) -> list[str]:
+    return sparse_checkout.list_sparse_directories(repo_path)
+
+
+def set_sparse_directories(
+    repo_path: Path | str,
+    dirs: list[str],
+    *,
+    cone: bool = True,
+) -> None:
+    sparse_checkout.set_sparse_directories(repo_path, dirs, cone=cone)
+
+
+def disable_sparse_checkout(repo_path: Path | str) -> None:
+    sparse_checkout.disable_sparse_checkout(repo_path)
+
+
+def list_head_top_directories(repo_path: Path | str, max_depth: int = 2) -> list[str]:
+    return sparse_checkout.list_head_top_directories(repo_path, max_depth=max_depth)
+
+
+def list_tree_subdirectories(
+    repo_path: Path | str,
+    parent_rel_path: str = "",
+) -> list[TreeDirectoryEntry]:
+    return sparse_checkout.list_tree_subdirectories(repo_path, parent_rel_path=parent_rel_path)
+
+
+def write_commit_graph(
+    repo_path: Path | str,
+    *,
+    reachable: bool = True,
+    changed_paths: bool = True,
+    timeout: int = 120,
+) -> CommitGraphStats:
+    return write_ops.write_commit_graph(
+        repo_path,
+        reachable=reachable,
+        changed_paths=changed_paths,
+        timeout=timeout,
+    )
+
+
+def maybe_write_commit_graph(
+    repo_path: Path | str,
+    settings_registry: Any = None,
+) -> CommitGraphStats:
+    """Gate commit-graph maintenance cleanly against maintenance.auto_commit_graph.enabled."""
+    from wrench.storage.settings_registry import peek_settings_registry
+
+    reg = settings_registry or peek_settings_registry()
+    if reg is not None and not reg.is_enabled(
+        "maintenance.auto_commit_graph.enabled", str(repo_path)
+    ):
+        return CommitGraphStats(written=False, duration_ms=0, skipped_reason="disabled")
+    return write_commit_graph(repo_path)

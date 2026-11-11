@@ -532,3 +532,19 @@ def get_avatar_bg_color(identifier: str, is_dark: bool) -> str:
 def get_avatar_fg_color(is_dark: bool) -> str:
     """Returns the text hex color for initials avatar tiles."""
     return AVATAR_FG_COLORS["dark" if is_dark else "light"]
+
+
+# --- CLI Command Preview Bar Styling (Catppuccin Velvet Pastel) ---
+
+CLI_PREVIEW_STYLES = {
+    "light": {
+        "bg": "#e6e9ef",  # Catppuccin Latte Mantle
+        "border": "#ccd0da",  # Catppuccin Latte Surface0
+        "fg": "#4c4f69",  # Catppuccin Latte Text
+    },
+    "dark": {
+        "bg": "#1e1e2e",  # Catppuccin Mocha Base
+        "border": "#45475a",  # Catppuccin Mocha Surface1
+        "fg": "#cdd6f4",  # Catppuccin Mocha Text
+    },
+}

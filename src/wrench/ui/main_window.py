@@ -17,20 +17,29 @@ import threading
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import QByteArray, QEvent, Qt, QTimer
+import shiboken6
+from PySide6.QtCore import (
+    QByteArray,
+    QEvent,
+    QObject,
+    QRunnable,
+    Qt,
+    QThreadPool,
+    QTimer,
+    Signal,
+    Slot,
+)
 from PySide6.QtGui import QActionGroup, QGuiApplication, QKeySequence
 from PySide6.QtWidgets import (
     QApplication,
     QDialog,
-    QDialogButtonBox,
     QFileDialog,
     QInputDialog,
     QLabel,
-    QListWidget,
-    QListWidgetItem,
     QMainWindow,
     QMessageBox,
     QStatusBar,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -57,8 +66,10 @@ from wrench.core.exceptions import (
 )
 from wrench.core.remote_urls import host_of_instance_url, parse_remote_url
 from wrench.storage import forge_accounts, get_connection, repo_registry, settings
+from wrench.storage.settings_registry import SettingsRegistry, get_settings_registry
 from wrench.ui.dialogs.about_dialog import AboutDialog
 from wrench.ui.dialogs.accounts_dialog import AccountsDialog
+from wrench.ui.dialogs.clone_dialog import CloneDialog
 from wrench.ui.dialogs.discover_repos_dialog import DiscoverReposDialog
 from wrench.ui.dialogs.link_dialog import LinkRepoDialog
 from wrench.ui.dialogs.push_recovery_dialogs import (
@@ -69,6 +80,7 @@ from wrench.ui.dialogs.push_recovery_dialogs import (
     SecretScanningDialog,
 )
 from wrench.ui.dialogs.remotes_dialog import RemotesDialog
+from wrench.ui.dialogs.sparse_checkout_dialog import SparseCheckoutDialog
 from wrench.ui.recovery.busy_dialog import BusyOperationDialog
 from wrench.ui.snapshots_panel import SnapshotsPanel
 from wrench.ui.tabs.changes_tab import ChangesTab
@@ -86,6 +98,43 @@ from wrench.watcher.inotify_watcher import RepoWatcher
 logger = logging.getLogger(__name__)
 
 
+class _CommitGraphSignals(QObject):
+    """Queued signal bridge from background commit-graph maintenance worker to MainWindow."""
+
+    finished = Signal(int, object)  # (generation_id, CommitGraphStats | None)
+
+
+class _CommitGraphWorker(QRunnable):
+    """Runs background git commit-graph maintenance on QThreadPool."""
+
+    def __init__(
+        self,
+        *,
+        generation_id: int,
+        repo_path: Path,
+        settings_registry: SettingsRegistry | None,
+        signals: _CommitGraphSignals,
+    ) -> None:
+        super().__init__()
+        self._generation_id = generation_id
+        self._repo_path = repo_path
+        self._settings_registry = settings_registry
+        self._signals = signals
+        self.setAutoDelete(True)
+
+    def run(self) -> None:
+        stats = None
+        try:
+            stats = engine.maybe_write_commit_graph(
+                self._repo_path,
+                settings_registry=self._settings_registry,
+            )
+        except Exception as exc:
+            logger.debug("Background commit-graph maintenance skipped: %s", exc)
+        if shiboken6.isValid(self._signals):
+            self._signals.finished.emit(self._generation_id, stats)
+
+
 class MainWindow(QMainWindow):
     """Main application shell."""
 
@@ -96,11 +145,16 @@ class MainWindow(QMainWindow):
         self.resize(1200, 800)
 
         self._conn = conn if conn is not None else get_connection()
+        self._settings_registry = get_settings_registry(self._conn)
+        self._registry_connected: bool = False
         self._current_repo: RepoHandle | None = None
         self._watcher: RepoWatcher | None = None
         self._repos_state: dict[str, dict] = {}
         self._is_restoring: bool = True
         self._repo_switch_generation: int = 0
+        self._commit_graph_generation: int = 0
+        self._sparse_dialog: SparseCheckoutDialog | None = None
+        self._pending_maint_signals: set[_CommitGraphSignals] = set()
 
         # 1000ms debounce timer for coalescing auto-save writes
         self._auto_save_timer = QTimer(self)
@@ -124,6 +178,12 @@ class MainWindow(QMainWindow):
 
         self._init_ui()
         self._restore_settings()
+        self._settings_registry.setting_changed.connect(
+            self._on_registry_setting_changed,
+            Qt.ConnectionType.QueuedConnection,
+        )
+        self._registry_connected = True
+        self.destroyed.connect(self._disconnect_settings_registry)
 
     def _init_ui(self) -> None:
         # Central TabContainer & Activity Dock
@@ -160,7 +220,7 @@ class MainWindow(QMainWindow):
         )
 
         # 2. History tab (Index 1, closable)
-        self.history_tab = HistoryTab(self)
+        self.history_tab = HistoryTab(self, settings_registry=self._settings_registry)
         self.history_tab.detail_panel._conn = self._conn
         self.history_tab.rebase_requested.connect(self._on_history_rebase)
 
@@ -201,6 +261,17 @@ class MainWindow(QMainWindow):
         self.setStatusBar(self.status_bar)
         self.status_label = QLabel(self.tr("Ready"), self.status_bar)
         self.status_bar.addWidget(self.status_label)
+
+        self.watcher_mode_label = QLabel("", self.status_bar)
+        self.watcher_mode_label.setVisible(False)
+        self.status_bar.addPermanentWidget(self.watcher_mode_label)
+
+        self.sparse_status_btn = QToolButton(self.status_bar)
+        self.sparse_status_btn.setVisible(False)
+        self.sparse_status_btn.setAutoRaise(True)
+        self.sparse_status_btn.clicked.connect(self._on_manage_sparse_checkout)
+        self.status_bar.addPermanentWidget(self.sparse_status_btn)
+        self._sync_sparse_ui_visibility()
 
     def _schedule_auto_save(self) -> None:
         """Restarts the 1000ms debounce timer to batch session persistence writes."""
@@ -354,6 +425,9 @@ class MainWindow(QMainWindow):
 
         self.act_remotes = repo_menu.addAction(self.tr("&Remotes…"))
         self.act_remotes.triggered.connect(self._on_manage_remotes)
+
+        self.act_sparse_checkout = repo_menu.addAction(self.tr("&Sparse-Checkout Directories…"))
+        self.act_sparse_checkout.triggered.connect(self._on_manage_sparse_checkout)
 
         repo_menu.addSeparator()
 
@@ -740,6 +814,8 @@ class MainWindow(QMainWindow):
             self._auto_save_timer.stop()
         self._save_session_state()
 
+        self._disconnect_settings_registry()
+
         if self._watcher:
             self._watcher.stop()
             self._watcher = None
@@ -769,10 +845,17 @@ class MainWindow(QMainWindow):
                 path,
                 on_change=self.changes_tab.refresh,
                 parent=self,
+                settings_registry=self._settings_registry,
             )
             self._watcher.status_changed.connect(self.history_tab.refresh)
             self._watcher.status_changed.connect(self.snapshots_panel.refresh)
+            self._watcher.adaptive_fallback_activated.connect(self._on_watcher_mode_changed)
             self._watcher.start()
+            watcher_status = getattr(self._watcher, "status_info", None)
+            if isinstance(getattr(watcher_status, "mode", None), str):
+                self._on_watcher_mode_changed(watcher_status.mode, watcher_status.reason or "")
+            self._sync_sparse_ui_visibility()
+            self._maybe_write_commit_graph(path)
 
             status = getattr(self.changes_tab, "_current_status", None)
             if status:
@@ -1211,98 +1294,62 @@ class MainWindow(QMainWindow):
         )
 
     def _on_clone_repo(self) -> None:
-        url, ok = QInputDialog.getText(
-            self,
-            self.tr("Clone Repository"),
-            self.tr("Repository URL (HTTPS or SSH):"),
+        dlg = CloneDialog(
+            parent=self,
+            settings_registry=self._settings_registry,
+            conn=self._conn,
         )
-        if not ok or not url.strip():
+        if self._exec_dialog(dlg) != QDialog.DialogCode.Accepted:
             return
 
-        clean_url = url.strip()
-        repo_name = clean_url.rstrip("/").split("/")[-1].replace(".git", "")
-        dest_parent = QFileDialog.getExistingDirectory(
-            self,
-            self.tr("Select Destination Folder"),
-        )
+        try:
+            clean_url = engine.validate_clone_url(dlg.clone_url())
+        except ValueError as exc:
+            self.statusBar().showMessage(engine.redact_secrets(str(exc)), 6000)
+            return
+
+        dest_parent = dlg.dest_parent()
         if not dest_parent:
             return
 
+        repo_name = dlg.repo_name()
         target_dest = str(Path(dest_parent) / repo_name)
+        fspec = dlg.filter_spec()
+        filter_opt = None if fspec in ("", "none") else fspec
+        use_sparse = dlg.sparse_enabled()
 
-        # --- Phase 4.1: Multi-account clone picker ---
+        # --- Phase 4.1: Multi-account clone pre-linking ---
         pre_created_repo = False
-        chosen_account_id = None
+        chosen_account_id = dlg.selected_account_id()
         url_parts = parse_remote_url(clean_url)
 
-        if url_parts and url_parts.protocol in ("https", "http") and url_parts.host:
-            try:
-                all_accounts = forge_accounts.list_accounts(self._conn)
-            except Exception:
-                all_accounts = []
-            candidates = [
-                a for a in all_accounts if host_of_instance_url(a.instance_url) == url_parts.host
-            ]
+        if (
+            chosen_account_id is not None
+            and url_parts
+            and url_parts.protocol in ("https", "http")
+            and url_parts.host
+        ):
+            existing = repo_registry.get_repo_by_path(self._conn, target_dest)
+            if existing:
+                repo_id = existing.id
+            else:
+                repo_id = repo_registry.add_repo(self._conn, target_dest, repo_name)
+                pre_created_repo = True
 
-            if len(candidates) >= 2:
-                # Show the FR-5.9 picker dialog for disambiguation
-                picker = QDialog(self)
-                picker.setWindowTitle(self.tr("Choose Forge Account"))
-                picker_layout = QVBoxLayout(picker)
-                picker_layout.addWidget(
-                    QLabel(
-                        self.tr(
-                            f"Multiple forge accounts can reach <b>{url_parts.host}</b>.<br>"
-                            f"Choose which account to use for cloning:<br>"
-                            f"<code>{clean_url}</code>"
-                        )
-                    )
-                )
-                account_list = QListWidget(picker)
-                account_list.setAccessibleName(self.tr("Forge accounts"))
-                for acc in candidates:
-                    item = QListWidgetItem(
-                        f"{acc.label} ({acc.provider} — {acc.username or 'no username'})"
-                    )
-                    item.setData(Qt.UserRole, acc.id)
-                    account_list.addItem(item)
-                account_list.setCurrentRow(0)
-                picker_layout.addWidget(account_list)
-                buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel, picker)
-                buttons.accepted.connect(picker.accept)
-                buttons.rejected.connect(picker.reject)
-                picker_layout.addWidget(buttons)
-
-                if picker.exec() != QDialog.Accepted:
-                    return  # User cancelled → no clone, no directory
-
-                selected = account_list.currentItem()
-                if selected:
-                    chosen_account_id = selected.data(Qt.UserRole)
-
-                if chosen_account_id is not None:
-                    # Pre-create registry row + link BEFORE starting the clone
-                    existing = repo_registry.get_repo_by_path(self._conn, target_dest)
-                    if existing:
-                        repo_id = existing.id
-                    else:
-                        repo_id = repo_registry.add_repo(self._conn, target_dest, repo_name)
-                        pre_created_repo = True
-
-                    forge_accounts.link_repo_to_account(
-                        self._conn,
-                        repo_id,
-                        chosen_account_id,
-                        "origin",
-                        url_parts.owner,
-                        url_parts.repo,
-                    )
+            forge_accounts.link_repo_to_account(
+                self._conn,
+                repo_id,
+                chosen_account_id,
+                "origin",
+                url_parts.owner,
+                url_parts.repo,
+            )
 
         # --- Clone worker ---
         cancel_event = threading.Event()
         busy_dlg = BusyOperationDialog(
             self.tr("Clone Repository"),
-            self.tr(f"Cloning {clean_url}..."),
+            self.tr(f"Cloning {engine.redact_secrets(clean_url)}..."),
             cancel_event=cancel_event,
             humor_enabled=self._is_humor_lines_enabled(),
             parent=self,
@@ -1310,11 +1357,25 @@ class MainWindow(QMainWindow):
 
         def on_finished(_res):
             busy_dlg.accept()
-            # Only add_repo if we didn't pre-create it
             if not pre_created_repo:
                 repo_registry.add_repo(self._conn, target_dest, repo_name)
             self.changes_tab.load_repos(select_path=target_dest)
             self._on_repo_changed(target_dest)
+            if use_sparse and self._settings_registry.is_enabled(
+                "monorepo.sparse_checkout_ui.enabled", target_dest
+            ):
+                sparse_dlg = SparseCheckoutDialog(
+                    target_dest,
+                    parent=self,
+                    settings_registry=self._settings_registry,
+                )
+                self._sparse_dialog = sparse_dlg
+                try:
+                    if self._exec_dialog(sparse_dlg) == QDialog.DialogCode.Accepted:
+                        self._refresh_after_git_op()
+                finally:
+                    if self._sparse_dialog is sparse_dlg:
+                        self._sparse_dialog = None
 
         def on_failed(exc):
             busy_dlg.reject()
@@ -1328,6 +1389,8 @@ class MainWindow(QMainWindow):
             engine.clone_repo,
             clean_url,
             Path(target_dest),
+            filter_spec=filter_opt,
+            sparse=use_sparse,
             on_finished=on_finished,
             on_failed=on_failed,
             on_progress=busy_dlg.set_progress,
@@ -1412,6 +1475,7 @@ class MainWindow(QMainWindow):
                 )
             except Exception as e:
                 logger.debug("Failed updating status label: %s", e)
+        self._sync_sparse_ui_visibility()
 
     def _on_manage_remotes(self) -> None:
         if not self._current_repo:
@@ -2090,6 +2154,8 @@ class MainWindow(QMainWindow):
             self.changes_tab.set_repo(None)
             self.history_tab.set_repo(None)
             self.snapshots_panel.set_repo(None)
+            self.watcher_mode_label.setVisible(False)
+            self._sync_sparse_ui_visibility()
             self.status_label.setText(self.tr("Repository closed"))
 
     def _on_stash_changes(self) -> None:
@@ -2197,12 +2263,174 @@ class MainWindow(QMainWindow):
         else:
             self._snapshot_timer.stop()
 
+    def _exec_dialog(self, dlg: QDialog) -> int:
+        """Thin mockable modal dialog execution seam (FLASH-4)."""
+        return dlg.exec()
+
+    def _disconnect_settings_registry(self, *_) -> None:
+        if not getattr(self, "_registry_connected", False):
+            return
+        try:
+            self._settings_registry.setting_changed.disconnect(self._on_registry_setting_changed)
+        except RuntimeError, TypeError:
+            pass
+        self._registry_connected = False
+
+    def open_settings_at_category(
+        self,
+        category: str,
+        highlight_key: str | None = None,
+    ) -> None:
+        """Open Preferences directly at a named SettingsRegistry category."""
+        from wrench.ui.dialogs.settings_dialog import SettingsDialog
+
+        dlg = SettingsDialog(main_window=self, parent=self)
+        dlg.select_category(category, highlight_key=highlight_key)
+        self._exec_dialog(dlg)
+
+    def _sync_sparse_ui_visibility(self) -> None:
+        repo_str = str(self._current_repo.path) if self._current_repo else None
+        feature_enabled = self._settings_registry.is_enabled(
+            "monorepo.sparse_checkout_ui.enabled", repo_str
+        )
+        if hasattr(self, "act_sparse_checkout"):
+            self.act_sparse_checkout.setVisible(feature_enabled)
+            self.act_sparse_checkout.setEnabled(feature_enabled and self._current_repo is not None)
+
+        if not hasattr(self, "sparse_status_btn"):
+            return
+
+        if not feature_enabled or not self._current_repo:
+            self.sparse_status_btn.setVisible(False)
+            return
+
+        try:
+            state = engine.get_sparse_checkout_state(self._current_repo.path)
+        except Exception as exc:
+            logger.debug("Could not inspect sparse state for status badge: %s", exc)
+            self.sparse_status_btn.setVisible(False)
+            return
+
+        if not state.enabled:
+            self.sparse_status_btn.setVisible(False)
+            return
+
+        n = len(state.directories)
+        suffix = f" ({state.partial_filter})" if state.partial_filter else ""
+        self.sparse_status_btn.setText(self.tr(f"Sparse: {n} dir{'s' if n != 1 else ''}{suffix}"))
+        self.sparse_status_btn.setToolTip(
+            self.tr("Click to manage sparse-checkout cone directories")
+        )
+        self.sparse_status_btn.setVisible(True)
+
+    def _on_manage_sparse_checkout(self) -> None:
+        repo_str = str(self._current_repo.path) if self._current_repo else None
+        if not self._settings_registry.is_enabled("monorepo.sparse_checkout_ui.enabled", repo_str):
+            return
+        if not self._current_repo:
+            QMessageBox.information(
+                self,
+                self.tr("No Repository Open"),
+                self.tr("Please open a repository first to configure sparse-checkout."),
+            )
+            return
+
+        dlg = SparseCheckoutDialog(
+            self._current_repo.path,
+            parent=self,
+            settings_registry=self._settings_registry,
+        )
+        self._sparse_dialog = dlg
+        try:
+            if self._exec_dialog(dlg) == QDialog.DialogCode.Accepted:
+                self._refresh_after_git_op()
+        finally:
+            if self._sparse_dialog is dlg:
+                self._sparse_dialog = None
+
+    @Slot(str, object)
+    @Slot(str, object, object)
+    def _on_registry_setting_changed(self, key: str, _value: Any, _repo_path: Any = None) -> None:
+        if not shiboken6.isValid(self):
+            return
+        if key == "monorepo.sparse_checkout_ui.enabled":
+            self._sync_sparse_ui_visibility()
+            repo_str = str(self._current_repo.path) if self._current_repo else None
+            if (
+                not self._settings_registry.is_enabled(key, repo_str)
+                and self._sparse_dialog is not None
+                and shiboken6.isValid(self._sparse_dialog)
+            ):
+                self._sparse_dialog.reject()
+        elif key == "maintenance.auto_commit_graph.enabled":
+            repo_str = str(self._current_repo.path) if self._current_repo else None
+            if not self._settings_registry.is_enabled(key, repo_str):
+                self._commit_graph_generation += 1
+
+    @Slot(str, str)
+    def _on_watcher_mode_changed(self, mode: str, reason: str) -> None:
+        if not shiboken6.isValid(self) or not isinstance(mode, str):
+            return
+        if not hasattr(self, "watcher_mode_label"):
+            return
+        if mode == "git_dir_inotify":
+            self.watcher_mode_label.setText(self.tr("Watcher: .git-only"))
+            self.watcher_mode_label.setToolTip(
+                reason or self.tr("Switched to adaptive .git-only metadata watcher")
+            )
+            self.watcher_mode_label.setVisible(True)
+        elif mode == "polling":
+            self.watcher_mode_label.setText(self.tr("Watcher: polling"))
+            self.watcher_mode_label.setToolTip(
+                reason or self.tr("Polling metadata fallback active")
+            )
+            self.watcher_mode_label.setVisible(True)
+        else:
+            self.watcher_mode_label.setVisible(False)
+            self.watcher_mode_label.setToolTip("")
+
+    def _maybe_write_commit_graph(self, repo_path: str | Path) -> None:
+        repo_str = str(repo_path)
+        if not self._settings_registry.is_enabled(
+            "maintenance.auto_commit_graph.enabled", repo_str
+        ):
+            return
+        self._commit_graph_generation += 1
+        gen_id = self._commit_graph_generation
+        signals = _CommitGraphSignals(None)
+        self._pending_maint_signals.add(signals)
+        signals.finished.connect(
+            self._on_commit_graph_finished,
+            Qt.ConnectionType.QueuedConnection,
+        )
+        worker = _CommitGraphWorker(
+            generation_id=gen_id,
+            repo_path=Path(repo_str),
+            settings_registry=self._settings_registry,
+            signals=signals,
+        )
+        QThreadPool.globalInstance().start(worker)
+
+    @Slot(int, object)
+    def _on_commit_graph_finished(self, generation_id: int, stats: Any) -> None:
+        sender_obj = self.sender()
+        if isinstance(sender_obj, _CommitGraphSignals):
+            self._pending_maint_signals.discard(sender_obj)
+        if not shiboken6.isValid(self) or generation_id != self._commit_graph_generation:
+            return
+        if stats is not None and getattr(stats, "written", False):
+            logger.debug(
+                "Background commit-graph updated (%d ms, %d bytes)",
+                stats.duration_ms,
+                stats.graph_file_size_bytes,
+            )
+
     def _on_open_preferences(self) -> None:
         """Opens the Preferences / Settings dialog."""
         from wrench.ui.dialogs.settings_dialog import SettingsDialog
 
         dlg = SettingsDialog(main_window=self, parent=self)
-        dlg.exec()
+        self._exec_dialog(dlg)
 
     def _on_add_category_tab(self, tab_type: str) -> None:
         if tab_type == "changes":

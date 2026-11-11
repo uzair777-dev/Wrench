@@ -129,6 +129,9 @@ class Diff:
     path: str
     is_binary: bool
     hunks: list[Hunk]
+    is_truncated: bool = False
+    total_lines: int = 0
+    truncated_reason: str | None = None
 
 
 @dataclass
@@ -230,3 +233,53 @@ class BundleInfo:
     is_valid: bool
     prerequisites: list[str] = field(default_factory=list)
     references: list[str] = field(default_factory=list)
+
+
+@dataclass(slots=True, frozen=True)
+class SparseCheckoutState:
+    """Current sparse-checkout configuration for a repository or linked worktree."""
+
+    enabled: bool
+    cone_mode: bool
+    directories: tuple[str, ...]
+    partial_filter: str | None = None
+
+
+@dataclass(slots=True, frozen=True)
+class TreeDirectoryEntry:
+    """Single directory node returned for lazy tree expansion at HEAD."""
+
+    name: str
+    rel_path: str
+    has_children: bool
+    is_selected: bool = False
+
+
+@dataclass(slots=True, frozen=True)
+class LogPage:
+    """Windowed commit page returned by bounded pygit2 walker queries."""
+
+    commits: tuple[Commit, ...]
+    next_cursor_sha: str | None
+    has_more: bool
+    scanned_count: int = 0
+
+
+@dataclass(slots=True, frozen=True)
+class CommitGraphStats:
+    """Outcome metadata returned by background git commit-graph maintenance."""
+
+    written: bool
+    duration_ms: int
+    skipped_reason: str | None = None  # None | 'disabled' | 'empty_repo' | 'locked' | 'error'
+    graph_file_size_bytes: int = 0
+
+
+@dataclass(slots=True, frozen=True)
+class WatcherStatusInfo:
+    """Active monitoring strategy reported by RepoWatcher."""
+
+    mode: str  # 'full_inotify' | 'git_dir_inotify' | 'polling' | 'disabled'
+    is_fallback: bool
+    watched_paths: tuple[str, ...]
+    reason: str | None = None

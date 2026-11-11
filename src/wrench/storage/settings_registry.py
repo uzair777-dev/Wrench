@@ -482,6 +482,17 @@ DEFAULT_SETTING_SPECS: dict[str, SettingSpec] = {
         default=True,
         parent_toggle_key="submodules.enabled",
     ),
+    "monorepo.sparse_checkout_ui.enabled": SettingSpec(
+        key="monorepo.sparse_checkout_ui.enabled",
+        category="Worktrees & Submodules",
+        label="Sparse-Checkout Directory Manager UI",
+        description=(
+            "Enable the monorepo sparse-checkout directory picker dialog "
+            "and Clone dialog partial/sparse options."
+        ),
+        setting_type=SettingType.BOOL,
+        default=True,
+    ),
     # 7. Remotes & LFS
     "remote.auto_fetch.enabled": SettingSpec(
         key="remote.auto_fetch.enabled",
@@ -542,6 +553,19 @@ DEFAULT_SETTING_SPECS: dict[str, SettingSpec] = {
         description="Detect LFS tracked files, inspect locks, and manage LFS object downloads.",
         setting_type=SettingType.BOOL,
         default=True,
+    ),
+    "clone.default_filter_mode": SettingSpec(
+        key="clone.default_filter_mode",
+        category="Remotes & LFS",
+        label="Default Partial-Clone Object Filter",
+        description=(
+            "Pre-selected Git partial-clone --filter preset in the Clone Repository dialog "
+            "(none for full clone, blob:none for treeless blobs, tree:0 for minimal trees)."
+        ),
+        setting_type=SettingType.CHOICE,
+        default="none",
+        choices=("none", "blob:none", "tree:0"),
+        scope=SettingScope.GLOBAL_ONLY,
     ),
     # 8. Forges & CI
     "forge.enabled": SettingSpec(
@@ -732,6 +756,42 @@ DEFAULT_SETTING_SPECS: dict[str, SettingSpec] = {
         default=2048,
         min_value=128,
         max_value=32768,
+    ),
+    "watcher.monorepo_adaptive_fallback.enabled": SettingSpec(
+        key="watcher.monorepo_adaptive_fallback.enabled",
+        category="Watcher & Performance",
+        label="Monorepo Adaptive Watcher Fallback",
+        description=(
+            "Automatically fall back to watching only .git metadata (HEAD, index, refs) "
+            "when full working-tree inotify reaches OS watch limits."
+        ),
+        setting_type=SettingType.BOOL,
+        default=True,
+        parent_toggle_key="watcher.inotify.enabled",
+    ),
+    "performance.graph_page_size": SettingSpec(
+        key="performance.graph_page_size",
+        category="Watcher & Performance",
+        label="Commit Graph Scroll Page Size",
+        description=(
+            "Number of commits fetched per incremental page when scrolling through "
+            "large commit histories."
+        ),
+        setting_type=SettingType.INT,
+        default=500,
+        min_value=100,
+        max_value=5000,
+    ),
+    "maintenance.auto_commit_graph.enabled": SettingSpec(
+        key="maintenance.auto_commit_graph.enabled",
+        category="Watcher & Performance",
+        label="Background Commit-Graph Maintenance",
+        description=(
+            "Maintain .git/objects/info/commit-graph with changed-path bloom filters "
+            "in the background when opening large repositories."
+        ),
+        setting_type=SettingType.BOOL,
+        default=True,
     ),
     # 12. Safety & Backups
     "safety.commit_partially_staged_mode": SettingSpec(
@@ -1503,6 +1563,11 @@ class SettingsRegistry(QObject):
 
 _GLOBAL_REGISTRY: SettingsRegistry | None = None
 _GLOBAL_REGISTRY_LOCK = threading.Lock()
+
+
+def peek_settings_registry() -> SettingsRegistry | None:
+    """Return initialized SettingsRegistry singleton if present, without touching disk DB."""
+    return _GLOBAL_REGISTRY
 
 
 def get_settings_registry(conn: sqlite3.Connection | None = None) -> SettingsRegistry:

@@ -35,6 +35,7 @@ class CommitDetailPanel(QWidget):
         self._current_commit: Commit | None = None
         self._file_stats: list[FileStat] = []
         self._conn = None
+        self._refreshing_theme: bool = False
 
         self._init_ui()
 
@@ -97,6 +98,7 @@ class CommitDetailPanel(QWidget):
 
         # DiffWidget
         self.diff_widget = DiffWidget(self)
+        self.diff_widget.full_diff_requested.connect(self._on_full_diff_requested)
         self.splitter.addWidget(self.diff_widget)
 
         self.splitter.setStretchFactor(0, 1)
@@ -105,13 +107,18 @@ class CommitDetailPanel(QWidget):
 
     def changeEvent(self, event: QEvent) -> None:
         super().changeEvent(event)
+        if getattr(self, "_refreshing_theme", False):
+            return
         if event.type() in (
             QEvent.PaletteChange,
             QEvent.ApplicationPaletteChange,
             QEvent.ThemeChange,
-            QEvent.StyleChange,
         ):
-            self.refresh_theme()
+            self._refreshing_theme = True
+            try:
+                self.refresh_theme()
+            finally:
+                self._refreshing_theme = False
 
     def refresh_theme(self) -> None:
         """Refreshes diff widget, table item styling, and header labels on theme change."""
@@ -255,11 +262,31 @@ class CommitDetailPanel(QWidget):
             path = self._file_stats[row].path
             self._load_file_diff(path)
 
-    def _load_file_diff(self, path: str):
+    def _on_full_diff_requested(self) -> None:
+        if not self._repo or not self._current_commit:
+            return
+        current_path = self.diff_widget._current_path
+        if current_path:
+            self._load_file_diff(current_path, full=True)
+
+    def _load_file_diff(self, path: str, *, full: bool = False):
         if not self._repo or not self._current_commit:
             return
         try:
-            diff = engine.get_commit_diff(self._repo, self._current_commit.sha, path=path)
-            self.diff_widget.set_diff_model(diff, title=f"Commit Diff: {path}", read_only=True)
+            max_lines = None if full else self.diff_widget._effective_max_lines()
+            max_bytes = None if full else self.diff_widget._effective_max_bytes()
+            diff = engine.get_commit_diff(
+                self._repo,
+                self._current_commit.sha,
+                path=path,
+                max_lines=max_lines,
+                max_bytes=max_bytes,
+            )
+            self.diff_widget.set_diff_model(
+                diff,
+                title=f"Commit Diff: {path}",
+                read_only=True,
+                reset_force=not full,
+            )
         except Exception as e:
             logger.exception("Failed to load commit diff for %s: %s", path, e)

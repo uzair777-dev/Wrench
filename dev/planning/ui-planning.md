@@ -323,6 +323,74 @@ Every coding model implementing or modifying UI and storage code in `VP-0`..`VP-
 - Visual stack tree in `ChangesTab` left column showing ordered branches in the current stack, `New Stacked Branch on Top`, `Restack All (--update-refs)`, and `Push & Sync Stack PRs`.  
 - Includes `HunkTargetCommitDialog` allowing users to pick any historical commit in the current branch/stack to receive a selected diff hunk via automated `--fixup` \+ `--autosquash` ([GitButler \#2513](https://github.com/gitbutlerapp/gitbutler/issues/2513)).
 
+#### Deep Specification: Full Conversation Threads, Nested Replies, Emoji Reactions & Universal `#` Mentions (`FR-2.12`, `FR-5.12`, `FR-5.13`, `FR-5.14`)
+
+* **1. Unified Conversation Stream (`ConversationTimelineWidget` in `IssuesView` & `PRsView`):**
+  * **Layout Structure (Right Detail Split Pane of `IssuesView` and `PRsView`):**
+    * **Top Sticky Header Bar:** Issue/PR `#number`, editable title, state badge (`Open` `#a6e3a1`, `Closed` `#f38ba8`, `Merged` `#cba6f7`, `Draft` `#a6adc8`), author avatar + handle, branch target (`feature/x ──► main`), labels pill bar (`[+ Label]`), assignees/reviewers bar (`[+ Reviewer]`).
+    * **Scrollable Timeline Viewport (`QScrollArea` with virtualized/lazy card rendering):**
+      1. **OP Description Card (`CommentCardWidget`, `is_op=True`):**
+         * Header: Author handle, role badge (`Author` / `Owner` / `Maintainer` / `Contributor`), relative timestamp (`"3 hours ago"`, tooltip shows full ISO timestamp), `[Quote Reply]`, `[Edit]` (if own post), `[•••]` menu (`Copy Link`, `Copy Markdown`).
+         * Body: Rendered Markdown (`QTextBrowser.setMarkdown()`) with **interactive `- [ ]` / `- [x]` task list checkboxes** (clicking a checkbox toggles the line in the raw Markdown body and calls `edit_comment` asynchronously) and clickable `#123` / commit SHA links.
+         * Footer: **`ReactionBarWidget`** (`[👍 4] [🚀 2] [❤️ 1] [😊 +]`).
+      2. **Interleaved Timeline Event Pills (`TimelineEventRow`):**
+         * Compact single-line subtle rows (`#a6adc8` subtext) with icon + action:
+           * `● alice pushed 2 commits (a1b2c3d, e4f5a6b) — 2h ago` (clicking SHA jumps to `HistoryView`)
+           * `🏷️ bob added labels [bug] [priority:high] — 1h ago`
+           * `🔗 Referenced in commit 9f8e7d6 ("Fix virtualized diff offset — Refs #42") — 45m ago`
+           * `🟣 alice merged commit 7c6b5a4 into main — 10m ago`
+      3. **General Comment Cards & PR Review Summary Blocks (`CommentCardWidget`):**
+         * PR Review Summaries include a prominent top banner: `✅ alice approved these changes`, `❌ bob requested changes`, or `💬 carol reviewed`.
+         * Each comment card has `[Quote]`, `[Reply in Thread]`, `[Edit]`, `[Delete]`, and its own **`ReactionBarWidget`**.
+      4. **Nested Review Sub-Threads (`ReviewThreadGroupWidget`):**
+         * Groups inline diff comments and their nested `in_reply_to_id` replies together under an expandable code-context header (showing the 4-line diff snippet + file path + `[Outdated]` or `[Resolved ✓]` badge).
+         * Includes a `[Resolve conversation]` / `[Unresolve]` toggle button and an inline `[Reply to this thread...]` quick input box at the bottom of the sub-thread.
+         * If a review comment contains a fenced `suggestion` block, renders a unified mini-diff (`- old line` / `+ suggested line`) with a **`[Apply Suggestion & Commit...]`** button.
+
+* **2. Emoji Reaction Bar & Picker Popover (`ReactionBarWidget` — `FR-5.13`):**
+  * **8 Canonical Reactions Map:**
+    | Forge Code | Emoji | Label |
+    | :--- | :--- | :--- |
+    | `+1` | 👍 | Thumbs Up |
+    | `-1` | 👎 | Thumbs Down |
+    | `laugh` | 😄 | Laugh |
+    | `hooray` | 🎉 | Hooray |
+    | `confused` | 😕 | Confused |
+    | `heart` | ❤️ | Heart |
+    | `rocket` | 🚀 | Rocket |
+    | `eyes` | 👀 | Eyes |
+  * **Pill Styling:**
+    * Unreacted by current user: `#313244` (`surface0`) background, `#45475a` (`surface1`) border, `#cdd6f4` text.
+    * Reacted by current user (`viewer_has_reacted=True`): `#1e1e2e` tinted with `#89b4fa` (Blue) 25% alpha background, `#89b4fa` 1px solid border, bold count, tooltip `"You, alice, and 2 others reacted with 👍"`.
+  * **Interaction:** Clicking a pill immediately flips `viewer_has_reacted` and increments/decrements the count in `< 1 ms` (optimistic UI) while dispatching `ForgeAdapter.toggle_reaction(...)` on `QThreadPool` (rolling back on network error with a non-modal toast). Clicking `[😊 +]` opens a frameless 1-row 8-emoji `QMenu`/`QFrame` palette.
+
+* **3. Bottom Rich Markdown Composer & Review Submitter (`CommentComposerWidget` — `FR-5.12`):**
+  * **Tabs & Toolbar:** `[Write]` (`QPlainTextEdit`) and `[Preview]` (`QTextBrowser`) tabs, plus compact formatting buttons (`B`, `I`, `Code`, `Quote`, `Link`, `- [ ] Task`, `@Mention`, `#Issue/PR`).
+  * **Submit Controls:**
+    * In `IssuesView`: `[Comment (Ctrl+Return)]` (`#89b4fa`) + `[Close Issue with Comment]` (or `[Reopen & Comment]` if closed).
+    * In `PRsView`: `[Comment (Ctrl+Return)]` + `[Submit Review ▾]` split dropdown (`Comment`, `Approve ✅`, `Request Changes ❌`) + `[Close PR with Comment]`.
+
+* **4. Universal `#Issue`/`#PR` & `@User` Autocomplete (`RefMentionCompleter`) + Hover Cards (`FR-2.12`, `FR-5.14`):**
+  * **Attached To:**
+    1. `ChangesView` Commit Summary `QLineEdit` and Commit Description `QPlainTextEdit`.
+    2. `CommentComposerWidget` in `IssuesView`, `PRsView`, and inline diff review popovers.
+  * **Trigger Mechanics:**
+    * Typing `#` (or `!`) followed by 0+ characters pops up a frameless `QListView` (`max-height: 220px`, Catppuccin `surface0`) filtering cached Issues and PRs by number or title in `< 3 ms`:
+      * `[🟢 #42 PR]   Add zero-copy PatchByteIndex diff engine (@uzair777-dev)`
+      * `[🟢 #39 Issue] Show full conversation thread in IssuesView (@uzair777-dev)`
+      * `[🟣 #31 PR]   Implement rolling pre-op snapshots (Merged)`
+    * Selecting an item with `Return`/`Tab` inserts `#42` (or in commit summary, keeps cursor flowing cleanly).
+    * Typing `@` followed by 0+ characters pops up cached repo contributors & forge participants (`@uzair777-dev — Uzair`).
+    * Typing `:` followed by 2+ characters pops up emoji shortcodes (`:rocket: 🚀`, `:bug: 🐛`, `:tada: 🎉`).
+  * **Auto-Close Detection Banner in `ChangesView`:**
+    * Regex scanner on commit summary + body detects `(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+#(\d+)` (case-insensitive) and displays a subtle pill above the `[Commit]` button:
+      `🔗 Pushing this commit will automatically close Issue #39 ("Show full conversation thread...")`
+  * **Universal Linkification & `IssuePrHoverCard` (`FR-5.14`):**
+    * In `HistoryView` (commit details message view), `BlameView`, `IssuesView`, and `PRsView`, all `#<num>` and 7–40 hex commit SHAs are rendered as clickable links (`#89b4fa`).
+    * **Hover (`250 ms` `QTimer`):** Displays `IssuePrHoverCard` near the cursor showing `[State Pill] #39: Title`, author, labels, and a 2-line body preview from SQLite cache.
+    * **Click:** Clicking `#39` switches `MainWindow` to `IssuesView` (or `PRsView` if `#39` is a PR) and loads thread `#39`. Clicking a commit SHA switches `MainWindow` to `HistoryView` and scrolls the commit graph to that SHA.
+
+
 ### 6.23 Interactive Blame Viewer & Line History (`git log -L`) Drawer (`src/wrench/ui/widgets/blame_viewer.py` — `VP-21`)
 
 - Split view: left gutter renders commit short SHA, author, date, and age-heatmap bar; right pane renders syntax-highlighted file lines.  

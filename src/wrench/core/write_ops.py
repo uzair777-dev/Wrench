@@ -43,7 +43,9 @@ from .exceptions import (
     WorkflowScopeRequiredError,
 )
 from .git_credential_helper import _host_of
-from .models import CloneResult, MergeResult, RebaseResult
+from .models import CloneResult, CommitGraphStats, MergeResult, RebaseResult
+from .paths import resolve_git_dir
+from .security_sanitizer import redact_secrets, validate_clone_url, validate_git_ref
 
 logger = logging.getLogger(__name__)
 
@@ -64,10 +66,12 @@ def run_git(
     *,
     timeout: int = 30,
     check: bool = True,
+    input_text: str | None = None,
 ) -> subprocess.CompletedProcess:
     """Run a git command in the given repo directory."""
     p = Path(repo_path)
-    logger.debug("[git] Executing in '%s': git %s", p, " ".join(args))
+    safe_args = redact_secrets(" ".join(args))
+    logger.debug("[git] Executing in '%s': git %s", p, safe_args)
     env = _git_env()
 
     cmd = ["git"] + args
@@ -77,6 +81,7 @@ def run_git(
             cwd=p,
             capture_output=True,
             text=True,
+            input=input_text,
             timeout=timeout,
             env=env,
         )
@@ -85,7 +90,7 @@ def run_git(
             "[git] Command timed out after %ds in '%s': git %s",
             timeout,
             repo_path,
-            " ".join(args),
+            safe_args,
         )
         raise GitCommandError(args, -1, f"Command timed out after {timeout}s") from e
 
@@ -93,19 +98,19 @@ def run_git(
         logger.debug(
             "[git] Failed (exit %d): git %s\n  stderr: %s\n  stdout: %s",
             result.returncode,
-            " ".join(args),
-            result.stderr.strip(),
+            safe_args,
+            redact_secrets(result.stderr.strip()),
             result.stdout.strip(),
         )
         if check:
             raise GitCommandError(
                 args,
                 result.returncode,
-                result.stderr.strip(),
+                redact_secrets(result.stderr.strip()),
                 stdout=result.stdout.strip(),
             )
     else:
-        logger.debug("[git] Succeeded (exit 0): git %s", " ".join(args))
+        logger.debug("[git] Succeeded (exit 0): git %s", safe_args)
 
     return result
 
@@ -399,7 +404,8 @@ def run_git_streaming(
     Returns (returncode, stdout_text, stderr_text).
     """
     p = Path(repo_path)
-    logger.debug("[git-streaming] Executing in '%s': git %s", p, " ".join(args))
+    safe_args = redact_secrets(" ".join(args))
+    logger.debug("[git-streaming] Executing in '%s': git %s", p, safe_args)
     env = _git_env()
     cmd = ["git"] + args
 
@@ -501,11 +507,11 @@ def run_git_streaming(
         logger.debug(
             "[git-streaming] Failed (exit %d): git %s\n  stderr: %s",
             returncode,
-            " ".join(args),
-            stderr_str.strip(),
+            safe_args,
+            redact_secrets(stderr_str.strip()),
         )
     else:
-        logger.debug("[git-streaming] Succeeded (exit 0): git %s", " ".join(args))
+        logger.debug("[git-streaming] Succeeded (exit 0): git %s", safe_args)
 
     return (returncode, stdout_str, stderr_str)
 
@@ -906,13 +912,25 @@ def clone_repo(
     timeout: int = 600,
     progress_cb: Callable[[int, str], None] | None = None,
     cancel_event: threading.Event | None = None,
+    branch: str | None = None,
+    recursive: bool = False,
+    filter_spec: str | None = None,
+    sparse: bool = False,
 ) -> CloneResult:
     """Clone a repository into a temporary directory and atomically move on success."""
+    clean_url = validate_clone_url(url)
+    clean_branch: str | None = None
+    if branch is not None and branch.strip():
+        clean_branch = validate_git_ref(branch)
+
+    if filter_spec not in (None, "", "none", "blob:none", "tree:0"):
+        raise ValueError(f"Unsupported partial-clone filter specification: {filter_spec}")
+
     d = Path(dest)
     if d.exists():
         if d.is_file() or any(d.iterdir()):
             raise GitCommandError(
-                ["clone", url, str(d)],
+                ["clone", redact_secrets(clean_url), str(d)],
                 1,
                 f"Destination path '{d}' exists and is not empty.",
             )
@@ -926,19 +944,28 @@ def clone_repo(
             if prog:
                 progress_cb(prog[0], prog[1])
 
+    clone_args = [
+        "-c",
+        "credential.helper=wrench",
+        "-c",
+        "credential.useHttpPath=true",
+        "clone",
+        "--progress",
+    ]
+    if filter_spec and filter_spec != "none":
+        clone_args.extend(["--filter", filter_spec])
+    if sparse:
+        clone_args.append("--sparse")
+    if clean_branch:
+        clone_args.extend(["--branch", clean_branch])
+    if recursive:
+        clone_args.append("--recursive")
+    clone_args.extend(["--", clean_url, str(temp_dir.name)])
+
     try:
         code, stdout, stderr = run_git_streaming(
             d.parent,
-            [
-                "-c",
-                "credential.helper=wrench",
-                "-c",
-                "credential.useHttpPath=true",
-                "clone",
-                "--progress",
-                url,
-                str(temp_dir.name),
-            ],
+            clone_args,
             timeout=timeout,
             on_stderr_line=on_line,
             cancel_event=cancel_event,
@@ -950,12 +977,17 @@ def clone_repo(
 
         if code != 0:
             shutil.rmtree(temp_dir, ignore_errors=True)
-            raise _classify_git_error(["clone", url, str(d)], code, stderr, remote_url=url)
+            raise _classify_git_error(
+                ["clone", "--", redact_secrets(clean_url), str(d)],
+                code,
+                redact_secrets(stderr),
+                remote_url=clean_url,
+            )
 
         if d.exists() and any(d.iterdir()):
             shutil.rmtree(temp_dir, ignore_errors=True)
             raise GitCommandError(
-                ["clone", url, str(d)],
+                ["clone", "--", redact_secrets(clean_url), str(d)],
                 1,
                 f"Destination path '{d}' already exists.",
             )
@@ -971,6 +1003,9 @@ def clone_repo(
     except Exception:
         shutil.rmtree(temp_dir, ignore_errors=True)
         raise
+
+
+clone_repository = clone_repo
 
 
 # --- Phase 2: Merge & Rebase Operations ---
@@ -1085,3 +1120,69 @@ def rebase_abort(repo_path: Path | str) -> None:
     """Abort an in-progress rebase."""
     p = Path(repo_path)
     run_git(p, ["rebase", "--abort"])
+
+
+def write_commit_graph(
+    repo_path: Path | str,
+    *,
+    reachable: bool = True,
+    changed_paths: bool = True,
+    timeout: int = 120,
+) -> CommitGraphStats:
+    """Write/update .git/objects/info/commit-graph in a lock- and empty-repo-safe manner."""
+    p = Path(repo_path)
+    git_dir = resolve_git_dir(p)
+
+    try:
+        repo = pygit2.Repository(str(p))
+        if repo.head_is_unborn:
+            return CommitGraphStats(written=False, duration_ms=0, skipped_reason="empty_repo")
+    except pygit2.GitError as exc:
+        logger.debug("Unable to open repo before commit-graph write (%s): %s", p, exc)
+
+    graph_lock = git_dir / "objects" / "info" / "commit-graph.lock"
+    index_lock = git_dir / "index.lock"
+    if graph_lock.exists() or index_lock.exists():
+        return CommitGraphStats(written=False, duration_ms=0, skipped_reason="locked")
+
+    args = ["commit-graph", "write"]
+    if reachable:
+        args.append("--reachable")
+    if changed_paths:
+        args.append("--changed-paths")
+    args.append("--no-progress")
+
+    started = time.monotonic()
+    try:
+        run_git(p, args, timeout=timeout, check=True)
+    except GitCommandError as exc:
+        elapsed_ms = int((time.monotonic() - started) * 1000)
+        stderr_lower = (exc.stderr or "").lower()
+        if (
+            ".lock" in stderr_lower
+            or "file exists" in stderr_lower
+            or "another git process" in stderr_lower
+        ):
+            logger.info("Skipping background commit-graph maintenance due to git lock: %s", p)
+            return CommitGraphStats(
+                written=False,
+                duration_ms=elapsed_ms,
+                skipped_reason="locked",
+            )
+        raise
+
+    elapsed_ms = int((time.monotonic() - started) * 1000)
+    graph_file = git_dir / "objects" / "info" / "commit-graph"
+    graph_chain = git_dir / "objects" / "info" / "commit-graphs" / "commit-graph-chain"
+    size_bytes = 0
+    if graph_file.is_file():
+        size_bytes = graph_file.stat().st_size
+    elif graph_chain.is_file():
+        size_bytes = graph_chain.stat().st_size
+
+    return CommitGraphStats(
+        written=True,
+        duration_ms=elapsed_ms,
+        skipped_reason=None,
+        graph_file_size_bytes=size_bytes,
+    )

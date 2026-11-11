@@ -959,6 +959,37 @@ class SettingsDialog(QDialog):
     def _show_toast(self, msg: str) -> None:
         self.toast_label.setText(f"✓ {msg}")
 
+    def select_category(self, category: str, highlight_key: str | None = None) -> None:
+        """Select a settings category programmatically and optionally focus a setting key."""
+        if self.v1_compat:
+            target = category.strip().lower()
+            for idx, page in enumerate(self._pages):
+                if page.title().strip().lower() == target:
+                    self.nav_list.setCurrentRow(idx)
+                    break
+            return
+
+        if category not in self.categories:
+            return
+
+        if self.search_input.text().strip():
+            self.search_input.clear()
+
+        idx = self.categories.index(category)
+        item = self.nav_list.item(idx)
+        if item is not None:
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsEnabled)
+        self.nav_list.setCurrentRow(idx)
+
+        page = self._get_or_create_category_page(category)
+        if highlight_key:
+            for row in page.row_widgets:
+                if row.spec.key == highlight_key:
+                    row.setVisible(True)
+                    page.scroll_area.ensureWidgetVisible(row)
+                    row.control_widget.setFocus()
+                    break
+
     @property
     def pages(self) -> list[Any]:
         """Returns the list of instantiated settings pages."""

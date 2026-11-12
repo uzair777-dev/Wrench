@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any
 
 import shiboken6
-from PySide6.QtCore import QByteArray, QEvent, QPoint, QSize, Qt, Signal, Slot
+from PySide6.QtCore import QByteArray, QEvent, QPoint, QSignalBlocker, QSize, Qt, Signal, Slot
 from PySide6.QtGui import QIcon, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
@@ -161,9 +161,8 @@ class FileListItemWidget(QWidget):
 
     def set_checked(self, checked: bool, emit_signal: bool = False) -> None:
         if not emit_signal:
-            self.checkbox.blockSignals(True)
-            self.checkbox.setChecked(checked)
-            self.checkbox.blockSignals(False)
+            with QSignalBlocker(self.checkbox):
+                self.checkbox.setChecked(checked)
         else:
             self.checkbox.setChecked(checked)
 
@@ -466,49 +465,79 @@ class ChangesTab(QWidget):
         commit_shortcut = QShortcut(QKeySequence("Ctrl+Return"), self)
         commit_shortcut.activated.connect(self._on_commit_shortcut)
 
-    def load_repos(self, select_path: str | None = None, *, auto_open: bool = True) -> None:
+    def load_repos(
+        self,
+        select_path: str | None = None,
+        *,
+        auto_open: bool = True,
+        opened_repo: RepoHandle | None = None,
+    ) -> None:
         """Populates the repository dropdown from registry."""
-        self.repo_combo.blockSignals(True)
-        self.repo_combo.clear()
-
         repos = repo_registry.list_repos(self._conn)
-        if not repos:
-            self.repo_combo.addItem(self.tr("No repositories"))
-            self.repo_combo.setEnabled(False)
-            self.repo_combo.blockSignals(False)
+        resolved_select: Path | None = None
+        if select_path:
+            try:
+                resolved_select = Path(select_path).resolve()
+            except OSError:
+                resolved_select = Path(select_path)
+
+        with QSignalBlocker(self.repo_combo):
+            self.repo_combo.clear()
+
+            if not repos:
+                self.repo_combo.addItem(self.tr("No repositories"))
+                self.repo_combo.setEnabled(False)
+                selected_path = None
+            else:
+                self.repo_combo.setEnabled(True)
+                target_idx = 0
+                for i, r in enumerate(repos):
+                    display = r.display_name
+                    if r.is_missing:
+                        display = f"⚠️ {display} ({self.tr('missing')})"
+                    self.repo_combo.addItem(display, r.path)
+                    if select_path:
+                        try:
+                            matches = Path(r.path).resolve() == resolved_select
+                        except OSError:
+                            matches = r.path == select_path
+                        if matches:
+                            target_idx = i
+
+                if not auto_open:
+                    self.repo_combo.setCurrentIndex(-1)
+                    selected_path = None
+                else:
+                    self.repo_combo.setCurrentIndex(target_idx)
+                    selected_path = self.repo_combo.currentData()
+
+        if not repos or not auto_open:
             self._show_zero_repos_state()
             return
 
-        self.repo_combo.setEnabled(True)
-        target_idx = 0
-        for i, r in enumerate(repos):
-            display = r.display_name
-            if r.is_missing:
-                display = f"⚠️ {display} ({self.tr('missing')})"
-            self.repo_combo.addItem(display, r.path)
-            if select_path and r.path == select_path:
-                target_idx = i
-
-        if not auto_open:
-            self.repo_combo.setCurrentIndex(-1)
-            self.repo_combo.blockSignals(False)
-            self._show_zero_repos_state()
-            return
-
-        self.repo_combo.setCurrentIndex(target_idx)
-        self.repo_combo.blockSignals(False)
-
-        selected_path = self.repo_combo.currentData()
         if selected_path:
-            self._open_repo_by_path(selected_path)
+            preopened = None
+            if opened_repo is not None:
+                try:
+                    if Path(opened_repo.path).resolve() == Path(selected_path).resolve():
+                        preopened = opened_repo
+                except OSError:
+                    if str(opened_repo.path) == str(selected_path):
+                        preopened = opened_repo
+            self._open_repo_by_path(selected_path, preopened_repo=preopened)
 
     def set_repo(self, repo: RepoHandle | None) -> None:
+        self._selected_file = None
+        self._current_status = None
+        self._clear_files_list()
         self._repo = repo
         self.branch_switcher.set_repo(repo)
         self.diff_view.set_repo(repo)
         self.refresh()
 
-    def _open_repo_by_path(self, path: str) -> None:
+    def _open_repo_by_path(
+        self, path: str, *, preopened_repo: RepoHandle | None = None
+    ) -> None:
         # Save current repo state (draft text, selections) before switching
         if self._repo:
             current_p = str(self._repo.path)
@@ -538,7 +567,7 @@ class ChangesTab(QWidget):
             return
 
         try:
-            repo = engine.open_repo(path)
+            repo = preopened_repo if preopened_repo is not None else engine.open_repo(path)
             repo_registry.touch_repo(self._conn, path)
             self.set_repo(repo)
 
@@ -552,12 +581,9 @@ class ChangesTab(QWidget):
                     self.commit_msg_input.setText(msg)
                     self.commit_desc_input.setPlainText(desc)
             else:
-                self.commit_msg_input.blockSignals(True)
-                self.commit_desc_input.blockSignals(True)
-                self.commit_msg_input.clear()
-                self.commit_desc_input.clear()
-                self.commit_msg_input.blockSignals(False)
-                self.commit_desc_input.blockSignals(False)
+                with QSignalBlocker(self.commit_msg_input), QSignalBlocker(self.commit_desc_input):
+                    self.commit_msg_input.clear()
+                    self.commit_desc_input.clear()
 
             self.repo_changed.emit(path)
         except Exception as e:
@@ -937,6 +963,19 @@ class ChangesTab(QWidget):
             return
         self._on_item_checked_changed()
 
+    def _clear_files_list(self) -> None:
+        """Detach and schedule deletion of all item widgets before clearing files_list."""
+        for i in range(self.files_list.count()):
+            item = self.files_list.item(i)
+            if item is None:
+                continue
+            widget = self.files_list.itemWidget(item)
+            if widget is not None:
+                self.files_list.removeItemWidget(item)
+                widget.setParent(None)
+                widget.deleteLater()
+        self.files_list.clear()
+
     def _populate_files_list(self) -> None:
         if not self._current_status:
             return
@@ -949,7 +988,7 @@ class ChangesTab(QWidget):
             if path is not None:
                 checked_map[path] = self._is_item_checked(item)
 
-        self.files_list.clear()
+        self._clear_files_list()
 
         # Build list of all changed items (staged, unstaged, untracked)
         items: list[tuple[str, str]] = []  # (path, change_type)
@@ -1082,7 +1121,7 @@ class ChangesTab(QWidget):
             self.clean_author.setVisible(False)
 
     def _show_zero_repos_state(self) -> None:
-        self.files_list.clear()
+        self._clear_files_list()
         self.large_list_notice_label.setVisible(False)
         self.files_count_label.setText(self.tr("No repository open"))
         self.diff_view.setVisible(False)
@@ -1114,23 +1153,21 @@ class ChangesTab(QWidget):
     def _update_select_all_state(self) -> None:
         total = self.files_list.count()
         if total == 0:
-            self.select_all_cb.blockSignals(True)
-            self.select_all_cb.setCheckState(Qt.Unchecked)
-            self.select_all_cb.blockSignals(False)
+            with QSignalBlocker(self.select_all_cb):
+                self.select_all_cb.setCheckState(Qt.Unchecked)
             return
 
         checked_count = sum(
             1 for i in range(total) if self._is_item_checked(self.files_list.item(i))
         )
 
-        self.select_all_cb.blockSignals(True)
-        if checked_count == total:
-            self.select_all_cb.setCheckState(Qt.Checked)
-        elif checked_count == 0:
-            self.select_all_cb.setCheckState(Qt.Unchecked)
-        else:
-            self.select_all_cb.setCheckState(Qt.PartiallyChecked)
-        self.select_all_cb.blockSignals(False)
+        with QSignalBlocker(self.select_all_cb):
+            if checked_count == total:
+                self.select_all_cb.setCheckState(Qt.Checked)
+            elif checked_count == 0:
+                self.select_all_cb.setCheckState(Qt.Unchecked)
+            else:
+                self.select_all_cb.setCheckState(Qt.PartiallyChecked)
 
     def _on_select_all_toggled(self, state: int) -> None:
         target_checked = state == Qt.Checked or state == 2 or self.select_all_cb.isChecked()
@@ -1661,17 +1698,14 @@ class ChangesTab(QWidget):
         desc = state.get("commit_desc", "")
         is_amend = bool(state.get("is_amend", False))
 
-        self.commit_msg_input.blockSignals(True)
-        self.commit_desc_input.blockSignals(True)
-        self.amend_cb.blockSignals(True)
-
-        self.commit_msg_input.setText(summary)
-        self.commit_desc_input.setPlainText(desc)
-        self.amend_cb.setChecked(is_amend)
-
-        self.commit_msg_input.blockSignals(False)
-        self.commit_desc_input.blockSignals(False)
-        self.amend_cb.blockSignals(False)
+        with (
+            QSignalBlocker(self.commit_msg_input),
+            QSignalBlocker(self.commit_desc_input),
+            QSignalBlocker(self.amend_cb),
+        ):
+            self.commit_msg_input.setText(summary)
+            self.commit_desc_input.setPlainText(desc)
+            self.amend_cb.setChecked(is_amend)
 
         self._on_commit_text_changed()
 
@@ -1686,8 +1720,18 @@ class ChangesTab(QWidget):
             self._update_commit_button()
 
         selected_file = state.get("selected_file")
-        if selected_file:
-            self._show_file_diff(selected_file)
+        if isinstance(selected_file, str) and selected_file:
+            for i in range(self.files_list.count()):
+                item = self.files_list.item(i)
+                if item is not None and item.data(Qt.UserRole) == selected_file:
+                    self.files_list.setCurrentItem(item)
+                    if (
+                        self._selected_file != selected_file
+                        or self.diff_view._current_path != selected_file
+                        or self.diff_view._diff is None
+                    ):
+                        self._show_file_diff(selected_file)
+                    break
 
     def save_splitter_state(self) -> str:
         """Exports splitter position as hex string."""

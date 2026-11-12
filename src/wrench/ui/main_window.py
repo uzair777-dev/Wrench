@@ -11,8 +11,11 @@ Provides:
 
 from __future__ import annotations
 
+import ctypes
+import gc
 import json
 import logging
+import os
 import threading
 import weakref
 from collections.abc import Callable
@@ -24,15 +27,17 @@ from PySide6.QtCore import (
     QByteArray,
     QCoreApplication,
     QEvent,
+    QEventLoop,
     QObject,
     QRunnable,
+    QSignalBlocker,
     Qt,
     QThreadPool,
     QTimer,
     Signal,
     Slot,
 )
-from PySide6.QtGui import QActionGroup, QGuiApplication, QKeySequence
+from PySide6.QtGui import QActionGroup, QGuiApplication, QKeySequence, QPixmapCache
 from PySide6.QtWidgets import (
     QApplication,
     QDialog,
@@ -67,12 +72,14 @@ from wrench.core.exceptions import (
     WrenchRepoNotFoundError,
 )
 from wrench.core.remote_urls import host_of_instance_url, parse_remote_url
+from wrench.forge.registry import close_avatar_http_client
 from wrench.storage import forge_accounts, get_connection, repo_registry, settings
 from wrench.storage.settings_registry import SettingScope, SettingsRegistry, get_settings_registry
 from wrench.ui.dialogs.about_dialog import AboutDialog
 from wrench.ui.dialogs.accounts_dialog import AccountsDialog
 from wrench.ui.dialogs.clone_dialog import CloneDialog
 from wrench.ui.dialogs.discover_repos_dialog import DiscoverReposDialog
+from wrench.ui.dialogs.interactive_rebase_dialog import InteractiveRebaseDialog
 from wrench.ui.dialogs.link_dialog import LinkRepoDialog
 from wrench.ui.dialogs.push_recovery_dialogs import (
     FileTooLargeDialog,
@@ -97,6 +104,7 @@ from wrench.ui.theme import (
     get_status_pill_style,
     is_dark_theme,
     normalize_theme_mode,
+    repolish_widget,
 )
 from wrench.ui.widgets.activity_log import ActivityLogBar, ActivityLogModel
 from wrench.ui.widgets.avatar import clear_author_avatar_cache
@@ -104,6 +112,38 @@ from wrench.ui.workers import clear_activity_log, run_in_background, set_activit
 from wrench.watcher.inotify_watcher import RepoWatcher
 
 logger = logging.getLogger(__name__)
+
+RESTART_EXIT_CODE = 75
+
+_MALLOC_TRIM_INITIALIZED = False
+_MALLOC_TRIM_FN: Callable[[int], int] | None = None
+
+
+def _get_malloc_trim() -> Callable[[int], int] | None:
+    """Resolve and cache glibc malloc_trim(0) once per process."""
+    global _MALLOC_TRIM_INITIALIZED, _MALLOC_TRIM_FN
+    if _MALLOC_TRIM_INITIALIZED:
+        return _MALLOC_TRIM_FN
+    _MALLOC_TRIM_INITIALIZED = True
+    try:
+        libc = ctypes.CDLL("libc.so.6")
+        trim = libc.malloc_trim
+        trim.argtypes = [ctypes.c_size_t]
+        trim.restype = ctypes.c_int
+        _MALLOC_TRIM_FN = trim
+    except Exception as exc:
+        logger.debug("glibc malloc_trim unavailable: %s", exc)
+        _MALLOC_TRIM_FN = None
+    return _MALLOC_TRIM_FN
+
+
+def _same_repo_path(path_a: Path | str | None, path_b: Path | str | None) -> bool:
+    if path_a is None or path_b is None:
+        return False
+    try:
+        return Path(path_a).resolve() == Path(path_b).resolve()
+    except OSError:
+        return Path(path_a) == Path(path_b)
 
 
 class _CommitGraphDispatcher(QObject):
@@ -178,16 +218,20 @@ class MainWindow(QMainWindow):
 
         self._conn = conn if conn is not None else get_connection()
         self._settings_registry = get_settings_registry(self._conn)
+        QPixmapCache.setCacheLimit(16384)
+        self._engine = engine.GitEngine(settings=self._settings_registry)
         self._registry_connected: bool = False
         self._current_repo: RepoHandle | None = None
         self._watcher: RepoWatcher | None = None
         self._repos_state: dict[str, dict] = {}
         self._is_restoring: bool = True
         self._is_closing: bool = False
+        self._restart_requested: bool = False
         self._repo_switch_generation: int = 0
         self._commit_graph_generation: int = 0
         self._discovery_cancel_event: threading.Event | None = None
         self._sparse_dialog: SparseCheckoutDialog | None = None
+        self._interactive_rebase_dialog: InteractiveRebaseDialog | None = None
         self._active_settings_dialog: QDialog | None = None
 
         # 1000ms debounce timer for coalescing auto-save writes
@@ -195,6 +239,12 @@ class MainWindow(QMainWindow):
         self._auto_save_timer.setSingleShot(True)
         self._auto_save_timer.setInterval(1000)
         self._auto_save_timer.timeout.connect(self._save_session_state)
+
+        # Delayed single-shot timer to reclaim C++ DeferredDelete widget heap pages
+        self._heap_trim_timer = QTimer(self)
+        self._heap_trim_timer.setSingleShot(True)
+        self._heap_trim_timer.setInterval(150)
+        self._heap_trim_timer.timeout.connect(self._on_delayed_heap_trim)
 
         # In-flight fetch tracking per repo to prevent concurrent ref locking collisions
         self._fetch_in_progress: set[str] = set()
@@ -207,6 +257,7 @@ class MainWindow(QMainWindow):
 
         self._current_theme_mode: str = "auto"
         self._applying_theme_setting: bool = False
+        self._in_set_theme: bool = False
         self._refreshing_theme: bool = False
         self._style_hints = QGuiApplication.styleHints()
         self._style_hints_connected: bool = False
@@ -257,7 +308,7 @@ class MainWindow(QMainWindow):
         self.history_tab = HistoryTab(self, settings_registry=self._settings_registry)
         self.history_tab.detail_panel._conn = self._conn
         self.history_tab.rebase_requested.connect(self._on_history_rebase)
-
+        self.history_tab.interactive_rebase_requested.connect(self._on_history_interactive_rebase)
         self.history_tab.merge_requested.connect(self._on_history_merge)
         self.history_tab.create_branch_requested.connect(self._on_history_create_branch)
         self.history_tab.create_tag_requested.connect(self._on_history_create_tag)
@@ -803,35 +854,39 @@ class MainWindow(QMainWindow):
 
     def _set_theme(self, mode: str, *, persist: bool = True) -> None:
         """Applies the selected theme mode, updates UI actions, and optionally persists setting."""
-        menu_mode = normalize_theme_mode(mode, target="legacy")
-        self._current_theme_mode = menu_mode
-        app = QApplication.instance()
-        if app:
-            apply_theme(app, menu_mode)
-        if persist:
-            self._applying_theme_setting = True
-            try:
-                settings.set_setting(self._conn, "theme", menu_mode)
-            finally:
-                self._applying_theme_setting = False
+        if getattr(self, "_in_set_theme", False):
+            return
+        self._in_set_theme = True
+        try:
+            menu_mode = normalize_theme_mode(mode, target="legacy")
+            self._current_theme_mode = menu_mode
+            app = QApplication.instance()
+            if app:
+                apply_theme(app, menu_mode)
+            if persist:
+                self._applying_theme_setting = True
+                try:
+                    settings.set_setting(self._conn, "theme", menu_mode)
+                finally:
+                    self._applying_theme_setting = False
 
-        if hasattr(self, "theme_group") and hasattr(self, "act_theme_auto"):
-            self.theme_group.blockSignals(True)
-            for act in (self.act_theme_auto, self.act_theme_light, self.act_theme_dark):
-                act.blockSignals(True)
-            try:
-                if menu_mode == "light":
-                    self.act_theme_light.setChecked(True)
-                elif menu_mode == "dark":
-                    self.act_theme_dark.setChecked(True)
-                else:
-                    self.act_theme_auto.setChecked(True)
-            finally:
-                for act in (self.act_theme_auto, self.act_theme_light, self.act_theme_dark):
-                    act.blockSignals(False)
-                self.theme_group.blockSignals(False)
+            if hasattr(self, "theme_group") and hasattr(self, "act_theme_auto"):
+                with (
+                    QSignalBlocker(self.theme_group),
+                    QSignalBlocker(self.act_theme_auto),
+                    QSignalBlocker(self.act_theme_light),
+                    QSignalBlocker(self.act_theme_dark),
+                ):
+                    if menu_mode == "light":
+                        self.act_theme_light.setChecked(True)
+                    elif menu_mode == "dark":
+                        self.act_theme_dark.setChecked(True)
+                    else:
+                        self.act_theme_auto.setChecked(True)
 
-        self._propagate_theme_refresh()
+            self._propagate_theme_refresh()
+        finally:
+            self._in_set_theme = False
 
     @Slot()
     def _on_theme_auto_triggered(self) -> None:
@@ -849,7 +904,7 @@ class MainWindow(QMainWindow):
     @Slot()
     def _on_system_color_scheme_changed(self, *_args: Any) -> None:
         """Reacts when desktop/system color scheme changes while in 'auto' mode."""
-        if not shiboken6.isValid(self):
+        if not shiboken6.isValid(self) or getattr(self, "_in_set_theme", False):
             return
         if getattr(self, "_current_theme_mode", "auto") == "auto":
             app = QApplication.instance()
@@ -889,11 +944,14 @@ class MainWindow(QMainWindow):
                 self.changes_tab.refresh_theme()
             if hasattr(self, "history_tab") and shiboken6.isValid(self.history_tab):
                 self.history_tab.refresh_theme()
+            if hasattr(self, "_activity_dock") and shiboken6.isValid(self._activity_dock):
+                self._activity_dock.refresh_theme()
             self._apply_status_bar_theme()
             seen_dlgs: set[int] = set()
             candidates: list[Any] = [
                 getattr(self, "_active_settings_dialog", None),
                 getattr(self, "_sparse_dialog", None),
+                getattr(self, "_interactive_rebase_dialog", None),
                 *self.findChildren(QDialog),
             ]
             for dlg in candidates:
@@ -905,6 +963,9 @@ class MainWindow(QMainWindow):
                 ):
                     seen_dlgs.add(id(dlg))
                     dlg._apply_theme()
+            repolish_widget(self.menuBar() if shiboken6.isValid(self) else None)
+            repolish_widget(self.statusBar() if shiboken6.isValid(self) else None)
+            repolish_widget(self)
         finally:
             self._refreshing_theme = False
 
@@ -1011,6 +1072,8 @@ class MainWindow(QMainWindow):
 
         self._close_dialog_safely(getattr(self, "_sparse_dialog", None))
         self._sparse_dialog = None
+        self._close_dialog_safely(getattr(self, "_interactive_rebase_dialog", None))
+        self._interactive_rebase_dialog = None
         self._close_dialog_safely(getattr(self, "_active_settings_dialog", None))
         self._active_settings_dialog = None
         for child_dlg in list(self.findChildren(QDialog)):
@@ -1047,8 +1110,11 @@ class MainWindow(QMainWindow):
                 self.history_tab.graph_widget._disconnect_registry()
 
         if self._watcher:
-            self._watcher.stop()
+            old_watcher = self._watcher
             self._watcher = None
+            old_watcher.stop()
+            if shiboken6.isValid(old_watcher):
+                old_watcher.deleteLater()
 
         for timer in list(self.findChildren(QTimer)):
             if shiboken6.isValid(timer):
@@ -1058,6 +1124,7 @@ class MainWindow(QMainWindow):
         if sb is not None and shiboken6.isValid(sb):
             sb.clearMessage()
         clear_activity_log(getattr(self, "_activity_log", None))
+        close_avatar_http_client()
 
         super().closeEvent(event)
 
@@ -1093,10 +1160,32 @@ class MainWindow(QMainWindow):
             self.changes_tab.refresh()
         self._sync_sparse_ui_visibility()
 
+    def _reclaim_heap_after_switch(self) -> None:
+        """Collect freed Python objects and ask glibc malloc to return heap pages to OS."""
+        if not shiboken6.isValid(self) or getattr(self, "_is_closing", False):
+            return
+        app = QApplication.instance()
+        if app is not None and app.closingDown():
+            return
+        try:
+            gc.collect()
+            trim = _get_malloc_trim()
+            if trim is not None:
+                trim(0)
+        except Exception as exc:
+            logger.debug("Heap trim skipped: %s", exc)
+
+    @Slot()
+    def _on_delayed_heap_trim(self) -> None:
+        self._reclaim_heap_after_switch()
+
     def _on_repo_changed(self, path: str) -> None:
         if self._watcher:
-            self._watcher.stop()
+            old_watcher = self._watcher
             self._watcher = None
+            old_watcher.stop()
+            if shiboken6.isValid(old_watcher):
+                old_watcher.deleteLater()
 
         # --- Phase 4.2: Bump generation counter to cancel stale warmers ---
         self._repo_switch_generation += 1
@@ -1106,7 +1195,17 @@ class MainWindow(QMainWindow):
         self.tab_container.show_loading(Path(path).name)
 
         try:
-            self._current_repo = engine.open_repo(path)
+            changes_repo = getattr(getattr(self, "changes_tab", None), "_repo", None)
+            reused_from_changes_tab = False
+            if (
+                changes_repo is not None
+                and self._current_repo is not changes_repo
+                and _same_repo_path(changes_repo.path, path)
+            ):
+                self._current_repo = changes_repo
+                reused_from_changes_tab = True
+            else:
+                self._current_repo = engine.open_repo(path)
             self.history_tab.set_repo(self._current_repo)
             self.snapshots_panel.set_repo(self._current_repo)
             self.restart_snapshot_timer()
@@ -1141,8 +1240,12 @@ class MainWindow(QMainWindow):
                     branch = "main"
             self.status_label.setText(self.tr(f"Opened: {Path(path).name} ({branch})"))
 
-            # Restore cached draft/selections if available for this repo
-            if path in self._repos_state:
+            # Restore cached draft/selections if available for this repo (skip duplicate
+            # restore when ChangesTab._open_repo_by_path already restored _commit_drafts)
+            if path in self._repos_state and not (
+                reused_from_changes_tab
+                and path in getattr(self.changes_tab, "_commit_drafts", {})
+            ):
                 self.changes_tab.restore_repo_state(self._repos_state[path])
 
             # --- Phase 4.2: Ensure active tab is loaded and refresh it ---
@@ -1181,6 +1284,9 @@ class MainWindow(QMainWindow):
 
             # Phase 4.2: Auto-fetch after link resolution
             self._maybe_auto_fetch(current_gen)
+            self._reclaim_heap_after_switch()
+            if hasattr(self, "_heap_trim_timer") and shiboken6.isValid(self._heap_trim_timer):
+                self._heap_trim_timer.start(150)
         except Exception as e:
             # --- Phase 4.2: Hide loading overlay on error ---
             self.tab_container.hide_loading()
@@ -1205,7 +1311,7 @@ class MainWindow(QMainWindow):
         try:
             handle = (
                 self._current_repo
-                if (self._current_repo and str(self._current_repo.path) == repo_path)
+                if (self._current_repo and _same_repo_path(self._current_repo.path, repo_path))
                 else engine.open_repo(repo_path)
             )
             remotes = engine.list_remotes(handle, db_conn=conn)
@@ -1432,9 +1538,8 @@ class MainWindow(QMainWindow):
     def _sync_auto_fetch_action(self) -> None:
         """Synchronise the menu checkmark with the persisted setting."""
         if hasattr(self, "act_auto_fetch"):
-            self.act_auto_fetch.blockSignals(True)
-            self.act_auto_fetch.setChecked(self._is_auto_fetch_enabled())
-            self.act_auto_fetch.blockSignals(False)
+            with QSignalBlocker(self.act_auto_fetch):
+                self.act_auto_fetch.setChecked(self._is_auto_fetch_enabled())
 
     def _is_humor_lines_enabled(self) -> bool:
         """Returns True if humor / personality lines are enabled (default: True)."""
@@ -1451,9 +1556,8 @@ class MainWindow(QMainWindow):
     def _sync_humor_lines_action(self) -> None:
         """Synchronise the menu checkmark with the persisted setting."""
         if hasattr(self, "act_humor_lines"):
-            self.act_humor_lines.blockSignals(True)
-            self.act_humor_lines.setChecked(self._is_humor_lines_enabled())
-            self.act_humor_lines.blockSignals(False)
+            with QSignalBlocker(self.act_humor_lines):
+                self.act_humor_lines.setChecked(self._is_humor_lines_enabled())
 
     def _on_toggle_activity_dock(self) -> None:
         """Toggle inline scrollback expansion of the activity log bar."""
@@ -1485,9 +1589,9 @@ class MainWindow(QMainWindow):
             return
 
         try:
-            engine.open_repo(dir_path)
+            opened_repo = engine.open_repo(dir_path)
             repo_registry.add_repo(self._conn, dir_path, Path(dir_path).name)
-            self.changes_tab.load_repos(select_path=dir_path)
+            self.changes_tab.load_repos(select_path=dir_path, opened_repo=opened_repo)
             return
         except WrenchRepoNotFoundError:
             pass  # Fall through to multi-repo directory discovery
@@ -1698,8 +1802,10 @@ class MainWindow(QMainWindow):
                 return
             if not pre_created_repo:
                 repo_registry.add_repo(self._conn, target_dest, repo_name)
+            prev_gen = self._repo_switch_generation
             self.changes_tab.load_repos(select_path=target_dest)
-            self._on_repo_changed(target_dest)
+            if self._repo_switch_generation == prev_gen:
+                self._on_repo_changed(target_dest)
             if use_sparse and self._settings_registry.is_enabled(
                 "monorepo.sparse_checkout_ui.enabled", target_dest
             ):
@@ -2682,7 +2788,16 @@ class MainWindow(QMainWindow):
             self._snapshot_timer.stop()
 
     def _exec_dialog(self, dlg: QDialog) -> int:
-        """Thin mockable modal dialog execution seam (FLASH-4)."""
+        """Thin mockable dialog execution seam (FLASH-4)."""
+        if dlg.windowModality() == Qt.WindowModality.NonModal:
+            loop = QEventLoop(dlg)
+            dlg.finished.connect(loop.quit)
+            dlg.destroyed.connect(loop.quit)
+            dlg.show()
+            dlg.raise_()
+            dlg.activateWindow()
+            loop.exec()
+            return int(dlg.result()) if shiboken6.isValid(dlg) else int(QDialog.DialogCode.Rejected)
         return dlg.exec()
 
     def _disconnect_style_hints(self, *_) -> None:
@@ -2740,6 +2855,30 @@ class MainWindow(QMainWindow):
             self._close_dialog_safely(dlg)
             if self._active_settings_dialog is dlg:
                 self._active_settings_dialog = None
+
+    def _exit_for_restart(self) -> None:
+        """Exit Qt event loop with RESTART_EXIT_CODE so wrench.app relaunches cleanly."""
+        if os.environ.get("PYTEST_CURRENT_TEST"):
+            logger.info("Test environment detected; skipping process restart exit.")
+            return
+        app = QApplication.instance()
+        if app is not None:
+            QTimer.singleShot(0, lambda a=app: a.exit(RESTART_EXIT_CODE))
+
+    def request_restart(self) -> bool:
+        """Persist session state, close cleanly, and trigger app relaunch."""
+        if not shiboken6.isValid(self) or getattr(self, "_is_closing", False):
+            return False
+        self._save_session_state()
+        settings_dlg = getattr(self, "_active_settings_dialog", None)
+        if isinstance(settings_dlg, QDialog) and shiboken6.isValid(settings_dlg):
+            settings_dlg.close()
+        self._active_settings_dialog = None
+        if not self.close():
+            return False
+        self._restart_requested = True
+        self._exit_for_restart()
+        return True
 
     def _sync_sparse_ui_visibility(self) -> None:
         repo_str = str(self._current_repo.path) if self._current_repo else None
@@ -2887,6 +3026,18 @@ class MainWindow(QMainWindow):
                     self._sparse_dialog._pending_close_on_disable = True
                 else:
                     self._sparse_dialog.reject()
+        elif key == "rebase.interactive_ui.enabled":
+            if (
+                not self._settings_registry.is_enabled(key, active_repo)
+                and self._interactive_rebase_dialog is not None
+                and shiboken6.isValid(self._interactive_rebase_dialog)
+            ):
+                self._interactive_rebase_dialog._load_generation += 1
+                self._interactive_rebase_dialog._run_generation += 1
+                if getattr(self._interactive_rebase_dialog, "_settings_open", False):
+                    self._interactive_rebase_dialog._pending_close_on_disable = True
+                else:
+                    self._interactive_rebase_dialog.reject()
         elif key == "maintenance.auto_commit_graph.enabled":
             if not self._settings_registry.is_enabled(key, eff_repo):
                 self._commit_graph_generation += 1
@@ -3126,6 +3277,105 @@ class MainWindow(QMainWindow):
                 snapshots.take_snapshot(self._current_repo, "timer", conn=self._conn)
             except Exception as e:
                 logger.debug("Automatic periodic snapshot skipped: %s", e)
+
+    def _on_history_interactive_rebase(self, base_oid: str) -> None:
+        if not self._current_repo:
+            return
+        repo_str = str(self._current_repo.path)
+        if not self._settings_registry.is_enabled("rebase.interactive_ui.enabled", repo_str):
+            return
+        active_dlg = getattr(self, "_interactive_rebase_dialog", None)
+        if (
+            active_dlg is not None
+            and shiboken6.isValid(active_dlg)
+            and active_dlg.isVisible()
+        ):
+            active_dlg.raise_()
+            active_dlg.activateWindow()
+            return
+        self._run_interactive_rebase_dialog(self._current_repo, base_oid)
+
+    def _run_interactive_rebase_dialog(self, repo: engine.RepoHandle, base_oid: str) -> int:
+        dlg = InteractiveRebaseDialog(
+            repo,
+            base_oid,
+            parent=self,
+            settings_registry=self._settings_registry,
+        )
+        dlg.setWindowModality(Qt.WindowModality.NonModal)
+        self._interactive_rebase_dialog = dlg
+        watcher = getattr(self, "_watcher", None)
+        suspend_state = {"count": 0}
+        completed_results: list[Any] = []
+
+        def _watcher_usable(w: Any) -> bool:
+            return w is not None and (not isinstance(w, QObject) or shiboken6.isValid(w))
+
+        def _suspend_watcher() -> None:
+            if _watcher_usable(watcher) and callable(getattr(watcher, "suspend", None)):
+                watcher.suspend()
+                suspend_state["count"] += 1
+
+        def _resume_watcher(*_args: Any) -> None:
+            if suspend_state["count"] > 0:
+                suspend_state["count"] -= 1
+                if _watcher_usable(watcher) and callable(getattr(watcher, "resume", None)):
+                    watcher.resume(grace_ms=150)
+
+        def _on_rebase_completed(res: Any) -> None:
+            completed_results.append(res)
+            _resume_watcher()
+
+        dlg.rebase_started.connect(_suspend_watcher)
+        dlg.rebase_completed.connect(_on_rebase_completed)
+        dlg.rebase_failed.connect(_resume_watcher)
+
+        try:
+            result = self._exec_dialog(dlg)
+            if result == QDialog.DialogCode.Accepted:
+                self._refresh_after_git_op()
+                res = (
+                    completed_results[-1]
+                    if completed_results
+                    else getattr(dlg, "last_result", None)
+                )
+                status = getattr(res, "status", "complete") if res is not None else "complete"
+                if status == "conflict":
+                    n_conflicts = len(getattr(res, "conflicted_files", []))
+                    msg = self.tr(
+                        f"Interactive rebase encountered conflicts in {n_conflicts} file(s)"
+                        " — resolve them in Changes."
+                    )
+                    self.status_label.setText(msg)
+                    if self.statusBar():
+                        self.statusBar().showMessage(msg, 8000)
+                    idx = self.tab_container.find_tab("changes", "")
+                    if idx is not None:
+                        self.tab_container.set_current_index(idx)
+                elif status == "paused":
+                    msg = self.tr(
+                        "Interactive rebase paused for edit — modify changes and click "
+                        "Continue Rebase in Changes."
+                    )
+                    self.status_label.setText(msg)
+                    if self.statusBar():
+                        self.statusBar().showMessage(msg, 8000)
+                    idx = self.tab_container.find_tab("changes", "")
+                    if idx is not None:
+                        self.tab_container.set_current_index(idx)
+                else:
+                    msg = self.tr("Interactive rebase completed successfully.")
+                    self.status_label.setText(msg)
+                    if self.statusBar():
+                        self.statusBar().showMessage(msg, 5000)
+            return result
+        finally:
+            while suspend_state["count"] > 0:
+                suspend_state["count"] -= 1
+                if _watcher_usable(watcher) and callable(getattr(watcher, "resume", None)):
+                    watcher.resume(grace_ms=150)
+            if self._interactive_rebase_dialog is dlg:
+                self._interactive_rebase_dialog = None
 
     def _on_history_rebase(self, target_ref: str) -> None:
         if not self._current_repo:

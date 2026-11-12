@@ -1,6 +1,8 @@
 """Git LFS operations: detection, tracking, pointers, status, and synchronization."""
 
+import functools
 import logging
+import shutil
 from pathlib import Path
 
 from .exceptions import LfsUnavailableError
@@ -10,17 +12,16 @@ from .write_ops import run_git
 logger = logging.getLogger(__name__)
 
 LFS_POINTER_PREFIX = "version https://git-lfs.github.com/spec/v1"
-_LFS_AVAILABLE_CACHE: bool | None = None
 
 
+@functools.lru_cache(maxsize=1)
 def is_lfs_installed() -> bool:
     """Probe if git-lfs is installed and available via git CLI.
 
     Cached for the process lifetime.
     """
-    global _LFS_AVAILABLE_CACHE
-    if _LFS_AVAILABLE_CACHE is not None:
-        return _LFS_AVAILABLE_CACHE
+    if shutil.which("git-lfs") is None:
+        return False
 
     try:
         from .paths import data_dir
@@ -33,12 +34,10 @@ def is_lfs_installed() -> bool:
 
     try:
         res = run_git(probe_dir, ["lfs", "version"], check=False)
-        _LFS_AVAILABLE_CACHE = res.returncode == 0
+        return res.returncode == 0
     except Exception as e:
         logger.debug("[lfs] git lfs version check failed: %s", e)
-        _LFS_AVAILABLE_CACHE = False
-
-    return _LFS_AVAILABLE_CACHE
+        return False
 
 
 def lfs_available() -> bool:
@@ -48,8 +47,7 @@ def lfs_available() -> bool:
 
 def _reset_lfs_cache() -> None:
     """Reset cached LFS availability (for testing)."""
-    global _LFS_AVAILABLE_CACHE
-    _LFS_AVAILABLE_CACHE = None
+    is_lfs_installed.cache_clear()
 
 
 def _require_lfs() -> None:

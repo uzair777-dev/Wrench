@@ -115,6 +115,14 @@ class SubmoduleDialog(QDialog):
 
     def refresh(self) -> None:
         """Reload submodule list from engine."""
+        for old_row in range(self.table.rowCount()):
+            for old_col in range(self.table.columnCount()):
+                old_widget = self.table.cellWidget(old_row, old_col)
+                if old_widget is not None:
+                    self.table.removeCellWidget(old_row, old_col)
+                    old_widget.setParent(None)
+                    old_widget.deleteLater()
+        self.table.clearContents()
         self.table.setRowCount(0)
         try:
             submodules = engine.list_submodules(self.repo)

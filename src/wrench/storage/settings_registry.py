@@ -54,6 +54,7 @@ class SettingSpec:
     max_value: int | None = None
     parent_toggle_key: str | None = None
     tier: SettingTier = SettingTier.ADVANCED
+    requires_restart: bool = False
 
 
 @dataclass(frozen=True)
@@ -80,6 +81,7 @@ DEFAULT_SETTING_SPECS: dict[str, SettingSpec] = {
         choices=("system", "dark", "light"),
         scope=SettingScope.GLOBAL_ONLY,
         tier=SettingTier.NORMAL,
+        requires_restart=True,
     ),
     "ui.font_size_pt": SettingSpec(
         key="ui.font_size_pt",

@@ -10,8 +10,10 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
+import shiboken6
+from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QPalette
-from PySide6.QtWidgets import QApplication, QWidget
+from PySide6.QtWidgets import QApplication, QDialog, QMainWindow, QWidget
 
 if TYPE_CHECKING:
     pass
@@ -117,9 +119,32 @@ def normalize_theme_mode(mode: str | None, *, target: str = "canonical") -> str:
     return "auto" if target == "legacy" else "system"
 
 
+def repolish_widget(widget: QWidget | None) -> None:
+    """Re-polish a Qt widget and schedule a repaint so palette/QSS updates show live."""
+    if widget is None or not shiboken6.isValid(widget):
+        return
+    try:
+        style = widget.style()
+        if style is not None:
+            style.unpolish(widget)
+            style.polish(widget)
+        widget.update()
+    except RuntimeError as exc:
+        logger.debug("Skipping repolish on deleted widget: %s", exc)
+
+
 def apply_theme(app: QApplication, mode: str) -> None:
     """Applies a theme mode ('auto', 'system', 'light', 'dark') to the application."""
     norm_mode = normalize_theme_mode(mode, target="legacy")
+    hints = app.styleHints() if hasattr(app, "styleHints") else None
+    if hints is not None:
+        if norm_mode == "dark" and hasattr(hints, "setColorScheme"):
+            hints.setColorScheme(Qt.ColorScheme.Dark)
+        elif norm_mode == "light" and hasattr(hints, "setColorScheme"):
+            hints.setColorScheme(Qt.ColorScheme.Light)
+        elif norm_mode == "auto" and hasattr(hints, "unsetColorScheme"):
+            hints.unsetColorScheme()
+
     if norm_mode == "light":
         palette = create_pastel_light_palette()
     elif norm_mode == "dark":
@@ -127,11 +152,76 @@ def apply_theme(app: QApplication, mode: str) -> None:
     else:  # 'auto' / system
         palette = app.style().standardPalette()
 
+    def _is_active_window(w: QWidget) -> bool:
+        if not shiboken6.isValid(w):
+            return False
+        try:
+            if getattr(w, "_is_closing", False):
+                return False
+            # Skip already-closed windows/dialogs retained in QApplication.topLevelWidgets()
+            if w.testAttribute(Qt.WidgetAttribute.WA_WState_ExplicitShowHide) and w.isHidden():
+                return False
+            # Skip unshown popup/container helpers (e.g. orphaned QMenu/QFrame)
+            if not w.isVisible() and not isinstance(w, (QMainWindow, QDialog)):
+                return False
+        except RuntimeError as exc:
+            logger.debug("Skipping deleted top-level widget during theme apply: %s", exc)
+            return False
+        return True
+
+    try:
+        raw_top_widgets = QApplication.topLevelWidgets()
+    except RuntimeError as exc:
+        logger.debug("Failed collecting top-level widgets during theme apply: %s", exc)
+        raw_top_widgets = []
+
+    top_widgets = [w for w in raw_top_widgets if _is_active_window(w)]
+    top_ids = {id(w) for w in top_widgets}
+    child_widgets: list[QWidget] = []
+    seen_child_ids: set[int] = set()
+    for top_widget in top_widgets:
+        if not shiboken6.isValid(top_widget):
+            continue
+        try:
+            found_children = top_widget.findChildren(QWidget)
+        except RuntimeError as exc:
+            logger.debug("Skipping children of deleted widget during theme apply: %s", exc)
+            continue
+        for child in found_children:
+            try:
+                if not shiboken6.isValid(child):
+                    continue
+                cid = id(child)
+                if cid not in top_ids and cid not in seen_child_ids:
+                    seen_child_ids.add(cid)
+                    child_widgets.append(child)
+            except RuntimeError as exc:
+                logger.debug("Skipping deleted child widget during theme apply: %s", exc)
+
+    # Update children before top-level windows and QApplication so synchronous
+    # changeEvent / _propagate_theme_refresh handlers read the new palette via is_dark_theme().
+    for child in child_widgets:
+        if shiboken6.isValid(child):
+            try:
+                child.setPalette(palette)
+            except RuntimeError as exc:
+                logger.debug("Skipping setPalette on deleted child widget: %s", exc)
+    for top_widget in top_widgets:
+        if shiboken6.isValid(top_widget):
+            try:
+                top_widget.setPalette(palette)
+            except RuntimeError as exc:
+                logger.debug("Skipping setPalette on deleted top-level widget: %s", exc)
+
     app.setPalette(palette)
-    for top_widget in QApplication.topLevelWidgets():
-        top_widget.setPalette(palette)
-        for child in top_widget.findChildren(QWidget):
-            child.setPalette(palette)
+
+    for top_widget in top_widgets:
+        if shiboken6.isValid(top_widget):
+            try:
+                if top_widget.isVisible():
+                    repolish_widget(top_widget)
+            except RuntimeError as exc:
+                logger.debug("Skipping repolish on deleted top-level widget: %s", exc)
     logger.info("Applied theme mode: %s", mode)
 
 
@@ -740,3 +830,23 @@ def get_readonly_field_qss(is_dark: bool, *, placeholder: bool = False) -> str:
         f"border: 1px solid {c['border']}; border-radius: 4px; "
         f"padding: 4px 8px; {font_style}}}"
     )
+
+
+REBASE_ACTION_COLORS = {
+    "light": {
+        "pick": "#4c4f69",
+        "reword": "#1e66f5",
+        "edit": "#92400e",
+        "squash": "#8839ef",
+        "fixup": "#157388",
+        "drop": "#d20f39",
+    },
+    "dark": {
+        "pick": "#cdd6f4",
+        "reword": "#89b4fa",
+        "edit": "#f9e2af",
+        "squash": "#cba6f7",
+        "fixup": "#94e2d5",
+        "drop": "#f38ba8",
+    },
+}

@@ -231,6 +231,8 @@ def test_v2_top_bar_has_two_rows(main_window):
     assert dlg.btn_minimalist not in row1
     assert dlg.btn_minimalist not in row2
     assert dlg.btn_minimalist in bottom
+    assert dlg.btn_apply in bottom
+    assert bottom[-1] is dlg.btn_apply
     dlg.close()
 
 
@@ -242,6 +244,9 @@ def test_v2_normal_mode_hides_scope_and_modified_and_reset(main_window):
     assert dlg.view_mode_combo.isVisible() is True
     assert dlg.btn_undo.isVisible() is True
     assert dlg.btn_redo.isVisible() is True
+    assert dlg.btn_apply.isVisible() is True
+    assert dlg.btn_apply.isEnabled() is False
+    assert dlg.btn_apply.text() == "Apply Changes"
 
     assert dlg.scope_combo.isVisible() is False
     assert dlg.btn_modified_only.isVisible() is False
@@ -253,6 +258,7 @@ def test_v2_normal_mode_hides_scope_and_modified_and_reset(main_window):
     assert dlg.btn_modified_only.isVisible() is True
     assert dlg.btn_reset_category.isVisible() is True
     assert dlg.btn_minimalist.isVisible() is True
+    assert dlg.btn_apply.isVisible() is True
     dlg.close()
 
 
@@ -287,24 +293,26 @@ def test_v2_theme_change_applies_immediately_on_close_and_across_restart(tmp_pat
         dlg.show()
 
         theme_row = _find_row(dlg, "General & UI", "ui.theme_mode")
+        assert theme_row.lbl_restart.isVisible() is True
+        assert theme_row.lbl_pending.isVisible() is False
+
         light_idx = theme_row.combo_control.findData("light")
         assert light_idx >= 0
         theme_row.combo_control.setCurrentIndex(light_idx)
 
-        # Immediately applied before closing Preferences
-        assert win1._current_theme_mode == "light"
-        assert win1.act_theme_light.isChecked() is True
-        assert is_dark_theme(win1) is False
-        assert is_dark_theme(dlg) is False
-        assert app.palette().window().color().name().lower() == "#eff1f5"
-        assert TOAST_TEXT_COLOR["light"] in dlg.toast_label.styleSheet()
-        assert "Saved 'ui.theme_mode' → light" in dlg.toast_label.text()
+        # Buffered until Apply Changes & Restart is clicked
+        assert win1._settings_registry.get_str("ui.theme_mode") == "system"
+        assert theme_row.lbl_pending.isVisible() is True
+        assert dlg.btn_apply.isEnabled() is True
+        assert dlg.btn_apply.text() == "Apply Changes & Restart"
+        assert win1._restart_requested is False
 
-        # Remains applied on dialog close
-        dlg.close()
-        win1._active_settings_dialog = None
-        assert win1._current_theme_mode == "light"
+        # Clicking Apply Changes & Restart commits setting and requests restart
+        dlg.btn_apply.click()
+        assert win1._restart_requested is True
+        assert win1._settings_registry.get_str("ui.theme_mode") == "light"
         assert is_dark_theme(win1) is False
+        win1._active_settings_dialog = None
         win1.close()
         conn1.close()
 
@@ -323,13 +331,13 @@ def test_v2_theme_change_applies_immediately_on_close_and_across_restart(tmp_pat
             dlg2.show()
             theme_row2 = _find_row(dlg2, "General & UI", "ui.theme_mode")
             theme_row2.combo_control.setCurrentIndex(theme_row2.combo_control.findData("dark"))
+            assert dlg2.btn_apply.text() == "Apply Changes & Restart"
+            assert TOAST_TEXT_COLOR["light"] in dlg2.toast_label.styleSheet()
 
-            assert win2._current_theme_mode == "dark"
+            dlg2.btn_apply.click()
+            assert win2._restart_requested is True
+            assert win2._settings_registry.get_str("ui.theme_mode") == "dark"
             assert is_dark_theme(win2) is True
-            assert is_dark_theme(dlg2) is True
-            assert app.palette().window().color().name().lower() == "#181825"
-            assert TOAST_TEXT_COLOR["dark"] in dlg2.toast_label.styleSheet()
-            dlg2.close()
             win2._active_settings_dialog = None
         finally:
             win2.close()
@@ -345,11 +353,13 @@ def test_v2_theme_change_applies_immediately_on_close_and_across_restart(tmp_pat
             assert is_dark_theme(win3) is True
 
             dlg3 = SettingsDialog(main_window=win3, parent=win3, v1_compat=False)
+            dlg3.show()
             theme_row3 = _find_row(dlg3, "General & UI", "ui.theme_mode")
             theme_row3.combo_control.setCurrentIndex(theme_row3.combo_control.findData("system"))
-            assert win3._current_theme_mode == "auto"
+            dlg3.btn_apply.click()
+            assert win3._restart_requested is True
+            assert win3._settings_registry.get_str("ui.theme_mode") == "system"
             assert win3.act_theme_auto.isChecked() is True
-            dlg3.close()
         finally:
             win3.close()
             conn3.close()
@@ -384,41 +394,52 @@ def test_v2_font_size_avatars_humor_and_activity_max_lines_apply_live_and_flush_
             win._active_settings_dialog = dlg
             dlg.show()
 
-            # 1. Humor lines live toggle
+            # 1. Humor lines staged -> committed via Apply Changes without restart
             assert win.changes_tab.clean_quote.isVisible() is True
             humor_row = _find_row(dlg, "General & UI", "ui.humor_lines")
             humor_row.chk_control.setChecked(False)
+            assert win.act_humor_lines.isChecked() is True  # buffered until Apply
+            assert dlg.btn_apply.isEnabled() is True
+            assert dlg.btn_apply.text() == "Apply Changes"
+            dlg.btn_apply.click()
+            assert win._restart_requested is False
             assert win.act_humor_lines.isChecked() is False
             assert win.changes_tab.clean_quote.text() == ""
             assert win.changes_tab.clean_quote.isVisible() is False
 
             humor_row.chk_control.setChecked(True)
+            dlg.btn_apply.click()
+            assert win._restart_requested is False
             assert win.act_humor_lines.isChecked() is True
             assert win.changes_tab.clean_quote.isVisible() is True
             assert bool(win.changes_tab.clean_quote.text())
 
-            # 2. Gravatar live toggle clears cache
+            # 2. Gravatar buffered then applied live without restart
             avatar_mod._author_avatar_url_cache[("Dev", "dev@example.com", (), False)] = "stale"
             grav_row = _find_row(dlg, "General & UI", "ui.avatars_gravatar")
             grav_row.chk_control.setChecked(True)
-            assert ("Dev", "dev@example.com", (), False) not in avatar_mod._author_avatar_url_cache
 
             # 3. Activity dock max_lines (Advanced setting)
             dlg.view_mode_combo.setCurrentIndex(1)
             dock_row = _find_row(dlg, "General & UI", "ui.activity_dock.max_lines")
             dock_row.spin_control.setValue(120)
-            dock_row.flush_pending()
-            assert win._activity_log._entries.maxlen == 120
-            assert win._activity_dock.scrollback.maximumBlockCount() == 120
 
-            # 4. Font size typed into QSpinBox lineEdit and closed BEFORE 150ms debounce fires
+            # 4. Font size typed into QSpinBox lineEdit and applied via Apply Changes
             font_row = _find_row(dlg, "General & UI", "ui.font_size_pt")
             font_row.spin_control.lineEdit().setText("14")
-            dlg.close()
+            assert dlg.btn_apply.isEnabled() is True
+            assert dlg.btn_apply.text() == "Apply Changes"
 
+            dlg.btn_apply.click()
+            assert win._restart_requested is False
+            assert ("Dev", "dev@example.com", (), False) not in avatar_mod._author_avatar_url_cache
+            assert win._activity_log._entries.maxlen == 120
+            assert win._activity_dock.scrollback.maximumBlockCount() == 120
             assert win._settings_registry.get_int("ui.font_size_pt") == 14
             assert app.font().pointSize() == 14
             assert win.font().pointSize() == 14
+            assert dlg.btn_apply.isEnabled() is False
+            dlg.close()
         finally:
             win.close()
     finally:
@@ -467,6 +488,8 @@ def test_v2_session_state_bool_never_clobbers_session_json(tmp_path):
             dlg = SettingsDialog(main_window=win1, parent=win1, v1_compat=False)
             sess_row = _find_row(dlg, "General & UI", "ui.session_state")
             sess_row.chk_control.setChecked(False)
+            dlg.btn_apply.click()
+            assert win1._restart_requested is False
             dlg.close()
         finally:
             # Closing MainWindow saves session JSON into app_settings without clobbering BOOL False
@@ -491,3 +514,80 @@ def test_v2_session_state_bool_never_clobbers_session_json(tmp_path):
             win2.close()
     finally:
         conn2.close()
+
+
+def test_v2_buffered_close_without_apply_discards_changes(main_window):
+    dlg = SettingsDialog(main_window=main_window, parent=main_window, v1_compat=False)
+    dlg.show()
+
+    font_row = _find_row(dlg, "General & UI", "ui.font_size_pt")
+    humor_row = _find_row(dlg, "General & UI", "ui.humor_lines")
+    theme_row = _find_row(dlg, "General & UI", "ui.theme_mode")
+
+    font_row.spin_control.lineEdit().setText("15")
+    humor_row.chk_control.setChecked(False)
+    theme_row.combo_control.setCurrentIndex(theme_row.combo_control.findData("dark"))
+
+    assert dlg.has_pending_changes() is True
+    assert dlg.btn_apply.isEnabled() is True
+    assert dlg.btn_apply.text() == "Apply Changes & Restart"
+
+    # Close without clicking Apply Changes -> discard all buffered changes
+    dlg.close()
+
+    assert dlg.has_pending_changes() is False
+    assert main_window._settings_registry.get_int("ui.font_size_pt") == 10
+    assert main_window._settings_registry.get_bool("ui.humor_lines") is True
+    assert main_window._settings_registry.get_str("ui.theme_mode") == "system"
+    assert main_window._restart_requested is False
+
+
+def test_v2_apply_button_reverts_restart_label_when_restart_setting_reverted(main_window):
+    dlg = SettingsDialog(main_window=main_window, parent=main_window, v1_compat=False)
+    dlg.show()
+
+    font_row = _find_row(dlg, "General & UI", "ui.font_size_pt")
+    theme_row = _find_row(dlg, "General & UI", "ui.theme_mode")
+
+    font_row.spin_control.setValue(13)
+    assert dlg.btn_apply.isEnabled() is True
+    assert dlg.btn_apply.text() == "Apply Changes"
+
+    theme_row.combo_control.setCurrentIndex(theme_row.combo_control.findData("dark"))
+    assert dlg.btn_apply.text() == "Apply Changes & Restart"
+
+    # Revert theme back to stored value while font size stays modified
+    theme_row.combo_control.setCurrentIndex(theme_row.combo_control.findData("system"))
+    assert dlg.btn_apply.isEnabled() is True
+    assert dlg.btn_apply.text() == "Apply Changes"
+    assert theme_row.lbl_pending.isVisible() is False
+
+    # Revert font size back to stored value -> no pending changes
+    font_row.spin_control.setValue(10)
+    assert dlg.btn_apply.isEnabled() is False
+    assert dlg.btn_apply.text() == "Apply Changes"
+    dlg.close()
+
+
+def test_v2_row_reset_stages_change_until_apply(main_window):
+    reg = main_window._settings_registry
+    reg.set("graph.lane_width_px", 24)
+
+    dlg = SettingsDialog(main_window=main_window, parent=main_window, v1_compat=False)
+    dlg.select_category("Commit Graph", highlight_key="graph.lane_width_px")
+    dlg.show()
+    lane_row = _find_row(dlg, "Commit Graph", "graph.lane_width_px")
+    assert lane_row.spin_control.value() == 24
+
+    lane_row.btn_reset.click()
+    assert lane_row.spin_control.value() == 16
+    assert lane_row.lbl_pending.isVisible() is True
+    assert reg.get_int("graph.lane_width_px") == 24
+    assert dlg.btn_apply.isEnabled() is True
+    assert dlg.btn_apply.text() == "Apply Changes"
+
+    dlg.btn_apply.click()
+    assert reg.get_int("graph.lane_width_px") == 16
+    assert lane_row.lbl_pending.isVisible() is False
+    assert main_window._restart_requested is False
+    dlg.close()

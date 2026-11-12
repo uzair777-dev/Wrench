@@ -293,3 +293,49 @@ def test_theme_sync_across_menu_registry_and_restart(tmp_path, app):
             conn3.close()
     finally:
         app.setPalette(orig_palette)
+
+
+def test_live_menu_theme_triggers_update_all_widgets_without_restart(app):
+    from PySide6.QtGui import QPalette
+
+    orig_palette = app.palette()
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    run_migrations(conn)
+    win = MainWindow(conn=conn)
+    try:
+        win.show()
+        app.processEvents()
+
+        # Start in Pastel Light via View -> Theme menu action
+        win.act_theme_light.trigger()
+        app.processEvents()
+        assert is_dark_theme(win) is False
+        assert win.palette().color(QPalette.Window).name().lower() == "#eff1f5"
+        assert win.changes_tab.diff_view.palette().color(QPalette.Base).name().lower() == "#ffffff"
+        assert (
+            win._activity_dock.scrollback.palette().color(QPalette.Base).name().lower() == "#ffffff"
+        )
+
+        # Switch live via View -> Theme -> Pastel Dark without restarting
+        win.act_theme_dark.trigger()
+        app.processEvents()
+        assert is_dark_theme(win) is True
+        assert win.palette().color(QPalette.Window).name().lower() == "#181825"
+        assert win.changes_tab.diff_view.palette().color(QPalette.Base).name().lower() == "#11111b"
+        assert (
+            win._activity_dock.scrollback.palette().color(QPalette.Base).name().lower() == "#11111b"
+        )
+        assert "#89b4fa" in win.changes_tab.commit_btn.styleSheet()
+
+        # Switch live back to Pastel Light
+        win.act_theme_light.trigger()
+        app.processEvents()
+        assert is_dark_theme(win) is False
+        assert win.palette().color(QPalette.Window).name().lower() == "#eff1f5"
+        assert win.changes_tab.diff_view.palette().color(QPalette.Base).name().lower() == "#ffffff"
+        assert "#1e66f5" in win.changes_tab.commit_btn.styleSheet()
+    finally:
+        win.close()
+        conn.close()
+        app.setPalette(orig_palette)

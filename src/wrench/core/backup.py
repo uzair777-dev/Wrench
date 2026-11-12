@@ -9,7 +9,7 @@ from .write_ops import run_git
 
 def create_backup(repo_path: Path, output_path: Path) -> None:
     """Create a git bundle backup of the repository."""
-    repo = open_repo(repo_path)
+    repo = open_repo(repo_path, configure_credentials=False)
     create_bundle(repo, output_path)
 
 

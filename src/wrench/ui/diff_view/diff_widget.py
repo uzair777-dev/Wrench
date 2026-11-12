@@ -3,7 +3,7 @@
 import html
 import logging
 
-from PySide6.QtCore import QEvent, Signal
+from PySide6.QtCore import QEvent, QSignalBlocker, Signal
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QComboBox,
@@ -156,8 +156,18 @@ class DiffWidget(QWidget):
         elif self._diff is prev_diff and self._diff is not None:
             self._render_diff()
 
-    def set_repo(self, repo: RepoHandle):
+    def set_repo(self, repo: RepoHandle | None):
+        self._current_path = None
+        self._diff = None
+        self._read_only = False
+        self._force_full_diff = False
         self._repo = repo
+        self.title_label.setText("No file selected")
+        self.editor.clear()
+        self.hunk_combo.setVisible(False)
+        self.stage_hunk_btn.setVisible(False)
+        self.file_action_btn.setVisible(False)
+        self.truncation_banner.setVisible(False)
 
     def set_file(self, path: str, *, staged: bool):
         self._read_only = False
@@ -287,13 +297,14 @@ class DiffWidget(QWidget):
 
         # Populate hunks combo only if interactive
         if not self._read_only:
-            self.hunk_combo.blockSignals(True)
-            self.hunk_combo.clear()
-            for i, hunk in enumerate(self._diff.hunks, start=1):
-                hunk_info = f"-{hunk.old_start},{hunk.old_count} +{hunk.new_start},{hunk.new_count}"
-                label = f"Hunk {i} (@@ {hunk_info} @@)"
-                self.hunk_combo.addItem(label, hunk.id)
-            self.hunk_combo.blockSignals(False)
+            with QSignalBlocker(self.hunk_combo):
+                self.hunk_combo.clear()
+                for i, hunk in enumerate(self._diff.hunks, start=1):
+                    hunk_info = (
+                        f"-{hunk.old_start},{hunk.old_count} +{hunk.new_start},{hunk.new_count}"
+                    )
+                    label = f"Hunk {i} (@@ {hunk_info} @@)"
+                    self.hunk_combo.addItem(label, hunk.id)
 
             self.hunk_combo.setVisible(True)
             self.stage_hunk_btn.setText("Unstage Hunk" if self._staged else "Stage Hunk")

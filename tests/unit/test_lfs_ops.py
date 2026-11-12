@@ -61,7 +61,10 @@ def test_parse_lfs_pointer():
 def test_lfs_probe_caching():
     _reset_lfs_cache()
 
-    with patch("wrench.core.lfs_ops.run_git") as mock_run:
+    with (
+        patch("wrench.core.lfs_ops.shutil.which", return_value="/usr/bin/git-lfs"),
+        patch("wrench.core.lfs_ops.run_git") as mock_run,
+    ):
         mock_run.return_value = MagicMock(returncode=0)
         assert is_lfs_installed() is True
         assert lfs_available() is True
@@ -72,9 +75,35 @@ def test_lfs_probe_caching():
         assert mock_run.call_count == 1
 
     _reset_lfs_cache()
-    with patch("wrench.core.lfs_ops.run_git") as mock_run:
+    with (
+        patch("wrench.core.lfs_ops.shutil.which", return_value="/usr/bin/git-lfs"),
+        patch("wrench.core.lfs_ops.run_git") as mock_run,
+    ):
         mock_run.return_value = MagicMock(returncode=1)
         assert is_lfs_installed() is False
+        assert mock_run.call_count == 1
+
+
+def test_is_lfs_installed_skips_git_subprocess_when_binary_missing():
+    _reset_lfs_cache()
+
+    with (
+        patch("wrench.core.lfs_ops.shutil.which", return_value=None) as mock_which,
+        patch("wrench.core.lfs_ops.run_git") as mock_run,
+    ):
+        assert is_lfs_installed() is False
+        assert is_lfs_installed() is False
+        assert mock_which.call_count == 1
+        assert mock_run.call_count == 0
+
+    _reset_lfs_cache()
+    with (
+        patch("wrench.core.lfs_ops.shutil.which", return_value="/usr/bin/git-lfs") as mock_which,
+        patch("wrench.core.lfs_ops.run_git") as mock_run,
+    ):
+        mock_run.return_value = MagicMock(returncode=0)
+        assert is_lfs_installed() is True
+        assert mock_which.call_count == 1
         assert mock_run.call_count == 1
 
 

@@ -6,12 +6,13 @@ import hashlib
 import logging
 import re
 import time
+from collections import OrderedDict
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import shiboken6
 from PySide6.QtCore import QObject, Qt, Signal, Slot
-from PySide6.QtGui import QColor, QImage, QPainter, QPainterPath, QPixmap
+from PySide6.QtGui import QColor, QImage, QPainter, QPainterPath, QPixmap, QPixmapCache
 from PySide6.QtWidgets import QLabel, QWidget
 
 from wrench.core import paths
@@ -26,8 +27,11 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 CACHE_TTL_SECONDS = 7 * 86400  # 7 days
+_AUTHOR_AVATAR_URL_CACHE_MAX_SIZE = 2048
 
-_author_avatar_url_cache: dict[tuple[str, str, tuple[str, ...]], str | None] = {}
+_author_avatar_url_cache: OrderedDict[tuple[str, str, tuple[str, ...], bool], str | None] = (
+    OrderedDict()
+)
 
 
 def clear_author_avatar_cache() -> None:
@@ -62,6 +66,7 @@ def resolve_author_avatar_url(
 
     cache_key = (norm_name, norm_email, norm_remotes, is_gravatar_on)
     if cache_key in _author_avatar_url_cache:
+        _author_avatar_url_cache.move_to_end(cache_key)
         return _author_avatar_url_cache[cache_key]
 
     url: str | None = None
@@ -102,10 +107,10 @@ def resolve_author_avatar_url(
     if not url and is_gravatar_on and norm_email:
         url = get_gravatar_url(norm_email, size=80)
 
-    if len(_author_avatar_url_cache) > 5000:
-        _author_avatar_url_cache.clear()
-
     _author_avatar_url_cache[cache_key] = url
+    _author_avatar_url_cache.move_to_end(cache_key)
+    while len(_author_avatar_url_cache) > _AUTHOR_AVATAR_URL_CACHE_MAX_SIZE:
+        _author_avatar_url_cache.popitem(last=False)
     return url
 
 
@@ -195,6 +200,9 @@ AVATAR_HEADERS = {
 }
 
 NEGATIVE_CACHE_TTL = 3600.0  # 1 hour
+AVATAR_MEM_CACHE_MAX_SIZE = 128
+NEGATIVE_CACHE_MAX_SIZE = 512
+PIXMAP_CACHE_LIMIT_KB = 16384  # 16 MB
 
 
 class AvatarLoader(QObject):
@@ -202,12 +210,31 @@ class AvatarLoader(QObject):
 
     avatar_ready = Signal(str, int)  # (url, size)
 
-    def __init__(self, parent: QObject | None = None) -> None:
+    def __init__(
+        self,
+        parent: QObject | None = None,
+        *,
+        max_cache_size: int = AVATAR_MEM_CACHE_MAX_SIZE,
+    ) -> None:
         super().__init__(parent)
-        self._mem_cache: dict[tuple[str, int], tuple[QPixmap, float]] = {}
+        self._max_mem_cache_size = max(1, int(max_cache_size))
+        self._mem_cache: OrderedDict[tuple[str, int], tuple[QPixmap, float]] = OrderedDict()
         self._in_flight: set[str] = set()
         self._pending_sizes: dict[str, set[int]] = {}
-        self._negative_cache: dict[str, float] = {}
+        self._negative_cache: OrderedDict[str, float] = OrderedDict()
+        QPixmapCache.setCacheLimit(PIXMAP_CACHE_LIMIT_KB)
+
+    def _put_mem_cache(self, key: tuple[str, int], pixmap: QPixmap, ts: float) -> None:
+        self._mem_cache[key] = (pixmap, ts)
+        self._mem_cache.move_to_end(key)
+        while len(self._mem_cache) > self._max_mem_cache_size:
+            self._mem_cache.popitem(last=False)
+
+    def _put_negative_cache(self, url: str, ts: float) -> None:
+        self._negative_cache[url] = ts
+        self._negative_cache.move_to_end(url)
+        while len(self._negative_cache) > NEGATIVE_CACHE_MAX_SIZE:
+            self._negative_cache.popitem(last=False)
 
     def get_avatar(
         self,
@@ -239,8 +266,9 @@ class AvatarLoader(QObject):
             except OSError:
                 disk_mtime = None
 
-        # 2. Check in-memory cache
+        # 2. Check in-memory cache (LRU)
         if cache_key in self._mem_cache:
+            self._mem_cache.move_to_end(cache_key)
             pixmap, mem_time = self._mem_cache[cache_key]
             effective_time = disk_mtime if disk_mtime is not None else mem_time
             is_stale = (now - effective_time) > CACHE_TTL_SECONDS
@@ -256,7 +284,7 @@ class AvatarLoader(QObject):
             image = QImage(str(disk_file))
             if not image.isNull():
                 pixmap = _make_circular_pixmap(image, size)
-                self._mem_cache[cache_key] = (pixmap, disk_mtime)
+                self._put_mem_cache(cache_key, pixmap, disk_mtime)
                 if not is_stale:
                     return pixmap
                 # If stale, trigger background refresh and return current disk pixmap
@@ -304,7 +332,7 @@ class AvatarLoader(QObject):
         sizes = self._pending_sizes.pop(url, {40})
         image = QImage()
         if not image.loadFromData(data):
-            self._negative_cache[url] = time.time()
+            self._put_negative_cache(url, time.time())
             logger.debug("Failed decoding avatar data from %s", url)
             return
 
@@ -319,7 +347,7 @@ class AvatarLoader(QObject):
         # Create masked circular pixmap and cache for each requested size
         for s in sizes:
             pixmap = _make_circular_pixmap(image, s)
-            self._mem_cache[(url, s)] = (pixmap, now)
+            self._put_mem_cache((url, s), pixmap, now)
             if shiboken6.isValid(self):
                 self.avatar_ready.emit(url, s)
         if shiboken6.isValid(self):
@@ -330,7 +358,7 @@ class AvatarLoader(QObject):
             return
         self._in_flight.discard(url)
         self._pending_sizes.pop(url, None)
-        self._negative_cache[url] = time.time()
+        self._put_negative_cache(url, time.time())
         logger.debug("Avatar fetch failed silently for %s: %s", url, exc)
 
 

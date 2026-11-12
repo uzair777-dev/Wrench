@@ -207,6 +207,28 @@ except ImportError:
     _STATE_MERGE = 1
     _REBASE_STATES = {7, 8, 9, 11}
 
+_LIBGIT2_CACHE_MAX_BYTES = 32 * 1024 * 1024
+_LIBGIT2_MWINDOW_MAPPED_LIMIT = 48 * 1024 * 1024
+_LIBGIT2_LIMITS_LOCK = threading.Lock()
+_libgit2_limits_applied = False
+
+
+def configure_libgit2_cache_limits(*, force: bool = False) -> None:
+    """Configure a warm 32 MB LRU object cache and 48 MB mmap window limit in libgit2."""
+    global _libgit2_limits_applied
+    with _LIBGIT2_LIMITS_LOCK:
+        if _libgit2_limits_applied and not force:
+            return
+        try:
+            pygit2.settings.cache_max_size(_LIBGIT2_CACHE_MAX_BYTES)
+        except AttributeError as exc:
+            logger.debug("pygit2.settings.cache_max_size unavailable: %s", exc)
+        try:
+            pygit2.settings.mwindow_mapped_limit = _LIBGIT2_MWINDOW_MAPPED_LIMIT
+        except AttributeError as exc:
+            logger.debug("pygit2.settings.mwindow_mapped_limit unavailable: %s", exc)
+        _libgit2_limits_applied = True
+
 
 def get_status(repo: RepoHandle) -> RepoStatus:
     """Get the full working-tree and index status of a repo."""

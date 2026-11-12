@@ -41,6 +41,7 @@ from .exceptions import (
     SecretScanningRejectedError,
     SignedCommitsRequiredError,
     WorkflowScopeRequiredError,
+    WrenchRepoNotFoundError,
 )
 from .git_credential_helper import _host_of
 from .models import CloneResult, CommitGraphStats, MergeResult, RebaseResult
@@ -113,6 +114,113 @@ def run_git(
         logger.debug("[git] Succeeded (exit 0): git %s", safe_args)
 
     return result
+
+
+_CRED_CONFIG_LOCKS_GUARD = threading.Lock()
+_CRED_CONFIG_LOCKS: dict[Path, threading.Lock] = {}
+
+
+def _resolve_local_git_config_path(repo_path: Path) -> Path | None:
+    """Resolve the repository's local git config file (following linked worktree commondir)."""
+    try:
+        git_dir = resolve_git_dir(repo_path)
+    except (WrenchRepoNotFoundError, OSError):
+        return None
+
+    common_dir = git_dir
+    commondir_file = git_dir / "commondir"
+    if commondir_file.is_file():
+        try:
+            raw = commondir_file.read_text(encoding="utf-8", errors="replace").strip()
+            if raw:
+                candidate = Path(raw)
+                common_dir = (
+                    candidate
+                    if candidate.is_absolute()
+                    else (git_dir / candidate).resolve()
+                )
+        except OSError:
+            common_dir = git_dir
+    return (common_dir / "config").resolve()
+
+
+def _get_cred_config_lock(key: Path) -> threading.Lock:
+    with _CRED_CONFIG_LOCKS_GUARD:
+        lock = _CRED_CONFIG_LOCKS.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _CRED_CONFIG_LOCKS[key] = lock
+        return lock
+
+
+def ensure_wrench_credential_config(
+    repo_path: Path | str,
+    pygit2_repo: pygit2.Repository | None = None,
+) -> None:
+    """Ensure credential.helper='wrench' and credential.useHttpPath='true' in local config.
+
+    Reads strictly the repository's local config file (not aggregated global/system config)
+    via pygit2 so global settings cannot mask missing repo config, and serializes writes
+    per config path to prevent concurrent ``.git/config.lock`` collisions.
+    """
+    p = Path(repo_path)
+    local_cfg_path = _resolve_local_git_config_path(p)
+    lock_key = local_cfg_path if local_cfg_path is not None else p.resolve()
+    lock = _get_cred_config_lock(lock_key)
+
+    with lock:
+        cfg: pygit2.Config | None = None
+        if local_cfg_path is not None and local_cfg_path.is_file():
+            try:
+                local_cfg = pygit2.Config()
+                local_level = getattr(
+                    getattr(getattr(pygit2, "enums", None), "ConfigLevel", None),
+                    "LOCAL",
+                    getattr(pygit2, "GIT_CONFIG_LEVEL_LOCAL", 5),
+                )
+                local_cfg.add_file(str(local_cfg_path), local_level)
+                cfg = local_cfg
+            except (pygit2.GitError, OSError, ValueError) as exc:
+                logger.debug(
+                    "Could not inspect local pygit2 config at %s (%s); falling back to CLI",
+                    local_cfg_path,
+                    exc,
+                )
+        elif local_cfg_path is None and pygit2_repo is not None:
+            # Explicit in-memory/mock fallback only when no on-disk git_dir could be resolved
+            try:
+                cfg = pygit2_repo.config
+            except (pygit2.GitError, AttributeError):
+                cfg = None
+
+        helper_val: str | None = None
+        has_multivar_helper = False
+        http_path_val: str | None = None
+        if cfg is not None:
+            try:
+                multivars = [str(v).strip() for v in cfg.get_multivar("credential.helper")]
+                has_multivar_helper = len(multivars) > 1
+                if multivars:
+                    helper_val = multivars[-1]
+            except (KeyError, ValueError, pygit2.GitError):
+                try:
+                    helper_val = str(cfg["credential.helper"]).strip()
+                except (KeyError, ValueError, pygit2.GitError):
+                    helper_val = None
+
+            try:
+                http_path_val = str(cfg["credential.useHttpPath"]).strip().lower()
+            except (KeyError, ValueError, pygit2.GitError):
+                http_path_val = None
+
+        if helper_val != "wrench":
+            helper_args = ["config", "--local"]
+            if has_multivar_helper:
+                helper_args.append("--replace-all")
+            helper_args.extend(["credential.helper", "wrench"])
+            run_git(p, helper_args)
+        if http_path_val != "true":
+            run_git(p, ["config", "--local", "credential.useHttpPath", "true"])
 
 
 # ── Progress-type matrix (Phase 4.6) ────────────────────────────────────
@@ -994,9 +1102,8 @@ def clone_repo(
 
         shutil.move(str(temp_dir), str(d))
 
-        # Write credential config into fresh clone
-        run_git(d, ["config", "--local", "credential.helper", "wrench"])
-        run_git(d, ["config", "--local", "credential.useHttpPath", "true"])
+        # Write credential config into fresh clone (only if not already set)
+        ensure_wrench_credential_config(d)
 
         return CloneResult(path=d)
 
@@ -1024,7 +1131,7 @@ def merge(repo_path: Path | str, source_branch: str) -> MergeResult:
     from . import engine, snapshots
 
     try:
-        handle = engine.open_repo(p)
+        handle = engine.open_repo(p, configure_credentials=False)
         snapshots.take_snapshot(handle, "pre_risky_op")
     except Exception as e:
         logger.debug("Failed taking pre_risky_op snapshot: %s", e)
@@ -1071,7 +1178,7 @@ def rebase(repo_path: Path | str, onto: str) -> RebaseResult:
     from . import engine, snapshots
 
     try:
-        handle = engine.open_repo(p)
+        handle = engine.open_repo(p, configure_credentials=False)
         snapshots.take_snapshot(handle, "pre_risky_op")
     except Exception as e:
         logger.debug("Failed taking pre_risky_op snapshot: %s", e)

@@ -637,6 +637,7 @@ class CommitGraphWidget(QTableView):
 
     commit_selected = Signal(object)  # emits Commit or None
     rebase_requested = Signal(str)  # emits target sha/ref
+    interactive_rebase_requested = Signal(str)  # emits base sha
     merge_requested = Signal(str)  # emits source sha/ref
     create_branch_requested = Signal(str)
     create_tag_requested = Signal(str)
@@ -1280,6 +1281,12 @@ class CommitGraphWidget(QTableView):
         merge_act = menu.addAction(f"Merge '{commit.sha[:8]}' into current branch...")
         rebase_act = menu.addAction(f"Rebase current branch onto '{commit.sha[:8]}'...")
 
+        interactive_rebase_act = None
+        reg = self._settings_registry or peek_settings_registry()
+        repo_str = str(self._repo.path) if self._repo else None
+        if reg is None or reg.is_enabled("rebase.interactive_ui.enabled", repo_str):
+            interactive_rebase_act = menu.addAction(self.tr("Interactive Rebase from Here..."))
+
         action = menu.exec(self.viewport().mapToGlobal(pos))
         if action == copy_action:
             cb = QGuiApplication.clipboard()
@@ -1293,3 +1300,5 @@ class CommitGraphWidget(QTableView):
             self.merge_requested.emit(commit.sha)
         elif action == rebase_act:
             self.rebase_requested.emit(commit.sha)
+        elif interactive_rebase_act is not None and action == interactive_rebase_act:
+            self.interactive_rebase_requested.emit(commit.sha)

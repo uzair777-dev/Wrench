@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import logging
 
-from PySide6.QtCore import QByteArray, QEvent, Qt, QTimer, Signal
+from PySide6.QtCore import QByteArray, QEvent, QSignalBlocker, Qt, QTimer, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -42,6 +42,7 @@ class HistoryTab(QWidget):
     commit_hovered = Signal(str)  # sha
     commit_clicked = Signal(str)  # sha
     rebase_requested = Signal(str)
+    interactive_rebase_requested = Signal(str)
     merge_requested = Signal(str)
     create_branch_requested = Signal(str)
     create_tag_requested = Signal(str)
@@ -143,6 +144,7 @@ class HistoryTab(QWidget):
         self.graph_placeholder = self.graph_widget  # Backwards-compatible alias
         self.graph_widget.commit_selected.connect(self._on_commit_selected)
         self.graph_widget.rebase_requested.connect(self.rebase_requested)
+        self.graph_widget.interactive_rebase_requested.connect(self.interactive_rebase_requested)
         self.graph_widget.merge_requested.connect(self.merge_requested)
         self.graph_widget.create_branch_requested.connect(self.create_branch_requested)
         self.graph_widget.create_tag_requested.connect(self.create_tag_requested)
@@ -184,6 +186,7 @@ class HistoryTab(QWidget):
     def set_repo(self, repo: RepoHandle | None) -> None:
         self._repo = repo
         self._last_refs_signature = None
+        self.detail_panel.set_commit(None)
         self.detail_panel.set_repo(repo)
         self.refresh(force=True)
 
@@ -238,29 +241,27 @@ class HistoryTab(QWidget):
     def _populate_authors(self) -> None:
         if not self._repo:
             return
-        self.author_combo.blockSignals(True)
-        current_selection = self.author_combo.currentText()
-        self.author_combo.clear()
-        self.author_combo.addItem(self.tr("Author: All"))
+        with QSignalBlocker(self.author_combo):
+            current_selection = self.author_combo.currentText()
+            self.author_combo.clear()
+            self.author_combo.addItem(self.tr("Author: All"))
 
-        try:
-            commits = self.graph_widget._all_commits
-            if not commits:
-                commits = engine.get_log(self._repo, limit=50, all_refs=True)
-            authors = sorted({c.author_name for c in commits if c.author_name})
-            for a in authors:
-                self.author_combo.addItem(a)
-        except Exception as e:
-            logger.debug("Could not fetch authors for log filter: %s", e)
+            try:
+                commits = self.graph_widget._all_commits
+                if not commits:
+                    commits = engine.get_log(self._repo, limit=50, all_refs=True)
+                authors = sorted({c.author_name for c in commits if c.author_name})
+                for a in authors:
+                    self.author_combo.addItem(a)
+            except Exception as e:
+                logger.debug("Could not fetch authors for log filter: %s", e)
 
-        # Restore selection
-        idx = self.author_combo.findText(current_selection)
-        if idx >= 0:
-            self.author_combo.setCurrentIndex(idx)
-        else:
-            self.author_combo.setCurrentIndex(0)
-
-        self.author_combo.blockSignals(False)
+            # Restore selection
+            idx = self.author_combo.findText(current_selection)
+            if idx >= 0:
+                self.author_combo.setCurrentIndex(idx)
+            else:
+                self.author_combo.setCurrentIndex(0)
 
     def _on_search_text_changed(self) -> None:
         self._debounce_timer.start()

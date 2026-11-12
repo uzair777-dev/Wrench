@@ -12,7 +12,7 @@ from PySide6.QtWidgets import QApplication, QMessageBox
 
 from wrench.core import lock_recovery
 from wrench.storage.db import get_connection
-from wrench.ui.main_window import MainWindow
+from wrench.ui.main_window import RESTART_EXIT_CODE, MainWindow
 
 logger = logging.getLogger("wrench")
 
@@ -116,7 +116,15 @@ def main():
 
     QTimer.singleShot(150, _check_stale_locks)
 
-    sys.exit(app.exec())
+    exit_code = app.exec()
+    if exit_code == RESTART_EXIT_CODE:
+        try:
+            conn.close()
+        except Exception as exc:
+            logger.debug("Closing SQLite connection before restart failed: %s", exc)
+        logger.info("Restarting Wrench application...")
+        os.execv(sys.executable, [sys.executable, "-m", "wrench.app", *sys.argv[1:]])
+    sys.exit(exit_code)
 
 
 if __name__ == "__main__":

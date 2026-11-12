@@ -17,6 +17,8 @@ from .exceptions import (
     PatchApplyError,
     RemoteExistsError,
     RemoteNotFoundError,
+    StaleLockDetectedError,  # noqa: F401
+    WrenchGitError,
     WrenchRepoNotFoundError,
 )
 from .models import (
@@ -25,6 +27,7 @@ from .models import (
     LfsFileStatus,
     LFSLock,
     LogPage,
+    RebaseTodoEntry,
     SparseCheckoutState,
     TreeDirectoryEntry,
     WatcherStatusInfo,  # noqa: F401
@@ -261,7 +264,7 @@ class RepoHandle:
 
 
 # Import read_ops, write_ops, identity, reflog after all dataclasses are defined
-from . import identity, read_ops, reflog, sparse_checkout, write_ops  # noqa: E402
+from . import identity, read_ops, rebase_sequencer, reflog, sparse_checkout, write_ops  # noqa: E402
 from .bundles import (  # noqa: E402
     create_bundle,
     get_bundle_info,
@@ -339,7 +342,8 @@ clone = clone_repo
 clone_repository = clone_repo
 
 
-def open_repo(path: Path | str) -> RepoHandle:
+def open_repo(path: Path | str, *, configure_credentials: bool = True) -> RepoHandle:
+    read_ops.configure_libgit2_cache_limits()
     p = Path(path)
     if not p.exists():
         raise WrenchRepoNotFoundError(f"Path does not exist: {p}")
@@ -351,22 +355,22 @@ def open_repo(path: Path | str) -> RepoHandle:
     except pygit2.GitError as e:
         raise WrenchRepoNotFoundError(str(e)) from e
 
-    # Ensure Wrench credential helper is configured locally for seamless auth
-    try:
-        write_ops.run_git(p, ["config", "--local", "credential.helper", "wrench"])
-        write_ops.run_git(p, ["config", "--local", "credential.useHttpPath", "true"])
-    except Exception as e:
-        logger.debug("Failed configuring credential helper: %s", e)
+    if configure_credentials:
+        # Ensure Wrench credential helper is configured locally for seamless auth
+        try:
+            write_ops.ensure_wrench_credential_config(p, pygit2_repo=pygit2_repo)
+        except Exception as e:
+            logger.debug("Failed configuring credential helper: %s", e)
 
-    # Ensure Git LFS filter is installed locally if repo uses LFS
-    try:
-        gitattributes = p / ".gitattributes"
-        if gitattributes.exists() and lfs_available():
-            content = gitattributes.read_text(encoding="utf-8", errors="replace")
-            if "filter=lfs" in content:
-                write_ops.run_git(p, ["lfs", "install", "--local"], check=False)
-    except Exception as e:
-        logger.debug("Failed configuring local LFS filter: %s", e)
+        # Ensure Git LFS filter is installed locally if repo uses LFS
+        try:
+            gitattributes = p / ".gitattributes"
+            if gitattributes.exists() and lfs_available():
+                content = gitattributes.read_text(encoding="utf-8", errors="replace")
+                if "filter=lfs" in content:
+                    write_ops.run_git(p, ["lfs", "install", "--local"], check=False)
+        except Exception as e:
+            logger.debug("Failed configuring local LFS filter: %s", e)
 
     return RepoHandle(pygit2_repo, p)
 
@@ -914,8 +918,7 @@ def add_remote(
     if name in existing:
         raise RemoteExistsError(name)
 
-    write_ops.run_git(repo.path, ["config", "--local", "credential.helper", "wrench"])
-    write_ops.run_git(repo.path, ["config", "--local", "credential.useHttpPath", "true"])
+    write_ops.ensure_wrench_credential_config(repo.path, pygit2_repo=repo.pygit2_repo)
 
     write_ops.run_git(repo.path, ["remote", "add", name, url])
 
@@ -1188,6 +1191,7 @@ class GitEngine:
     def __init__(self, repo: RepoHandle | None = None, settings: Any = None) -> None:
         self.repo = repo
         self._settings = settings
+        read_ops.configure_libgit2_cache_limits(force=True)
 
     def get_settings(self) -> Any:
         if self._settings is not None:
@@ -1669,6 +1673,54 @@ class GitEngine:
             settings_registry=settings_registry or self._settings,
         )
 
+    def list_commits_for_interactive_rebase(
+        self,
+        base_oid: str,
+        repo: RepoHandle | None = None,
+        *,
+        limit: int = 1000,
+    ) -> list[RebaseTodoEntry]:
+        target = repo or self.repo
+        if not target:
+            raise ValueError("No repository provided")
+        if not self.is_feature_enabled("rebase.interactive_ui.enabled", str(target.path)):
+            return []
+        return list_commits_for_interactive_rebase(target, base_oid, limit=limit)
+
+    def interactive_rebase(
+        self,
+        base_oid: str,
+        entries: list[RebaseTodoEntry],
+        repo: RepoHandle | None = None,
+        *,
+        autostash: bool | None = None,
+        autosquash: bool | None = None,
+        conn: sqlite3.Connection | None = None,
+    ) -> RebaseResult:
+        target = repo or self.repo
+        if not target:
+            raise ValueError("No repository provided")
+        repo_str = str(target.path)
+        if not self.is_feature_enabled("rebase.interactive_ui.enabled", repo_str):
+            raise WrenchGitError(
+                "Visual Interactive Rebase is disabled in Settings (rebase.interactive_ui.enabled)."
+            )
+        reg = self.get_settings()
+        eff_autostash = (
+            reg.get_bool("rebase.autostash", repo_str) if autostash is None else bool(autostash)
+        )
+        eff_autosquash = (
+            reg.get_bool("rebase.autosquash", repo_str) if autosquash is None else bool(autosquash)
+        )
+        return interactive_rebase(
+            target,
+            base_oid,
+            entries,
+            autostash=eff_autostash,
+            autosquash=eff_autosquash,
+            conn=conn,
+        )
+
 
 def is_unborn_repo(repo_path: Path | str) -> bool:
     """Return True if the repository exists and has an unborn HEAD."""
@@ -1766,3 +1818,75 @@ def maybe_write_commit_graph(
     ):
         return CommitGraphStats(written=False, duration_ms=0, skipped_reason="disabled")
     return write_commit_graph(repo_path)
+
+
+def build_interactive_rebase_cli_args(
+    base_oid: str,
+    *,
+    autostash: bool = True,
+    autosquash: bool = True,
+) -> list[str]:
+    return rebase_sequencer.build_interactive_rebase_cli_args(
+        base_oid,
+        autostash=autostash,
+        autosquash=autosquash,
+    )
+
+
+def get_interactive_rebase_target_label(
+    repo: RepoHandle | Path | str,
+    base_oid: str,
+) -> tuple[str, str, bool]:
+    repo_path = repo.path if isinstance(repo, RepoHandle) else Path(repo)
+    return rebase_sequencer.get_interactive_rebase_target_label(repo_path, base_oid)
+
+
+def list_commits_for_interactive_rebase_checked(
+    repo: RepoHandle | Path | str,
+    base_oid: str,
+    *,
+    limit: int = 1000,
+) -> tuple[list[RebaseTodoEntry], bool]:
+    repo_path = repo.path if isinstance(repo, RepoHandle) else Path(repo)
+    return rebase_sequencer.list_commits_for_interactive_rebase_checked(
+        repo_path,
+        base_oid,
+        limit=limit,
+    )
+
+
+def list_commits_for_interactive_rebase(
+    repo: RepoHandle | Path | str,
+    base_oid: str,
+    *,
+    limit: int = 1000,
+) -> list[RebaseTodoEntry]:
+    repo_path = repo.path if isinstance(repo, RepoHandle) else Path(repo)
+    return rebase_sequencer.list_commits_for_interactive_rebase(
+        repo_path,
+        base_oid,
+        limit=limit,
+    )
+
+
+def interactive_rebase(
+    repo: RepoHandle,
+    base_oid: str,
+    entries: list[RebaseTodoEntry],
+    *,
+    autostash: bool = True,
+    autosquash: bool = True,
+    conn: sqlite3.Connection | None = None,
+) -> RebaseResult:
+    from . import snapshots
+
+    snapshots.maybe_create_safety_snapshot(repo, "interactive_rebase", conn=conn)
+    result = rebase_sequencer.run_interactive_rebase(
+        repo.path,
+        base_oid,
+        entries,
+        autostash=autostash,
+        autosquash=autosquash,
+    )
+    refresh_repo_handle(repo)
+    return result

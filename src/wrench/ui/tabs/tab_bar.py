@@ -15,6 +15,7 @@ import logging
 from dataclasses import dataclass
 from typing import Callable
 
+import shiboken6
 from PySide6.QtCore import QEvent, QMimeData, QPoint, Qt, Signal
 from PySide6.QtGui import (
     QDrag,
@@ -40,6 +41,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from wrench.ui.theme import repolish_widget
 from wrench.ui.widgets.loading_overlay import TabLoadingOverlay
 
 logger = logging.getLogger(__name__)
@@ -412,6 +414,9 @@ class TabStripWidget(QWidget):
         event.acceptProposedAction()
 
 
+_SINGLETON_TAB_TYPES = frozenset({"changes", "history", "snapshots"})
+
+
 class TabContainer(QWidget):
     """Main tab container holding the TabBar strip and the QStackedWidget content area."""
 
@@ -726,6 +731,20 @@ class TabContainer(QWidget):
         for i in reversed(to_remove):
             self.remove_tab(i)
 
+    @staticmethod
+    def _dispose_tab_widget(meta: TabMetadata) -> None:
+        """Close and schedule deletion of non-singleton tabs/placeholders when removed."""
+        widget = meta.widget
+        meta.factory = None
+        if widget is None or not shiboken6.isValid(widget):
+            return
+        if meta.tab_type not in _SINGLETON_TAB_TYPES or not meta.is_loaded:
+            if hasattr(widget, "_cleanup_resources"):
+                widget._cleanup_resources()
+            widget.close()
+            widget.setParent(None)
+            widget.deleteLater()
+
     def remove_tab(self, index: int) -> None:
         """Closes a tab by index. Pinned tabs cannot be removed."""
         if not (0 <= index < len(self._tabs)):
@@ -738,9 +757,10 @@ class TabContainer(QWidget):
 
         target_focus_idx = max(0, index - 1)
 
-        widget = self._tabs[index].widget
+        removed_meta = self._tabs.pop(index)
+        widget = removed_meta.widget
         self._stack.removeWidget(widget)
-        self._tabs.pop(index)
+        self._dispose_tab_widget(removed_meta)
 
         self.tab_closed.emit(index)
         self._rebuild_strip()
@@ -756,8 +776,9 @@ class TabContainer(QWidget):
     def clear_tabs(self) -> None:
         """Removes all open tabs from the container."""
         while self._tabs:
-            widget = self._tabs.pop().widget
-            self._stack.removeWidget(widget)
+            removed_meta = self._tabs.pop()
+            self._stack.removeWidget(removed_meta.widget)
+            self._dispose_tab_widget(removed_meta)
         self._tab_buttons.clear()
         self._current_index = -1
         self._rebuild_strip()
@@ -885,6 +906,10 @@ class TabContainer(QWidget):
         menu.exec(self._add_btn.mapToGlobal(QPoint(0, self._add_btn.height())))
 
     def refresh_theme(self) -> None:
-        """Refreshes all tab buttons when theme changes."""
+        """Refreshes all tab buttons and strip chrome when theme changes."""
+        repolish_widget(self._strip_widget)
+        repolish_widget(self._add_btn)
         for btn in self._tab_buttons:
             btn.refresh_theme()
+            repolish_widget(btn)
+        repolish_widget(self)

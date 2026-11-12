@@ -276,15 +276,18 @@ class PRDetailTab(QWidget):
             return
         self.title_label.setText(f"Failed to load PR: {exc}")
 
-    def closeEvent(self, event) -> None:
+    def _cleanup_resources(self) -> None:
         if hasattr(self, "avatar_widget") and shiboken6.isValid(self.avatar_widget):
             self.avatar_widget.close()
         if self._adapter is not None:
             try:
                 self._adapter.close()
             except Exception as e:
-                logger.debug("Failed closing adapter in PR detail tab closeEvent: %s", e)
+                logger.debug("Failed closing adapter in PR detail tab cleanup: %s", e)
             self._adapter = None
+
+    def closeEvent(self, event) -> None:
+        self._cleanup_resources()
         super().closeEvent(event)
 
     def _open_in_browser(self) -> None:

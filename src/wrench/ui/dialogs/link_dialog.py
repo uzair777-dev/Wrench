@@ -142,7 +142,19 @@ class LinkRepoDialog(QDialog):
 
         self._populate_table()
 
+    def _clear_table(self) -> None:
+        for row in range(self.table.rowCount()):
+            for col in range(self.table.columnCount()):
+                widget = self.table.cellWidget(row, col)
+                if widget is not None:
+                    self.table.removeCellWidget(row, col)
+                    widget.setParent(None)
+                    widget.deleteLater()
+        self.table.clearContents()
+        self.table.setRowCount(0)
+
     def _populate_table(self) -> None:
+        self._clear_table()
         self.table.setRowCount(len(self._remotes))
         self._row_data.clear()
         self._combos.clear()

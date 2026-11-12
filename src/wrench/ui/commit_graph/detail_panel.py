@@ -139,6 +139,18 @@ class CommitDetailPanel(QWidget):
         if self._file_stats:
             self._populate_files_table()
 
+    def _clear_files_table(self) -> None:
+        """Detach and schedule deletion of all cell widgets before clearing rows."""
+        for row in range(self.files_table.rowCount()):
+            for col in range(self.files_table.columnCount()):
+                widget = self.files_table.cellWidget(row, col)
+                if widget is not None:
+                    self.files_table.removeCellWidget(row, col)
+                    widget.setParent(None)
+                    widget.deleteLater()
+        self.files_table.clearContents()
+        self.files_table.setRowCount(0)
+
     def _populate_files_table(self):
         is_dark = is_dark_theme(self)
         mode = "dark" if is_dark else "light"
@@ -146,6 +158,7 @@ class CommitDetailPanel(QWidget):
         del_col = COMMIT_STAT_COLORS[mode]["del"]
 
         self.files_table.blockSignals(True)
+        self._clear_files_table()
         self.files_table.setRowCount(len(self._file_stats))
         for row, stat in enumerate(self._file_stats):
             code = stat.change_type.capitalize()[:1]
@@ -182,9 +195,14 @@ class CommitDetailPanel(QWidget):
         self.files_table.blockSignals(False)
 
     def set_repo(self, repo: RepoHandle | None):
+        prev_path = getattr(self._repo, "path", None)
+        next_path = getattr(repo, "path", None)
         self._repo = repo
         self._cached_remote_urls = None
         self._remote_urls_cached_for = None
+        if repo is None or prev_path != next_path:
+            self._file_stats = []
+            self._clear_files_table()
         self.diff_widget.set_repo(repo)
 
     def _resolve_commit_avatar_url(self, commit: Commit) -> str | None:
@@ -242,7 +260,7 @@ class CommitDetailPanel(QWidget):
             self.sha_label.setText("SHA: -")
             self.author_date_label.setText("-")
             self.message_edit.clear()
-            self.files_table.setRowCount(0)
+            self._clear_files_table()
             self.diff_widget.set_diff_model(
                 engine.Diff(path="", is_binary=False, hunks=[]), title="No commit selected"
             )

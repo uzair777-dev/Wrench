@@ -8,6 +8,7 @@ import shiboken6
 from PySide6.QtCore import (
     QAbstractTableModel,
     QModelIndex,
+    QSignalBlocker,
     Qt,
     QTimer,
     Signal,
@@ -242,7 +243,7 @@ class IssueListTab(QWidget):
         self.empty_widget.setVisible(False)
         main_layout.addWidget(self.empty_widget, 1)
 
-    def closeEvent(self, event) -> None:
+    def _cleanup_resources(self) -> None:
         self._load_generation += 1
         if hasattr(self, "_debounce_timer") and shiboken6.isValid(self._debounce_timer):
             self._debounce_timer.stop()
@@ -252,9 +253,12 @@ class IssueListTab(QWidget):
             try:
                 self._active_adapter.close()
             except Exception as e:
-                logger.debug("Failed closing active adapter in issue tab closeEvent: %s", e)
+                logger.debug("Failed closing active adapter in issue tab cleanup: %s", e)
             self._active_adapter = None
         self._disconnect_avatar_loader()
+
+    def closeEvent(self, event) -> None:
+        self._cleanup_resources()
         super().closeEvent(event)
 
     def _disconnect_avatar_loader(self, *_) -> None:
@@ -298,13 +302,12 @@ class IssueListTab(QWidget):
             self.empty_widget.setVisible(False)
             self.table_view.setVisible(True)
 
-            self.remote_combo.blockSignals(True)
-            self.remote_combo.clear()
-            for link in links:
-                acc = forge_accounts.get_account_full(conn, link.forge_account_id)
-                label = acc.label if acc else link.remote_name
-                self.remote_combo.addItem(f"{link.remote_name} ({label})", userData=link)
-            self.remote_combo.blockSignals(False)
+            with QSignalBlocker(self.remote_combo):
+                self.remote_combo.clear()
+                for link in links:
+                    acc = forge_accounts.get_account_full(conn, link.forge_account_id)
+                    label = acc.label if acc else link.remote_name
+                    self.remote_combo.addItem(f"{link.remote_name} ({label})", userData=link)
 
             self._active_link = links[0]
             self._setup_adapter_and_load()
@@ -407,9 +410,8 @@ class IssueListTab(QWidget):
     ) -> None:
         self.table_view.setVisible(False)
         self.table_model.set_issues([])
-        self.remote_combo.blockSignals(True)
-        self.remote_combo.clear()
-        self.remote_combo.blockSignals(False)
+        with QSignalBlocker(self.remote_combo):
+            self.remote_combo.clear()
         self.refresh_btn.setEnabled(False)
         self.error_banner.hide_banner()
         self.empty_title.setText("Repository Not Linked")

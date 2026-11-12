@@ -46,6 +46,7 @@ from wrench.core import engine
 from wrench.storage import settings
 from wrench.storage.settings_registry import (
     CATEGORIES_ORDER,
+    SettingScope,
     SettingSpec,
     SettingsRegistry,
     SettingTier,
@@ -56,8 +57,10 @@ from wrench.ui.theme import (
     COMMIT_STAT_COLORS,
     FORGE_BADGE_COLORS,
     GRAPH_LANES,
+    PRIMARY_BUTTON_STYLES,
     SECONDARY_TEXT,
     TOAST_TEXT_COLOR,
+    get_banner_style,
     get_secondary_button_style,
     get_settings_badge_qss,
     is_dark_theme,
@@ -794,6 +797,7 @@ class SettingsDialog(QDialog):
         # Category tracking & lazy page cache (OPT-1)
         self.categories: list[str] = list(CATEGORIES_ORDER)
         self._category_pages: dict[str, CategorySettingsPage] = {}
+        self._pending_changes: dict[tuple[str | None, str], Any] = {}
 
         root_layout = QVBoxLayout(self)
         root_layout.setContentsMargins(12, 12, 12, 12)
@@ -886,7 +890,7 @@ class SettingsDialog(QDialog):
 
         root_layout.addLayout(middle_layout, 1)
 
-        # Bottom status bar: auto-save toast + footer minimalist preset action
+        # Bottom status bar: status toast + footer actions + primary Apply Changes button
         self.bottom_bar = QHBoxLayout()
         self.bottom_bar.setSpacing(8)
 
@@ -898,6 +902,12 @@ class SettingsDialog(QDialog):
         self.btn_minimalist.setToolTip(self.tr("Apply distraction-free local-only settings preset"))
         self.btn_minimalist.clicked.connect(self._on_minimalist_preset_clicked)
         self.bottom_bar.addWidget(self.btn_minimalist)
+
+        self.btn_apply = QPushButton(self.tr("Apply Changes"), self)
+        self.btn_apply.setEnabled(False)
+        self.btn_apply.setToolTip(self.tr("No pending preference changes"))
+        self.btn_apply.clicked.connect(self._on_apply_clicked)
+        self.bottom_bar.addWidget(self.btn_apply)
 
         root_layout.addLayout(self.bottom_bar)
 
@@ -1000,7 +1010,7 @@ class SettingsDialog(QDialog):
                         continue
                     if (
                         modified_only
-                        and self.registry.get(spec.key, self.active_scope) == spec.default
+                        and self.get_effective_value(spec.key, self.active_scope) == spec.default
                     ):
                         continue
                     is_visible = True
@@ -1056,6 +1066,8 @@ class SettingsDialog(QDialog):
                 )
             if hasattr(self, "btn_minimalist"):
                 self.btn_minimalist.setStyleSheet(get_secondary_button_style(is_dark, compact=True))
+            if hasattr(self, "btn_apply"):
+                self.btn_apply.setStyleSheet(PRIMARY_BUTTON_STYLES[mode])
             for attr in (
                 "nav_list",
                 "page_stack",
@@ -1066,6 +1078,7 @@ class SettingsDialog(QDialog):
                 "btn_undo",
                 "btn_redo",
                 "btn_reset_category",
+                "btn_apply",
             ):
                 _repolish_widget(getattr(self, attr, None))
             _repolish_widget(self)
@@ -1088,6 +1101,125 @@ class SettingsDialog(QDialog):
         ):
             self._apply_theme()
 
+    def _resolve_scope_for_key(self, key: str, repo_path: str | None) -> str | None:
+        spec = self.registry.get_spec(key)
+        if repo_path and (spec is None or spec.scope == SettingScope.REPO_OVERRIDABLE):
+            return repo_path
+        return None
+
+    def has_pending_changes(self) -> bool:
+        return bool(getattr(self, "_pending_changes", None))
+
+    def is_key_pending(self, key: str, repo_path: str | None = None) -> bool:
+        scope = self._resolve_scope_for_key(key, repo_path)
+        return (scope, key) in self._pending_changes
+
+    def get_effective_value(self, key: str, repo_path: str | None = None) -> Any:
+        scope = self._resolve_scope_for_key(key, repo_path)
+        if (scope, key) in self._pending_changes:
+            return self._pending_changes[(scope, key)]
+        return self.registry.get(key, repo_path)
+
+    def pending_requires_restart(self) -> bool:
+        for _scope, key in self._pending_changes:
+            spec = self.registry.get_spec(key)
+            if spec is not None and spec.requires_restart:
+                return True
+        return False
+
+    def _update_apply_button_state(self) -> None:
+        if self.v1_compat or not hasattr(self, "btn_apply"):
+            return
+        pending_count = len(self._pending_changes)
+        has_pending = pending_count > 0
+        needs_restart = self.pending_requires_restart()
+        self.btn_apply.setEnabled(has_pending)
+        if needs_restart:
+            self.btn_apply.setText(self.tr("Apply Changes & Restart"))
+            self.btn_apply.setToolTip(
+                self.tr("Save %d pending change(s) and restart Wrench to apply them")
+                % pending_count
+            )
+        else:
+            self.btn_apply.setText(self.tr("Apply Changes"))
+            if has_pending:
+                self.btn_apply.setToolTip(
+                    self.tr("Save %d pending change(s)") % pending_count
+                )
+            else:
+                self.btn_apply.setToolTip(self.tr("No pending preference changes"))
+
+    def stage_change(self, key: str, val: Any, repo_path: str | None = None) -> None:
+        scope = self._resolve_scope_for_key(key, repo_path)
+        stored = self.registry.get(key, scope)
+        if val == stored:
+            self._pending_changes.pop((scope, key), None)
+        else:
+            self._pending_changes[(scope, key)] = val
+
+        for page in self._category_pages.values():
+            if shiboken6.isValid(page):
+                page.update_dependencies()
+        self._update_apply_button_state()
+        if self.has_pending_changes():
+            count = len(self._pending_changes)
+            self._show_toast(
+                self.tr("Pending changes (%d) — click %s to apply")
+                % (count, self.btn_apply.text())
+            )
+        else:
+            self.toast_label.setText("")
+
+    def apply_pending_changes(self) -> bool:
+        """Commit all buffered edits to SettingsRegistry. Returns True if restart is needed."""
+        if self.v1_compat:
+            return False
+
+        for page in getattr(self, "_category_pages", {}).values():
+            if not shiboken6.isValid(page):
+                continue
+            for row in getattr(page, "row_widgets", []):
+                if shiboken6.isValid(row) and hasattr(row, "flush_pending"):
+                    row.flush_pending()
+
+        if not self._pending_changes:
+            self._update_apply_button_state()
+            return False
+
+        items = list(self._pending_changes.items())
+        requires_restart = False
+        self._pending_changes.clear()
+
+        for (scope, key), val in items:
+            spec = self.registry.get_spec(key)
+            if spec is not None and spec.requires_restart:
+                requires_restart = True
+            self.registry.set(key, val, scope)
+
+        for page in self._category_pages.values():
+            if shiboken6.isValid(page):
+                page.reload_all()
+        if self._effective_modified_only():
+            self._refresh_nav_list(preserve_selection=True)
+        self._update_apply_button_state()
+
+        if len(items) == 1:
+            (_scope, single_key), single_val = items[0]
+            self._show_toast(self.tr("Saved '%s' → %s") % (single_key, str(single_val)))
+        else:
+            self._show_toast(self.tr("Applied %d changes") % len(items))
+        return requires_restart
+
+    def _on_apply_clicked(self) -> None:
+        requires_restart = self.apply_pending_changes()
+        if (
+            requires_restart
+            and self.main_window is not None
+            and shiboken6.isValid(self.main_window)
+            and hasattr(self.main_window, "request_restart")
+        ):
+            self.main_window.request_restart()
+
     def _get_or_create_category_page(self, category: str) -> CategorySettingsPage:
         """OPT-1: Lazily instantiate category page on demand."""
         if category in self._category_pages:
@@ -1099,6 +1231,9 @@ class SettingsDialog(QDialog):
             repo_path=self.active_scope,
             parent=self.page_stack,
             on_setting_changed=self._on_setting_modified,
+            on_stage=self.stage_change,
+            value_getter=self.get_effective_value,
+            is_pending_fn=self.is_key_pending,
         )
         self._category_pages[category] = page
         self.page_stack.addWidget(page)
@@ -1131,6 +1266,7 @@ class SettingsDialog(QDialog):
             page.set_repo_path(self.active_scope)
         if self._effective_modified_only():
             self._refresh_nav_list(preserve_selection=True)
+        self._update_apply_button_state()
         self._show_toast(self.tr("Scope changed to: %s") % self.scope_combo.currentText())
 
     def _on_modified_only_toggled(self, checked: bool) -> None:
@@ -1159,20 +1295,32 @@ class SettingsDialog(QDialog):
 
     def _on_minimalist_preset_clicked(self) -> None:
         self.registry.apply_minimalist_local_only_preset(self.active_scope)
+        scope = self.active_scope
+        for key in list(self._pending_changes):
+            if key[0] == scope or key[0] is None:
+                spec = self.registry.get_spec(key[1])
+                if spec is not None and self._pending_changes[key] == self.registry.get(
+                    key[1], key[0]
+                ):
+                    self._pending_changes.pop(key, None)
         for page in self._category_pages.values():
             page.reload_all()
         if self._effective_modified_only():
             self._refresh_nav_list(preserve_selection=True)
+        self._update_apply_button_state()
         self._show_toast(self.tr("Applied Minimalist Local-Only Preset"))
 
     def _on_undo_clicked(self) -> None:
         res = self.registry.undo_last_change()
         if res:
             key, val = res
+            for k in [k for k in self._pending_changes if k[1] == key]:
+                self._pending_changes.pop(k, None)
             for page in self._category_pages.values():
                 page.reload_all()
             if self._effective_modified_only():
                 self._refresh_nav_list(preserve_selection=True)
+            self._update_apply_button_state()
             self._show_toast(self.tr("Undone: '%s' restored to %s") % (key, str(val)))
         else:
             self._show_toast(self.tr("Nothing to undo"))
@@ -1181,10 +1329,13 @@ class SettingsDialog(QDialog):
         res = self.registry.redo_last_change()
         if res:
             key, val = res
+            for k in [k for k in self._pending_changes if k[1] == key]:
+                self._pending_changes.pop(k, None)
             for page in self._category_pages.values():
                 page.reload_all()
             if self._effective_modified_only():
                 self._refresh_nav_list(preserve_selection=True)
+            self._update_apply_button_state()
             self._show_toast(self.tr("Redone: '%s' applied as %s") % (key, str(val)))
         else:
             self._show_toast(self.tr("Nothing to redo"))
@@ -1194,10 +1345,17 @@ class SettingsDialog(QDialog):
         if 0 <= row < len(self.categories):
             cat = self.categories[row]
             self.registry.reset_category(cat, self.active_scope)
+            for pending_key in list(self._pending_changes):
+                spec = self.registry.get_spec(pending_key[1])
+                if spec is not None and spec.category == cat:
+                    resolved = self._resolve_scope_for_key(pending_key[1], self.active_scope)
+                    if pending_key[0] == resolved:
+                        self._pending_changes.pop(pending_key, None)
             if cat in self._category_pages:
                 self._category_pages[cat].reload_all()
             if self._effective_modified_only():
                 self._refresh_nav_list(preserve_selection=True)
+            self._update_apply_button_state()
             self._show_toast(self.tr("Reset category: %s") % cat)
 
     def _show_toast(self, msg: str) -> None:
@@ -1266,12 +1424,14 @@ class SettingsDialog(QDialog):
             except RuntimeError, TypeError:
                 pass
             self._connected_registry = None
+        if hasattr(self, "_pending_changes"):
+            self._pending_changes.clear()
         for page in getattr(self, "_category_pages", {}).values():
             if not shiboken6.isValid(page):
                 continue
             for row in getattr(page, "row_widgets", []):
-                if shiboken6.isValid(row) and hasattr(row, "flush_pending"):
-                    row.flush_pending()
+                if shiboken6.isValid(row) and hasattr(row, "cancel_pending_timer"):
+                    row.cancel_pending_timer()
 
     def done(self, result: int) -> None:
         self._cleanup_connections()
@@ -1294,6 +1454,7 @@ class SettingsDialog(QDialog):
             for page in self._category_pages.values():
                 page.reload_all()
             self._refresh_nav_list(preserve_selection=True)
+            self._update_apply_button_state()
 
 
 class SettingRowWidget(QFrame):
@@ -1306,12 +1467,19 @@ class SettingRowWidget(QFrame):
         repo_path: str | None = None,
         parent: QWidget | None = None,
         on_changed: Callable[[str, Any], None] | None = None,
+        on_stage: Callable[[str, Any, str | None], None] | None = None,
+        value_getter: Callable[[str, str | None], Any] | None = None,
+        is_pending_fn: Callable[[str, str | None], bool] | None = None,
     ) -> None:
         super().__init__(parent)
         self.spec = spec
         self.registry = registry
         self.repo_path = repo_path
         self.on_changed = on_changed
+        self.on_stage = on_stage
+        self.value_getter = value_getter
+        self.is_pending_fn = is_pending_fn
+        self.is_buffered = on_stage is not None
         self._block_signals = False
 
         self._debounce_timer = QTimer(self)
@@ -1322,6 +1490,12 @@ class SettingRowWidget(QFrame):
 
         self._init_ui()
         self.reload_value()
+
+    def _effective_value(self, repo_path: str | None = ...) -> Any:  # type: ignore[assignment]
+        target_repo = self.repo_path if repo_path is ... else repo_path
+        if self.value_getter is not None:
+            return self.value_getter(self.spec.key, target_repo)
+        return self.registry.get(self.spec.key, target_repo)
 
     def _init_ui(self) -> None:
         self.setFrameShape(QFrame.Shape.StyledPanel)
@@ -1348,6 +1522,19 @@ class SettingRowWidget(QFrame):
         self.lbl_override = QLabel(self.tr("Repo Override"), self)
         self.lbl_override.setVisible(False)
         header_layout.addWidget(self.lbl_override)
+
+        self.lbl_restart = QLabel(self.tr("Requires restart"), self)
+        self.lbl_restart.setVisible(bool(self.spec.requires_restart))
+        self.lbl_restart.setToolTip(
+            self.tr("Changing this setting restarts Wrench when you click Apply")
+        )
+        header_layout.addWidget(self.lbl_restart)
+
+        self.lbl_pending = QLabel(self.tr("Pending"), self)
+        self.lbl_pending.setVisible(False)
+        self.lbl_pending.setToolTip(self.tr("Unapplied change — click Apply Changes to save"))
+        header_layout.addWidget(self.lbl_pending)
+
         header_layout.addStretch()
 
         text_layout.addLayout(header_layout)
@@ -1376,6 +1563,9 @@ class SettingRowWidget(QFrame):
             self.spin_control.setRange(min_val, max_val)
             self.spin_control.valueChanged.connect(self._on_int_changed)
             self.spin_control.editingFinished.connect(self._flush_spin_edit)
+            line_edit = self.spin_control.lineEdit()
+            if line_edit is not None:
+                line_edit.textChanged.connect(self._on_spin_text_changed)
             ctrl_layout.addWidget(self.spin_control)
             self.control_widget = self.spin_control
 
@@ -1422,8 +1612,28 @@ class SettingRowWidget(QFrame):
         muted = SECONDARY_TEXT["dark" if is_dark else "light"]
         self.lbl_key.setStyleSheet(f"color: {muted}; font-size: 11px;")
         self.lbl_override.setStyleSheet(get_settings_badge_qss(is_dark))
+        warn = get_banner_style("warning", is_dark)
+        self.lbl_restart.setStyleSheet(
+            f"QLabel {{ font-size: 11px; color: {warn['fg']}; "
+            f"background-color: {warn['bg']}; border: 1px solid {warn['border']}; "
+            f"padding: 2px 6px; border-radius: 4px; }}"
+        )
+        info = get_banner_style("info", is_dark)
+        self.lbl_pending.setStyleSheet(
+            f"QLabel {{ font-size: 11px; font-weight: bold; color: {info['fg']}; "
+            f"background-color: {info['bg']}; border: 1px solid {info['border']}; "
+            f"padding: 2px 6px; border-radius: 4px; }}"
+        )
         _repolish_widget(self)
-        for attr in ("lbl_title", "lbl_desc", "control_widget", "btn_reset", "btn_browse"):
+        for attr in (
+            "lbl_title",
+            "lbl_desc",
+            "lbl_restart",
+            "lbl_pending",
+            "control_widget",
+            "btn_reset",
+            "btn_browse",
+        ):
             _repolish_widget(getattr(self, attr, None))
 
     def changeEvent(self, event: QEvent) -> None:
@@ -1442,17 +1652,19 @@ class SettingRowWidget(QFrame):
     def _sync_badges(self, val: Any) -> None:
         is_overridden = False
         if self.repo_path:
-            override_val = self.registry.get(self.spec.key, self.repo_path)
-            global_val = self.registry.get(self.spec.key, None)
+            override_val = self._effective_value(self.repo_path)
+            global_val = self._effective_value(None)
             is_overridden = override_val != global_val
         self.lbl_override.setVisible(is_overridden)
+        is_pending = bool(self.is_pending_fn and self.is_pending_fn(self.spec.key, self.repo_path))
+        self.lbl_pending.setVisible(is_pending)
         self.btn_reset.setEnabled(val != self.spec.default)
 
     def reload_value(self) -> None:
-        """Reload value from registry into control widget without triggering save."""
+        """Reload effective value into control widget without triggering save/stage."""
         self._block_signals = True
         try:
-            val = self.registry.get(self.spec.key, self.repo_path)
+            val = self._effective_value()
             if self.spec.setting_type == SettingType.BOOL:
                 self.chk_control.setChecked(bool(val))
             elif self.spec.setting_type == SettingType.INT:
@@ -1470,7 +1682,18 @@ class SettingRowWidget(QFrame):
 
     def update_parent_dependency(self) -> None:
         if self.spec.parent_toggle_key:
-            parent_enabled = self.registry.is_enabled(self.spec.parent_toggle_key, self.repo_path)
+            if self.value_getter is not None:
+                raw_parent = self.value_getter(self.spec.parent_toggle_key, self.repo_path)
+                if isinstance(raw_parent, bool):
+                    parent_enabled = raw_parent
+                elif isinstance(raw_parent, str):
+                    parent_enabled = raw_parent.strip().lower() in ("true", "1", "yes", "on")
+                else:
+                    parent_enabled = bool(raw_parent)
+            else:
+                parent_enabled = self.registry.is_enabled(
+                    self.spec.parent_toggle_key, self.repo_path
+                )
             self.setEnabled(parent_enabled)
             if not parent_enabled:
                 self.setToolTip(
@@ -1478,6 +1701,11 @@ class SettingRowWidget(QFrame):
                 )
             else:
                 self.setToolTip("")
+
+    def cancel_pending_timer(self) -> None:
+        if hasattr(self, "_debounce_timer") and self._debounce_timer.isActive():
+            self._debounce_timer.stop()
+        self._pending_val = None
 
     def _on_bool_toggled(self, checked: bool) -> None:
         if self._block_signals:
@@ -1487,8 +1715,26 @@ class SettingRowWidget(QFrame):
     def _on_int_changed(self, val: int) -> None:
         if self._block_signals:
             return
+        if self.is_buffered:
+            self._save_val(val)
+            return
         self._pending_val = val
         self._debounce_timer.start()
+
+    def _on_spin_text_changed(self, text: str) -> None:
+        if self._block_signals or not self.is_buffered:
+            return
+        raw = text.strip()
+        if not raw:
+            return
+        try:
+            parsed = int(raw)
+        except ValueError:
+            return
+        min_v = self.spec.min_value if self.spec.min_value is not None else 0
+        max_v = self.spec.max_value if self.spec.max_value is not None else 100000
+        clamped = max(min_v, min(max_v, parsed))
+        self._save_val(clamped)
 
     @Slot()
     def _flush_spin_edit(self) -> None:
@@ -1498,6 +1744,10 @@ class SettingRowWidget(QFrame):
             return
         self.spin_control.interpretText()
         current_spin = self.spin_control.value()
+        if self.is_buffered:
+            if current_spin != self._effective_value():
+                self._save_val(current_spin)
+            return
         if self._pending_val is not None or current_spin != self.registry.get_int(
             self.spec.key, self.repo_path
         ):
@@ -1515,6 +1765,9 @@ class SettingRowWidget(QFrame):
     def _on_str_changed(self, text: str) -> None:
         if self._block_signals:
             return
+        if self.is_buffered:
+            self._save_val(text)
+            return
         self._pending_val = text
         self._debounce_timer.start()
 
@@ -1525,21 +1778,33 @@ class SettingRowWidget(QFrame):
             self._save_val(path)
 
     def flush_pending(self) -> None:
-        """Flush any in-flight typed edits (including uncommitted QSpinBox text)."""
+        """Flush any in-flight typed edits (including uncommitted QSpinBox/line edits)."""
         if not shiboken6.isValid(self):
             return
+        self.cancel_pending_timer()
+        if self.is_buffered:
+            if self.spec.setting_type == SettingType.INT and hasattr(self, "spin_control"):
+                self.spin_control.interpretText()
+                current_spin = self.spin_control.value()
+                if current_spin != self._effective_value():
+                    self._save_val(current_spin)
+            elif self.spec.setting_type in (SettingType.STR, SettingType.PATH) and hasattr(
+                self, "edit_control"
+            ):
+                current_text = self.edit_control.text()
+                if current_text != self._effective_value():
+                    self._save_val(current_text)
+            return
+
         if self.spec.setting_type == SettingType.INT and hasattr(self, "spin_control"):
             self.spin_control.interpretText()
             current_spin = self.spin_control.value()
             stored = self.registry.get_int(self.spec.key, self.repo_path)
             if self._pending_val is not None or current_spin != stored:
                 self._pending_val = current_spin
-                if self._debounce_timer.isActive():
-                    self._debounce_timer.stop()
                 self._flush_debounced_save()
                 return
-        if self._debounce_timer.isActive() or self._pending_val is not None:
-            self._debounce_timer.stop()
+        if self._pending_val is not None:
             self._flush_debounced_save()
 
     @Slot()
@@ -1551,20 +1816,26 @@ class SettingRowWidget(QFrame):
         if self._pending_val is not None:
             val = self._pending_val
             self._pending_val = None
-            if val == self.registry.get(self.spec.key, self.repo_path):
+            if val == self._effective_value():
                 return
             self._save_val(val)
 
     def _save_val(self, val: Any) -> None:
+        if self.on_stage is not None:
+            self.on_stage(self.spec.key, val, self.repo_path)
+            self._sync_badges(val)
+            return
         self.registry.set(self.spec.key, val, self.repo_path)
         self._sync_badges(val)
         if self.on_changed:
             self.on_changed(self.spec.key, val)
 
     def _on_reset_clicked(self) -> None:
-        if self._debounce_timer.isActive():
-            self._debounce_timer.stop()
-        self._pending_val = None
+        self.cancel_pending_timer()
+        if self.is_buffered:
+            self._save_val(self.spec.default)
+            self.reload_value()
+            return
         self.registry.reset_key(self.spec.key, self.repo_path)
         self.reload_value()
         if self.on_changed:
@@ -1593,12 +1864,18 @@ class CategorySettingsPage(QWidget):
         repo_path: str | None = None,
         parent: QWidget | None = None,
         on_setting_changed: Callable[[str, Any], None] | None = None,
+        on_stage: Callable[[str, Any, str | None], None] | None = None,
+        value_getter: Callable[[str, str | None], Any] | None = None,
+        is_pending_fn: Callable[[str, str | None], bool] | None = None,
     ) -> None:
         super().__init__(parent)
         self.category = category
         self.registry = registry
         self.repo_path = repo_path
         self.on_setting_changed = on_setting_changed
+        self.on_stage = on_stage
+        self.value_getter = value_getter
+        self.is_pending_fn = is_pending_fn
         self.row_widgets: list[SettingRowWidget] = []
 
         self._init_ui()
@@ -1634,6 +1911,9 @@ class CategorySettingsPage(QWidget):
                 repo_path=self.repo_path,
                 parent=container,
                 on_changed=self._on_row_changed,
+                on_stage=self.on_stage,
+                value_getter=self.value_getter,
+                is_pending_fn=self.is_pending_fn,
             )
             self.row_widgets.append(row)
             self.container_layout.addWidget(row)
@@ -1668,6 +1948,8 @@ class CategorySettingsPage(QWidget):
             if row.spec.key == key:
                 if row._debounce_timer.isActive() or row._pending_val is not None:
                     continue
+                if self.is_pending_fn and self.is_pending_fn(key, self.repo_path):
+                    continue
                 row.reload_value()
         self.update_dependencies()
 
@@ -1698,7 +1980,11 @@ class CategorySettingsPage(QWidget):
             matches_tier = view_tier == SettingTier.ADVANCED or row.spec.tier == SettingTier.NORMAL
             matches_q = row.matches_query(query)
             if modified_only:
-                val = self.registry.get(row.spec.key, self.repo_path)
+                val = (
+                    self.value_getter(row.spec.key, self.repo_path)
+                    if self.value_getter is not None
+                    else self.registry.get(row.spec.key, self.repo_path)
+                )
                 matches_mod = val != row.spec.default
             else:
                 matches_mod = True

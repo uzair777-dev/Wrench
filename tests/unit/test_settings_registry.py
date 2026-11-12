@@ -319,3 +319,15 @@ def test_setting_tier_enum_and_normal_keys(registry):
     assert view_spec.default == "normal"
     assert view_spec.choices == ("normal", "advanced")
     assert view_spec.scope == SettingScope.GLOBAL_ONLY
+
+
+def test_requires_restart_metadata(registry):
+    theme_spec = registry.get_spec("ui.theme_mode")
+    font_spec = registry.get_spec("ui.font_size_pt")
+    assert theme_spec is not None and theme_spec.requires_restart is True
+    assert font_spec is not None and font_spec.requires_restart is False
+    for spec in registry.list_specs():
+        if spec.key == "ui.theme_mode":
+            assert spec.requires_restart is True
+        else:
+            assert spec.requires_restart is False

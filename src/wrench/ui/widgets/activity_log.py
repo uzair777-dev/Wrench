@@ -10,7 +10,7 @@ import time
 from collections import deque
 from dataclasses import dataclass, field
 
-from PySide6.QtCore import QObject, Qt, Signal, Slot
+from PySide6.QtCore import QEvent, QObject, Qt, Signal, Slot
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QHBoxLayout,
@@ -21,6 +21,8 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+
+from wrench.ui.theme import repolish_widget
 
 
 @dataclass
@@ -70,6 +72,8 @@ class ActivityLogBar(QWidget):
         super().__init__(parent)
         self._model = model
         self._expanded = False
+        self._last_level = "info"
+        self._refreshing_theme = False
         self._init_ui()
         self._model.entry_added.connect(self._on_entry_added)
 
@@ -127,21 +131,56 @@ class ActivityLogBar(QWidget):
         self._toggle_shortcut = QShortcut(QKeySequence("Ctrl+`"), self)
         self._toggle_shortcut.activated.connect(self._toggle_expanded)
 
-    @Slot(object)
-    def _on_entry_added(self, entry: LogEntry) -> None:
+    def _apply_level_style(self, level: str) -> None:
         level_colors = {
             "info": "palette(text)",
             "ok": "palette(highlight)",
             "warn": "palette(link)",
             "error": "palette(link-visited)",
         }
-        color = level_colors.get(entry.level, "palette(text)")
+        color = level_colors.get(level, "palette(text)")
         self.level_icon.setStyleSheet(f"color: {color};")
+
+    @Slot(object)
+    def _on_entry_added(self, entry: LogEntry) -> None:
+        self._last_level = entry.level
+        self._apply_level_style(entry.level)
 
         self.latest_label.setText(entry.text)
         self.time_label.setText(entry.time_str)
 
         self.scrollback.appendPlainText(f"[{entry.time_str}] {entry.text}")
+
+    def refresh_theme(self) -> None:
+        """Re-applies palette-aware styles and repolishes child widgets on theme switch."""
+        self._apply_level_style(self._last_level)
+        self.time_label.setStyleSheet("color: palette(placeholder-text); font-size: 11px;")
+        widgets = (
+            self,
+            self.level_icon,
+            self.latest_label,
+            self.time_label,
+            self.chevron_btn,
+            self.scrollback,
+        )
+        for w in widgets:
+            repolish_widget(w)
+
+    def changeEvent(self, event: QEvent) -> None:
+        super().changeEvent(event)
+        if self._refreshing_theme:
+            return
+        if event.type() in (
+            QEvent.Type.PaletteChange,
+            QEvent.Type.ApplicationPaletteChange,
+            QEvent.Type.ThemeChange,
+            QEvent.Type.StyleChange,
+        ):
+            self._refreshing_theme = True
+            try:
+                self.refresh_theme()
+            finally:
+                self._refreshing_theme = False
 
     @Slot()
     def _toggle_expanded(self) -> None:

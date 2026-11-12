@@ -283,3 +283,15 @@ class WatcherStatusInfo:
     is_fallback: bool
     watched_paths: tuple[str, ...]
     reason: str | None = None
+
+
+@dataclass(slots=True, frozen=True)
+class RebaseTodoEntry:
+    """Single instruction row for an interactive rebase plan (VP-2, FR-3.5)."""
+
+    action: str  # 'pick' | 'reword' | 'edit' | 'squash' | 'fixup' | 'drop'
+    oid: str
+    short_oid: str
+    summary: str
+    author: str
+    new_message: str | None = None

@@ -226,3 +226,119 @@ class TestEngineRemotesManagement:
         val = settings.get_setting(conn, "remote_reachable.origin")
         assert val == "1"
         conn.close()
+
+    def test_open_repo_skips_redundant_git_config_when_already_set(self, tmp_path):
+        from unittest.mock import patch
+
+        repo_dir = tmp_path / "cached_config_repo"
+        repo_dir.mkdir()
+        write_ops.run_git(repo_dir, ["init"])
+
+        # First open configures local credential settings
+        engine.open_repo(repo_dir)
+
+        real_run_git = write_ops.run_git
+        config_calls = []
+
+        def spy_run_git(path, args, **kwargs):
+            if args and args[0] == "config":
+                config_calls.append(args)
+            return real_run_git(path, args, **kwargs)
+
+        with patch("wrench.core.write_ops.run_git", side_effect=spy_run_git):
+            engine.open_repo(repo_dir)
+
+        assert config_calls == []
+
+    def test_git_engine_configures_32mb_libgit2_cache_ceiling(self):
+        import pygit2
+
+        # Temporarily adjust cache size upward and verify GitEngine.__init__ enforces 32 MB
+        pygit2.settings.cache_max_size(64 * 1024 * 1024)
+        _ = engine.GitEngine()
+        _, limit_bytes = pygit2.settings.cached_memory
+        assert limit_bytes == 32 * 1024 * 1024
+        assert pygit2.settings.mwindow_mapped_limit == 48 * 1024 * 1024
+
+    def test_open_repo_writes_local_even_when_global_config_sets_helper(
+        self, tmp_path, monkeypatch
+    ):
+        global_cfg = tmp_path / "global.gitconfig"
+        global_cfg.write_text(
+            "[credential]\n\thelper = wrench\n\tuseHttpPath = true\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(global_cfg))
+
+        repo_dir = tmp_path / "masked_repo"
+        repo_dir.mkdir()
+        write_ops.run_git(repo_dir, ["init"])
+
+        # Local .git/config must still be configured even though GIT_CONFIG_GLOBAL matches
+        engine.open_repo(repo_dir)
+        h = write_ops.run_git(repo_dir, ["config", "--local", "credential.helper"]).stdout.strip()
+        p = write_ops.run_git(
+            repo_dir, ["config", "--local", "credential.useHttpPath"]
+        ).stdout.strip()
+        assert h == "wrench"
+        assert p == "true"
+
+    def test_ensure_credential_config_replaces_multivar_helpers(self, tmp_path):
+        repo_dir = tmp_path / "multivar_repo"
+        repo_dir.mkdir()
+        write_ops.run_git(repo_dir, ["init"])
+        write_ops.run_git(repo_dir, ["config", "--local", "--add", "credential.helper", "store"])
+        write_ops.run_git(repo_dir, ["config", "--local", "--add", "credential.helper", "cache"])
+
+        write_ops.ensure_wrench_credential_config(repo_dir)
+        helpers = (
+            write_ops.run_git(repo_dir, ["config", "--local", "--get-all", "credential.helper"])
+            .stdout.strip()
+            .splitlines()
+        )
+        assert helpers == ["wrench"]
+
+    def test_open_repo_readonly_skips_credential_mutation(self, tmp_path):
+        from unittest.mock import patch
+
+        repo_dir = tmp_path / "ro_repo"
+        repo_dir.mkdir()
+        write_ops.run_git(repo_dir, ["init"])
+
+        with patch("wrench.core.write_ops.ensure_wrench_credential_config") as mock_ensure:
+            engine.open_repo(repo_dir, configure_credentials=False)
+        assert mock_ensure.call_count == 0
+
+    def test_concurrent_ensure_credential_config_is_serialized(self, tmp_path):
+        import threading
+
+        repo_dir = tmp_path / "concurrent_cfg_repo"
+        repo_dir.mkdir()
+        write_ops.run_git(repo_dir, ["init"])
+
+        worker_count = 8
+        barrier = threading.Barrier(worker_count)
+        errors: list[BaseException] = []
+
+        def _worker():
+            try:
+                barrier.wait(timeout=5)
+                write_ops.ensure_wrench_credential_config(repo_dir)
+            except BaseException as exc:
+                errors.append(exc)
+
+        threads = [threading.Thread(target=_worker) for _ in range(worker_count)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=10)
+            assert not t.is_alive()
+
+        assert errors == []
+
+        h = write_ops.run_git(repo_dir, ["config", "--local", "credential.helper"]).stdout.strip()
+        p = write_ops.run_git(
+            repo_dir, ["config", "--local", "credential.useHttpPath"]
+        ).stdout.strip()
+        assert h == "wrench"
+        assert p == "true"

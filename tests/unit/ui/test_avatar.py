@@ -6,7 +6,7 @@ import time
 from unittest.mock import MagicMock, patch
 
 import pytest
-from PySide6.QtGui import QPixmap
+from PySide6.QtGui import QPixmap, QPixmapCache
 from PySide6.QtWidgets import QApplication
 
 from wrench.core import paths
@@ -149,21 +149,55 @@ def test_avatar_loader_negative_cache_on_failure(tmp_cache):
 
 
 def test_avatar_loader_uses_browser_headers():
+    from wrench.forge import registry as forge_registry
+
+    forge_registry.close_avatar_http_client()
     loader = AvatarLoader()
     test_url = "https://example.com/headers_test.png"
 
-    with patch("wrench.forge.registry.httpx.get") as mock_get:
-        mock_resp = MagicMock()
-        mock_resp.content = b"fake_bytes"
-        mock_get.return_value = mock_resp
-        _ = loader._fetch_avatar_bytes(test_url)
+    mock_client = MagicMock()
+    mock_client.is_closed = False
+    mock_resp = MagicMock()
+    mock_resp.content = b"fake_bytes"
+    mock_client.get.return_value = mock_resp
 
-        assert mock_get.called
-        _, kwargs = mock_get.call_args
+    with patch("wrench.forge.registry.httpx.Client", return_value=mock_client) as mock_client_cls:
+        data1 = loader._fetch_avatar_bytes(test_url)
+        data2 = loader._fetch_avatar_bytes("https://example.com/other.png")
+
+        assert data1 == b"fake_bytes"
+        assert data2 == b"fake_bytes"
+        # Shared singleton httpx.Client created once and reused
+        assert mock_client_cls.call_count == 1
+        assert mock_client.get.call_count == 2
+        _, kwargs = mock_client.get.call_args
         headers = kwargs.get("headers", {})
         assert "User-Agent" in headers
         assert "Wrench" in headers["User-Agent"]
         assert "Accept" in headers
+
+    forge_registry.close_avatar_http_client()
+    assert mock_client.close.called
+
+
+def test_avatar_loader_lru_eviction_and_pixmap_cache_limit():
+    loader = AvatarLoader(max_cache_size=3)
+    assert QPixmapCache.cacheLimit() == 16384
+    assert AvatarLoader()._max_mem_cache_size == 128
+
+    pm = render_initials_tile("A", size=16)
+    loader._put_mem_cache(("https://example.com/1.png", 16), pm, 100.0)
+    loader._put_mem_cache(("https://example.com/2.png", 16), pm, 100.0)
+    loader._put_mem_cache(("https://example.com/3.png", 16), pm, 100.0)
+    # Access 1.png again so 2.png becomes LRU
+    loader._mem_cache.move_to_end(("https://example.com/1.png", 16))
+    loader._put_mem_cache(("https://example.com/4.png", 16), pm, 100.0)
+
+    assert len(loader._mem_cache) == 3
+    assert ("https://example.com/2.png", 16) not in loader._mem_cache
+    assert ("https://example.com/1.png", 16) in loader._mem_cache
+    assert ("https://example.com/3.png", 16) in loader._mem_cache
+    assert ("https://example.com/4.png", 16) in loader._mem_cache
 
 
 def test_resolve_author_avatar_url_github_noreply():
@@ -258,3 +292,70 @@ def test_resolve_author_avatar_url_gravatar_gated():
     )
     assert url_on is not None
     assert "gravatar.com/avatar/" in url_on
+
+
+def test_fetch_avatar_bytes_rejects_unsafe_schemes():
+    from wrench.forge import registry as forge_registry
+
+    with pytest.raises(ValueError, match="Unsupported avatar URL scheme"):
+        forge_registry.fetch_avatar_bytes("file:///etc/passwd")
+
+    with pytest.raises(ValueError, match="Unsupported avatar URL scheme"):
+        forge_registry.fetch_avatar_bytes("ftp://example.com/avatar.png")
+
+    with pytest.raises(ValueError, match="Unsupported avatar URL scheme"):
+        forge_registry.fetch_avatar_bytes("https:///missing-host.png")
+
+
+def test_avatar_http_client_strips_and_does_not_replay_cookies():
+    import httpx
+
+    from wrench.forge import registry as forge_registry
+
+    forge_registry.close_avatar_http_client()
+    seen_cookie_headers: list[str | None] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen_cookie_headers.append(request.headers.get("cookie"))
+        return httpx.Response(
+            200,
+            content=b"png-bytes",
+            headers={"Set-Cookie": "session=secret123; Path=/; HttpOnly"},
+        )
+
+    transport = httpx.MockTransport(handler)
+    real_client = httpx.Client(
+        transport=transport,
+        timeout=5.0,
+        follow_redirects=True,
+        max_redirects=5,
+        event_hooks={
+            "request": [forge_registry._strip_avatar_request_cookies],
+            "response": [forge_registry._strip_avatar_response_cookies],
+        },
+    )
+    with patch("wrench.forge.registry.httpx.Client", return_value=real_client):
+        try:
+            assert forge_registry.fetch_avatar_bytes("https://host-a.example/1.png") == b"png-bytes"
+            assert forge_registry.fetch_avatar_bytes("https://host-a.example/2.png") == b"png-bytes"
+            assert seen_cookie_headers == [None, None]
+            assert len(real_client.cookies) == 0
+        finally:
+            forge_registry.close_avatar_http_client()
+
+
+def test_author_avatar_url_cache_lru_eviction(monkeypatch):
+    from wrench.ui.widgets import avatar as avatar_mod
+
+    avatar_mod.clear_author_avatar_cache()
+    monkeypatch.setattr(avatar_mod, "_AUTHOR_AVATAR_URL_CACHE_MAX_SIZE", 2)
+
+    avatar_mod.resolve_author_avatar_url("u1", "u1@example.com", ["https://github.com/a/b.git"])
+    avatar_mod.resolve_author_avatar_url("u2", "u2@example.com", ["https://github.com/a/b.git"])
+    # Refresh u1 so u2 is LRU
+    avatar_mod.resolve_author_avatar_url("u1", "u1@example.com", ["https://github.com/a/b.git"])
+    avatar_mod.resolve_author_avatar_url("u3", "u3@example.com", ["https://github.com/a/b.git"])
+
+    keys = [k[1] for k in avatar_mod._author_avatar_url_cache.keys()]
+    assert keys == ["u1@example.com", "u3@example.com"]
+    avatar_mod.clear_author_avatar_cache()

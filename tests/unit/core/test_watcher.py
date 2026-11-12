@@ -286,3 +286,52 @@ class TestRepoWatcher:
         finally:
             default_watcher.stop()
             explicit_watcher.stop()
+
+    def test_watcher_ignores_commit_graph_housekeeping_paths(self, tmp_path, qapp):
+        git_dir = tmp_path / "cg-repo" / ".git"
+        (git_dir / "objects" / "info" / "commit-graphs").mkdir(parents=True)
+
+        full_hits: list[bool] = []
+        wd_handler = inotify_mod._WatchdogHandler(
+            lambda: full_hits.append(True),
+            git_dir=git_dir,
+        )
+
+        assert wd_handler._is_git_internal(str(git_dir / "objects" / "info" / "commit-graph"))
+        assert wd_handler._is_git_internal(str(git_dir / "objects" / "info" / "commit-graph.lock"))
+        assert wd_handler._is_git_internal(
+            str(git_dir / "objects" / "info" / "commit-graphs" / "graph-abc.graph")
+        )
+        # REG-1 regression guard: tracked working-tree files with similar names MUST NOT be ignored
+        assert not wd_handler._is_git_internal(str(tmp_path / "cg-repo" / "commit-graph.lock"))
+        assert not wd_handler._is_git_internal(
+            str(tmp_path / "cg-repo" / "src" / "objects" / "info" / "commit-graph")
+        )
+        assert not wd_handler._is_git_internal(str(tmp_path / "cg-repo" / "src" / "main.py"))
+
+        # Linked worktree commondir commit-graph housekeeping must also be ignored
+        common_dir = tmp_path / "main-repo" / ".git"
+        (common_dir / "objects" / "info" / "commit-graphs").mkdir(parents=True)
+        wt_git_dir = common_dir / "worktrees" / "wt1"
+        wt_git_dir.mkdir(parents=True)
+        (wt_git_dir / "commondir").write_text("../..\n", encoding="utf-8")
+
+        tier2_handler = inotify_mod._GitDirMetadataHandler(
+            lambda: None,
+            git_dir,
+            common_dir=common_dir,
+        )
+        assert not tier2_handler._is_relevant(str(git_dir / "objects" / "info" / "commit-graph"))
+        assert not tier2_handler._is_relevant(
+            str(git_dir / "objects" / "info" / "commit-graph.lock")
+        )
+        assert not tier2_handler._is_relevant(
+            str(common_dir / "objects" / "info" / "commit-graph")
+        )
+        assert not tier2_handler._is_relevant(
+            str(common_dir / "objects" / "info" / "commit-graph.lock")
+        )
+        assert not tier2_handler._is_relevant(
+            str(common_dir / "objects" / "info" / "commit-graphs" / "graph-xyz.graph")
+        )
+        assert tier2_handler._is_relevant(str(git_dir / "HEAD"))

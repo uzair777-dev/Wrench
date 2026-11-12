@@ -208,13 +208,16 @@ class IssueDetailTab(QWidget):
         if self._issue and self._issue.url:
             QDesktopServices.openUrl(QUrl(self._issue.url))
 
-    def closeEvent(self, event) -> None:
+    def _cleanup_resources(self) -> None:
         if hasattr(self, "avatar_widget") and shiboken6.isValid(self.avatar_widget):
             self.avatar_widget.close()
         if self._adapter:
             try:
                 self._adapter.close()
             except Exception as e:
-                logger.debug("Failed closing adapter in issue detail tab closeEvent: %s", e)
+                logger.debug("Failed closing adapter in issue detail tab cleanup: %s", e)
             self._adapter = None
+
+    def closeEvent(self, event) -> None:
+        self._cleanup_resources()
         super().closeEvent(event)

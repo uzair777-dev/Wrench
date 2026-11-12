@@ -31,13 +31,90 @@ logger = logging.getLogger(__name__)
 _WATCH_LIMIT_ERRNOS = frozenset({errno.ENOSPC, errno.EMFILE})
 
 
+def _resolve_common_git_dir(git_dir: Path) -> Path:
+    """Resolve the shared common git directory for linked worktrees."""
+    resolved = git_dir.resolve()
+    commondir_file = resolved / "commondir"
+    if commondir_file.is_file():
+        try:
+            raw = commondir_file.read_text(encoding="utf-8", errors="replace").strip()
+            if raw:
+                candidate = Path(raw)
+                return candidate if candidate.is_absolute() else (resolved / candidate).resolve()
+        except OSError:
+            return resolved
+    return resolved
+
+
+def _normalize_dir_prefix(path: Path | str | None) -> str | None:
+    if path is None:
+        return None
+    try:
+        s = str(Path(path).resolve())
+    except OSError:
+        s = str(path)
+    s = s.replace("\\", "/").rstrip("/")
+    return s or None
+
+
+def _is_inside_git_metadata(
+    norm: str,
+    git_dir_prefix: str | None = None,
+    common_dir_prefix: str | None = None,
+) -> bool:
+    """Return True if *norm* resides under a .git metadata dir or known git_dir/commondir."""
+    if "/.git/" in norm or norm.startswith(".git/"):
+        return True
+    for prefix in (git_dir_prefix, common_dir_prefix):
+        if prefix and norm.startswith(prefix + "/"):
+            return True
+    return False
+
+
+def _is_commit_graph_housekeeping(
+    path_str: str,
+    *,
+    git_dir_prefix: str | None = None,
+    common_dir_prefix: str | None = None,
+) -> bool:
+    """Return True for internal git commit-graph maintenance artifacts inside git metadata."""
+    if not path_str:
+        return False
+    norm = path_str.replace("\\", "/")
+    if not _is_inside_git_metadata(norm, git_dir_prefix, common_dir_prefix):
+        return False
+    name = norm.rsplit("/", 1)[-1]
+    if name == "commit-graph.lock" or (
+        name.startswith("commit-graph") and name.endswith(".lock")
+    ):
+        return True
+    if "/objects/info/commit-graph" in norm:
+        return True
+    return False
+
+
 class _WatchdogHandler(FileSystemEventHandler):
-    def __init__(self, callback):
+    def __init__(
+        self,
+        callback,
+        *,
+        git_dir: Path | str | None = None,
+        common_dir: Path | str | None = None,
+    ):
         super().__init__()
         self._callback = callback
+        self._git_dir_prefix = _normalize_dir_prefix(git_dir)
+        self._common_dir_prefix = _normalize_dir_prefix(common_dir)
 
     def _is_git_internal(self, path_str: str) -> bool:
-        return "/.git/" in path_str or path_str.endswith("/.git") or path_str.endswith(".git")
+        if _is_commit_graph_housekeeping(
+            path_str,
+            git_dir_prefix=self._git_dir_prefix,
+            common_dir_prefix=self._common_dir_prefix,
+        ):
+            return True
+        norm = path_str.replace("\\", "/")
+        return "/.git/" in norm or norm.endswith("/.git") or norm.endswith(".git")
 
     def on_modified(self, event):
         if not self._is_git_internal(event.src_path):
@@ -62,10 +139,17 @@ class _WatchdogHandler(FileSystemEventHandler):
 class _GitDirMetadataHandler(FileSystemEventHandler):
     """Lightweight handler for Tier-2 .git-only watching (HEAD, index, refs, sparse)."""
 
-    def __init__(self, callback, git_dir: Path):
+    def __init__(self, callback, git_dir: Path, *, common_dir: Path | str | None = None):
         super().__init__()
         self._callback = callback
         resolved_git = git_dir.resolve()
+        self._git_dir_prefix = _normalize_dir_prefix(resolved_git)
+        resolved_common = (
+            Path(common_dir).resolve()
+            if common_dir is not None
+            else _resolve_common_git_dir(resolved_git)
+        )
+        self._common_dir_prefix = _normalize_dir_prefix(resolved_common)
         self._refs_prefix = str(resolved_git / "refs")
         self._tracked_files = frozenset(
             {
@@ -79,7 +163,15 @@ class _GitDirMetadataHandler(FileSystemEventHandler):
         )
 
     def _is_relevant(self, raw_path: str) -> bool:
-        if not raw_path or raw_path.endswith(".lock"):
+        if (
+            not raw_path
+            or raw_path.endswith(".lock")
+            or _is_commit_graph_housekeeping(
+                raw_path,
+                git_dir_prefix=self._git_dir_prefix,
+                common_dir_prefix=self._common_dir_prefix,
+            )
+        ):
             return False
         try:
             normalized = str(Path(raw_path).resolve())
@@ -446,13 +538,18 @@ class RepoWatcher(QObject):
             return
 
         git_dir = self._resolve_repo_git_dir()
+        common_dir = _resolve_common_git_dir(git_dir)
         with self._lock:
             self._git_dir = git_dir
 
         def _async_start():
             try:
                 observer = Observer()
-                handler = _WatchdogHandler(self._on_watchdog_event)
+                handler = _WatchdogHandler(
+                    self._on_watchdog_event,
+                    git_dir=git_dir,
+                    common_dir=common_dir,
+                )
                 try:
                     observer.schedule(handler, str(self._repo_path), recursive=True)
                     observer.start()

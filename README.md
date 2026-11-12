@@ -6,7 +6,7 @@
 ![GitHub Repo stars](https://img.shields.io/github/stars/uzair777-dev/Wrench)
 [![Python: 3.15](https://img.shields.io/badge/Python-3.15-blue.svg)](https://www.python.org/)
 [![GUI: PySide6](https://img.shields.io/badge/GUI-PySide6%20%2F%20Qt%206-informational.svg)](https://www.qt.io/)
-[![Tests: 743 passed](https://img.shields.io/badge/Tests-743%20passed-brightgreen.svg)](tests/)
+[![Tests: 779 passed](https://img.shields.io/badge/Tests-779%20passed-brightgreen.svg)](tests/)
 ![GitHub Actions Workflow Status](https://img.shields.io/github/actions/workflow/status/uzair777-dev/Wrench/ci.yml)
 
 ---
@@ -56,7 +56,9 @@
   - `SparseCheckoutDialog` (`Repository -> Sparse-Checkout Directories...`) with lazy `QThreadPool` subdirectory tree expansion and watcher `suspend()/resume()` coordination.
   - Default 5,000-line / KB `DiffView` truncation cap with non-modal warning banner and 1-click full-diff reload.
 - **Universal Preferences Center (`Ctrl+,`) & Live Propagation**:
-  - Registry-driven interface with 83 preferences across 13 categories, two-row header with `Normal` (17 essential settings) / `Advanced` (all 83 settings) tier switching, instant `< 5 ms` search filtering, per-repository overrides, 150ms debounced auto-save with close-flush, 100-entry SQLite delta undo/redo, Minimalist Local-Only preset, and instant theme/behavior application without restarts.
+  - Registry-driven interface with 83 preferences across 13 categories, two-row header with `Normal` (17 essential settings) / `Advanced` (all 83 settings) tier switching, instant `< 5 ms` search filtering, per-repository overrides, 150ms debounced auto-save with close-flush, bottom-right `Apply Changes` / `Apply Changes & Restart` confirmation button, 100-entry SQLite delta undo/redo, Minimalist Local-Only preset, and instant behavior application without restarts (with prompted restart for restart-flagged settings such as `ui.theme_mode`).
+- **Visual Interactive Rebase (`VP-2`)**:
+  - Right-click any commit in the History graph (`Interactive Rebase from Here…`) to drag-and-drop reorder commits, assign `pick` / `reword` / `edit` / `squash` / `fixup` / `drop` actions, edit reword/squash messages inline, toggle `--autostash` / `--autosquash`, inspect the live secret-redacted `CliCommandPreviewBar`, and run `git rebase -i` safely via a `0o600` `GIT_SEQUENCE_EDITOR` helper with pre-op snapshots.
 - **Operation Feedback, Activity History & About Dialog (`Phase 4.6`)**:
   - Live `ActivityLogBar` dock (`Ctrl+``) above the status bar backed by a 200-item ring buffer auto-populated by background workers, rotating waiting lines on indeterminate tasks (`ui.humor_lines`), single-line clean-state quotes in `ChangesTab`, and `AboutDialog` with dynamic version and third-party notices.
 - **Interactive 3-Way Merge Tool**:
@@ -101,7 +103,7 @@
 | **Phase 5 (Promoted)** | Self-Contained Linux Packaging (AppImage & Flatpak with Bundled Python 3.15 Runtime, `aur/wrench-bin`, `.deb`, `.rpm`) | 📋 Planned |
 | **Phase 6** | Git LFS & Submodule Management | 📋 Planned |
 | **Phase 7** | v1 Polish, Performance Benchmarks & Release | 📋 Planned |
-| **Phase 8 (v2 `VP-0`–`VP-26`)** | **Stage 1:** Universal `SettingsRegistry`, Zero-Copy Diffs (`OPT-8`), Single-Key Vim Chord Engine (`OPT-9`), Interactive Rebase, GPG/SSH Signing, 100k-Commit 60 FPS Graph & Command Palette (`Ctrl+K`)<br>**Stage 2:** Stacked Branches (`--update-refs`), Live `< 15 ms` Conflict Prediction (`git merge-tree --write-tree`), & `Ctrl+Alt+Z` Op-Log Time Machine<br>**Stage 3–6:** Wayland/XDG, Progressive Help, Blame Heatmap (`git log -L`), Bisect Wizard, 11-Forge Suite & 5-Stage Multi-Mirror DAG (`OPT-7`) | 🚧 In Progress (`VP-0`, `VP-16` Completed; [v2 Plan](dev/planning/v2-implementation-plan.md)) |
+| **Phase 8 (v2 `VP-0`–`VP-26`)** | **Stage 1:** Universal `SettingsRegistry`, Zero-Copy Diffs (`OPT-8`), Single-Key Vim Chord Engine (`OPT-9`), Interactive Rebase, GPG/SSH Signing, 100k-Commit 60 FPS Graph & Command Palette (`Ctrl+K`)<br>**Stage 2:** Stacked Branches (`--update-refs`), Live `< 15 ms` Conflict Prediction (`git merge-tree --write-tree`), & `Ctrl+Alt+Z` Op-Log Time Machine<br>**Stage 3–6:** Wayland/XDG, Progressive Help, Blame Heatmap (`git log -L`), Bisect Wizard, 11-Forge Suite & 5-Stage Multi-Mirror DAG (`OPT-7`) | 🚧 In Progress (`VP-0`, `VP-2`, `VP-16` Completed; [v2 Plan](dev/planning/v2-implementation-plan.md)) |
 
 ---
 
@@ -161,7 +163,7 @@ All developer binaries in `bin/` leverage `uv run --no-sync` for fast, offline e
 - **Credential Storage:** `secretstorage` (FreeDesktop Secret Service D-Bus specification, lazily imported)
 - **Local Storage:** SQLite (`~/.local/share/wrench/wrench.db` via `platformdirs`, lazily imported)
 - **Filesystem Watcher:** `watchdog` (3-tier Inotify -> `.git`-only -> polling fallback) with Qt debounce event pipeline
-- **Testing:** `pytest`, `pytest-qt` (743 passed tests across unit, integration, and UI suites)
+- **Testing:** `pytest`, `pytest-qt` (779 passed tests across unit, integration, and UI suites)
 
 For an in-depth exploration of data flows, concurrency models, and database schemas, see **[ARCHITECTURE.md](ARCHITECTURE.md)**.
 

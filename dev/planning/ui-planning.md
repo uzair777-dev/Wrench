@@ -512,3 +512,106 @@ Every coding model implementing or modifying UI and storage code in `VP-0`..`VP-
 - **Step 50 (`VP-24`):** Build `RichHelpTooltipManager` (§5.6), `HelpCenterDialog` (`F1`, §6.25), `UIWidgetHighlighter`, and `help_topics.py`.  
 - **Step 51 (`VP-25`):** Build `MirrorManagerDialog` (§6.26) and multi-mirror unified ref pills, drift badges, and cross-forge CI aggregation in `CommitGraphWidget` (§4.2.5).  
 - **Step 52 (`VP-26`):** Build `ForgeReviewPushDialog` (§6.27), Gerrit `Change-Id` pill & label-voting bar (`-2..+2`), Radicle node status pill & `refs/patches` push flow, Azure Repos 5-state vote selector & Work Item completer, SourceHut `lists.sr.ht` patchset modal, and Tangled Knot/Spindle CI badges.
+
+### 6.29 Signature Visual Identity, SVG Vector Icon Engine, 4-Cell Context Bar, Launchpad & 3-Column Neon Graph IDE (`VP-2.5` — `FR-3.16`, `FR-3.17`, `FR-11.7`..`FR-11.10`)
+
+* **Purpose:** Eliminate every trace of stock Qt Fusion gray (`#2a2a2a`) bleed, 3D beveled table headers, missing/blank icon buttons, disconnected floating boxes, and single-line local-only commit graphs—achieving visual superiority over **GitKraken Desktop**, **Sublime Merge**, and **GitHub Desktop**.
+
+#### 1. 4-Tier Catppuccin Surface Hierarchy & Global `QPalette` (`src/wrench/ui/theme.py` — `FR-11.7`)
+Every surface in Wrench is strictly assigned to one of 4 depth tiers (Mocha / Latte):
+| Tier | Semantic Role | Mocha Hex | Latte Hex | Assigned Widgets |
+| :--- | :--- | :--- | :--- | :--- |
+| **Tier 0 (`crust`)** | Deep Chrome & Bars | `#11111b` | `#dce0e8` | Top Menu Bar, Workspace Tab Bar background, Segmented 4-Cell Context Header Bar, `QHeaderView::section`, Collapsible Git Command Drawer, Single `24px` Bottom Status Bar |
+| **Tier 1 (`mantle`)** | Sidebars & Inspector Docks | `#181825` | `#e6e9ef` | `ChangesView` Left File List + Commit Dock, `HistoryView` Left `RefsSidebarWidget`, `HistoryView` Right `CommitInspectorDock`, `DiffViewer` Dual Line-Number Gutter |
+| **Tier 2 (`base`)** | Primary Canvases | `#1e1e2e` | `#eff1f5` | `ChangesView` Right Diff / Launchpad Canvas, `HistoryView` Center Commit Graph Viewport, `PRsView` & `IssuesView` Detail Stream |
+| **Tier 3 (`surface0`/`1`)** | Interactive Cards, Inputs & Pills | `#313244` / `#45475a` | `#ccd0da` / `#bcc0cc` | Launchpad Action Cards, `QLineEdit`, `QPlainTextEdit`, `QPushButton`, Branch/Tag Pills, Hover Highlights |
+
+* **Mandatory `QApplication.setPalette(...)` & QSS Rules:**
+  * Call `app.setStyle("Fusion")` followed by `app.setPalette(build_catppuccin_palette(theme))` setting all 18 `QPalette.ColorRole` entries (`Window` `#181825`, `Base` `#1e1e2e`, `AlternateBase` `#181825`, `Button` `#313244`, `Text`/`WindowText`/`ButtonText` `#cdd6f4`, `Highlight` `#313244`, `HighlightedText` `#89b4fa`) so unstyled native Qt sub-controls never fall back to `#2a2a2a` system gray.
+  * `QHeaderView::section`: `background-color: #11111b; color: #a6adc8; border: none; border-bottom: 1px solid #313244; border-right: 1px solid #181825; padding: 6px 10px; font-size: 11px; font-weight: 700; text-transform: uppercase;` (zero 3D bevels).
+  * `QSplitter::handle`: `background-color: #313244; width: 1px; height: 1px;` (`:hover { background-color: #89b4fa; }`).
+  * `QScrollBar`: `8px` transparent track, `border-radius: 4px` pill thumb (`rgba(166, 173, 200, 0.28)`, hover `rgba(137, 180, 250, 0.6)`), `0px` stepper arrows.
+
+#### 2. Built-In Tintable SVG Vector Icon Registry (`src/wrench/ui/icons.py` — `FR-11.8`)
+* Zero external icon-theme dependencies: `icons.py` embeds clean 24×24 SVG path definitions for:
+  * `repo`, `branch`, `merge`, `laptop` (local branch), `cloud` (remote branch), `github`, `tag`, `stash`, `pop`, `fetch`, `pull`, `push`, `undo`, `redo`, `terminal`, `folder`, `folder_open`, `file_code`, `check`, `warning`, `search`, `sliders`, `external_link`, `copy`, `plus`, `close`.
+* Exposes `get_icon(name: str, color: str = "#cdd6f4", size: int = 16) -> QIcon` and `get_pixmap(name: str, color: str = "#cdd6f4", size: int = 16) -> QPixmap` using `QSvgRenderer` + `QPainter` with LRU caching (`@lru_cache(maxsize=256)`) so HiDPI icons render in `< 0.05 ms` and never appear blank!
+
+#### 3. Segmented 4-Cell Top Context & Smart Sync Bar + Command Drawer (`src/wrench/ui/widgets/context_header_bar.py` — `FR-11.9`)
+Positioned in `MainWindow` directly below the workspace tab bar (`height: 48px`, background `#11111b` Crust, `1px solid #313244` top & bottom borders, `1px solid #313244` vertical dividers between cells):
+* **Cell 1 — Repository Switcher (`min-width: 200px`, clickable):**
+  * Left `repo` SVG icon (`20px`, `#89b4fa`) + 2-line label: `Current repository` (`10px` `#a6adc8`) / **`astryx ▾`** (`13px` bold `#cdd6f4`). Clicking opens fast fuzzy repository switcher menu.
+* **Cell 2 — Branch Switcher (`min-width: 220px`, clickable):**
+  * Left `branch` SVG icon (`20px`, `#a6e3a1`) + 2-line label: `Current branch` (`10px` `#a6adc8`) / **`main  [1↓] ▾`** (`13px` bold `#cdd6f4` with inline ahead/behind pill). Clicking opens searchable branch checkout/create menu.
+* **Cell 3 — Smart Remote Sync Button (`min-width: 240px`, clickable):**
+  * Dynamically morphs icon, label, subtitle, and subtle accent border based on `BranchSyncStatus`:
+    * Synced (`ahead == 0, behind == 0`): `fetch` SVG + **`Fetch origin`** / `"Last fetched just now"`
+    * Behind (`behind > 0, ahead == 0`): `pull` SVG (`#89b4fa`) + **`Pull origin (1↓)`** / `"1 commit waiting on origin"`
+    * Ahead (`ahead > 0, behind == 0`): `push` SVG (`#a6e3a1`) + **`Push origin (2↑)`** / `"2 local commits ready"`
+    * Diverged (`ahead > 0 and behind > 0`): `warning` SVG (`#fab387`) + **`Sync branch (2↑ 1↓)`** / `"Branch has diverged"`
+    * No upstream: `cloud` SVG (`#cba6f7`) + **`Publish branch`** / `"Push branch to origin"`
+* **Cell 4 — Quick Action Toolbar Strip (Right-aligned):**
+  * Icon-and-label SVG buttons (`height: 32px`, `#181825` fill, `1px solid #313244` border, hover `#313244`, `6px` radius):
+    `[↶ Undo]` `[⬇️ Pull]` `[⬆️ Push]` `[📦 Stash]` `[📤 Pop]` `[>_ Terminal (Ctrl+`)]` `[🔍 Command Palette (Ctrl+K)]`
+* **Collapsible Bottom Git Command & Log Drawer (`GitTerminalDrawer`, toggled via `[>_ Terminal]` or `` Ctrl+` ``):**
+  * `180px` collapsible panel at the bottom of `MainWindow` (`#11111b` Crust) showing live executed `git` CLI commands with timing (`$ git fetch --all --prune [92 ms]`) + a quick interactive `git` command input line (`git ...` executed via `subprocess.run(..., shell=False)` in repo root).
+* **Single Consolidated Bottom Status Bar (`height: 24px`, `#11111b`):**
+  * Eliminates the duplicate stacked status bars at the bottom of `MainWindow`.
+
+#### 4. Edge-to-Edge `ChangesView` & `ZeroChangesLaunchpadWidget` (`src/wrench/ui/changes_view.py` — `FR-11.10`)
+* **Left Sidebar (`300px`, `#181825` Mantle, `contentsMargins(0, 0, 0, 0)`, `spacing(0)`):**
+  * Remove the duplicate repo name, broken blank rectangle button, and branch dropdown inside `ChangesView`.
+  * **Header Strip (`32px`, `#11111b` Crust, `1px solid #313244` bottom border):** `[✓] N changed files` checkbox on left, `[Stage All]` / `[Unstage All]` link pill on right.
+  * **File List (`#181825` Mantle background, `0px` frame border):** Each row renders a colored `18px × 18px` rounded status badge (`M` `#f9e2af`, `A` `#a6e3a1`, `D` `#f38ba8`, `R` `#cba6f7`, `?` `#94e2d5`) + file path.
+  * **Bottom Commit Composer (`#181825` Mantle, `1px solid #313244` top border, `10px` internal padding, NO `QGroupBox` frame):**
+    * Row 1: `28px` circular user avatar + `Summary (required)` `QLineEdit` (`height: 32px`, `#11111b` fill, live `50` char counter badge).
+    * Row 2: `Description (optional)` `QPlainTextEdit` (`min-height: 76px`, `#11111b` fill).
+    * Row 3: `[ ] Amend last commit` checkbox on left + live `🔗 Closes #N` badge on right.
+    * Row 4: **Full-Width `36px` Primary Button:** `[Commit to <branch>]` (`#89b4fa` background + `#11111b` bold text when summary is non-empty; `#313244` background + `#6c7086` text when disabled).
+* **Right Pane Empty State (`ZeroChangesLaunchpadWidget`, centered `max-width: 560px` inside `#1e1e2e` Base):**
+  * Heading: `No local changes` (`22px` bold `#cdd6f4`) + subtitle `"There are no uncommitted changes in this repository. Here are some friendly suggestions for what to do next:"` (`13px` `#a6adc8`).
+  * **4 Bordered Action Cards (`QFrame`, `#181825` Mantle background, `1px solid #313244` border, hover `#45475a`, `8px` radius, `14px 16px` padding, SVG icon on left, `<kbd>` shortcut pills, action button on right):**
+    1. **Dynamic Remote Sync Card:** Shows `"1 commit waiting on origin/main"` + `[Pull origin]` button (`Ctrl+Shift+L`), or `"2 local commits ready to push"` + `[Push origin]` (`Ctrl+Shift+U`), or `"Fetch origin to check for remote updates"` + `[Fetch origin]` (`Ctrl+Shift+T`).
+    2. **Open in External Editor or Terminal:** `"Open the repository in your external editor or terminal"` (`Ctrl+` `) + `[Open in Terminal]` button.
+    3. **View Files in File Manager:** `"Browse the files of your repository in your desktop File Manager"` (`Ctrl+Shift+O`) + `[Show in File Manager]` button.
+    4. **Explore History or Command Palette:** `"Inspect the commit graph (`Ctrl+2`) or run any command (`Ctrl+K`)"` + `[View History]` & `[Command Palette]` buttons.
+  * Footer: Rotating humorous Git/Linus quote (`12px` italic `#6c7086`).
+* **Dual-Gutter `DiffViewer` Upgrade:**
+  * Left gutter (`88px` width, `#181825` Mantle, `1px solid #313244` right border) displays dual line numbers (`old_line | new_line`) in `#6c7086` monospace + a `3px` solid `#a6e3a1` (added) or `#f38ba8` (deleted) indicator bar.
+
+#### 5. GitKraken-Class 3-Column `HistoryView` & Left `BRANCH / TAG` Connector Column (`src/wrench/ui/history_view.py` — `FR-3.16`, `FR-3.17`)
+* **3-Column Horizontal `QSplitter` Layout (`0px` outer margin, `1px` `#313244` splitter handles):**
+  1. **Column 1 — Left Collapsible Refs Sidebar (`RefsSidebarWidget`, `230px` default width, `#181825` Mantle):**
+     * Top filter bar: `Filter branches & tags... (Ctrl+Alt+F)` (`height: 30px`).
+     * `QTreeWidget` with 4 collapsible root sections (styled with `#11111b` section headers, SVG icons, and count badges):
+       * `▾ LOCAL (N)` — lists local branches with `laptop` SVG icon; current branch highlighted in `#a6e3a1` Green (`✓ main`) with right-aligned `1↓` / `2↑` pill.
+       * `▾ REMOTE (N)` — groups remote branches hierarchically by `<remote>/<folder>/<subbranch>` (`origin` ➔ `📁 agentcloud`, `📁 assets`, `🌿 pr-10949`).
+       * `▾ TAGS (N)` — lists tags sorted newest-first with `tag` SVG icon.
+       * `▾ STASHES (N)` — lists stashes with `stash` SVG icon.
+     * Single-clicking any ref scrolls and selects that commit in the center graph; double-clicking a local branch checks it out; right-clicking opens branch/tag context menu (`Checkout`, `Merge into current`, `Rebase current onto`, `Delete`).
+  2. **Column 2 — Center Full-Height Neon Commit Graph (`stretch=1`, `#1e1e2e` Base, `rowHeight=34px`):**
+     * **Columns (`BRANCH / TAG` `175px` | `GRAPH` `140px` | `COMMIT MESSAGE` `stretch` | `AUTHOR` `140px` | `DATE` `130px` | `SHA` `85px`):**
+       * **Dedicated `BRANCH / TAG` Left Column (GitKraken Style!):** Branch and tag pills (`[💻 main]`, `[☁️ origin/main]`, `[☁️ assets/pr-10949]`) are drawn in the `BRANCH / TAG` column to the LEFT of the `GRAPH` column, with a **`1.5px` horizontal `lane_color` connector wire** extending from the right edge of the pill straight across into the commit's avatar node in the `GRAPH` column! This keeps `COMMIT MESSAGE` 100% aligned and uncluttered.
+     * **`// WIP` Virtual Top Row (When Working Tree Has Changes):**
+       * Row 0 renders a dashed neon node connected to `HEAD` with label `// WIP — N uncommitted file(s) on <branch>`. Clicking it previews working tree changes; double-clicking switches to `ChangesView`.
+     * **12% Alpha Lane-Colored Row Gradient Tint:** Every row paints a horizontal `QLinearGradient` from `rgba(lane_color, 36)` at the graph node to `rgba(lane_color, 6)` at the right edge (selected row uses `rgba(lane_color, 72)` + `3px` solid `lane_color` left indicator bar).
+     * **Neon Cubic Bézier Lanes & Avatar Ring Nodes:**
+       * 10 vivid Catppuccin lane colors (`#89b4fa` Blue, `#94e2d5` Teal, `#cba6f7` Mauve, `#f5c2e7` Pink, `#f38ba8` Red, `#fab387` Peach, `#f9e2af` Yellow, `#a6e3a1` Green, `#74c7ec` Sapphire, `#b4befe` Lavender).
+       * Lane lines drawn with `2.2px` antialiased `QPen`.
+       * Commit node drawn as a **`20px × 20px` circular author avatar / 2-letter initials badge** centered on `(lane_x, row_center_y)` framed by a **`2px` solid `lane_color` outer ring**!
+  3. **Column 3 — Right Commit Inspector Dock (`CommitInspectorDock`, `380px` default width, `#181825` Mantle):**
+     * **Header Bar:** `commit: 923b53a5` + `[Copy SHA]` SVG button + clickable `parent: 238c275`.
+     * **Commit Message Box:** Read-only `#11111b` rounded frame (`max-height: 140px`) with linkified `#PR`/`#Issue` references.
+     * **Author / Committer Card:** `32px` avatar circle + bold author name + `"authored YYYY-MM-DD @ HH:MM"` + committer info + GPG/SSH verification badge.
+     * **Changed Files Toolbar:** `N modified` count + `[≡ Path | 🌿 Tree]` view toggle + `[View All Files]` checkbox.
+     * **Changed Files List + Integrated Diff Preview:** Vertical splitter inside the inspector showing the modified file list (`M`, `A`, `D` badge + path + `+49 -43` diffstat) on top and the dual-gutter `DiffViewer` below (clicking a file updates the diff immediately).
+
+* **6. Strict Memory Diet (`OPT-11` — Shaving ~80 MB of Qt/libgit2 Heap in `VP-2.5`):**
+  * **Zero `setCellWidget()` / `setIndexWidget()` in `HistoryView`:** Every column (`BRANCH / TAG`, `GRAPH`, `COMMIT MESSAGE`, `AUTHOR`, `DATE`, `SHA`) MUST be painted via a single custom `QStyledItemDelegate` (`CommitGraphRowDelegate`). Spawning child `QWidget`s (`QLabel`, `QHBoxLayout`, custom cell widgets) inside commit rows is strictly forbidden and blocked by `test_no_shortcuts_guard.py`.
+  * **Email-Keyed Avatar `QPixmap` LRU Cache (`maxsize=128`):** Author avatars and 2-letter initials badges MUST be cached in a shared LRU dictionary keyed by `(author_email.lower(), diameter_px, lane_color_hex)` so 1,000 commits by 10 authors allocate only 10 `QPixmap` objects (~16 KB total) instead of 1,000 separate buffers.
+  * **`libgit2` Object & MWindow Cache Cap (`32 MB`):** On startup, `GitEngine` caps `pygit2.settings.cache_max_size(32 * 1024 * 1024)` (down from `libgit2`'s 256 MB default) and never retains open `pygit2.Repository` instances across completed read calls.
+
+
+---
+
+## 7. Theme Token Reference

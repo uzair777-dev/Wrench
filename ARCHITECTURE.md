@@ -58,8 +58,9 @@ Wrench is engineered around six non-negotiable architectural tenets:
 │  │   • MenuBar: File | Edit | View | Repository | Help                              │  │
 │  │   • Central Lifecycle Coordinator, Live Settings Sync & Actionable Error Routing │  │
 │  │   • Dialogs: CloneDialog | SparseCheckoutDialog | PartialStagingDialog | Merge | │  │
-│  │              Remotes | Accounts | LinkRepo | DiscoverRepos | Submodule |         │  │
-│  │              SettingsDialog (13 Cats) | AboutDialog | PushRecovery | BusyDialog  │  │
+│  │              InteractiveRebaseDialog | Remotes | Accounts | LinkRepo |           │  │
+│  │              DiscoverRepos | Submodule | SettingsDialog (13 Cats) | AboutDialog  │  │
+│  │              PushRecovery | BusyDialog                                           │  │
 │  │   • Docks:   ActivityLogBar (Ctrl+`) & CliCommandPreviewBar                     │  │
 │  │   • Theme Engine (theme.py): Recursive Palette & Event Broadcast to all widgets  │  │
 │  └───────┬──────────────────────────────────────────────────────────────────▲───────┘  │
@@ -111,11 +112,11 @@ Wrench is engineered around six non-negotiable architectural tenets:
 │   (RepoWatcher)      │  │   - status, diff, paged log    │  │   - Zero-overhead gating │
 │   - T1: full_inotify │  │ • write_ops.py (git CLI writes)│  │ • forge.capability       │
 │   - T2: git_dir_only │  │   - commit, branch, clone, cg  │  │   - ForgeAdapter Base    │
-│   - T3: Qt polling   │  │ • sparse_checkout.py (Cone)    │  │   - get_avatar_url()     │
-│   - suspend()/resume │  │ • security_sanitizer.py        │  │ • Concrete Adapters:     │
-│   - 300ms debounce   │  │   - SEC-2 URL / SEC-3 Redact   │  │   - GitHubAdapter        │
-│ • polling_fallback.py│  │ • lfs_ops.py / submodules.py   │  │   - GitLabAdapter        │
-│ • Signals Emitted:   │  │ • bundles.py / reflog_ops.py   │  │   - ForgejoAdapter       │
+│   - T3: Qt polling   │  │ • rebase_sequencer.py (VP-2)   │  │   - get_avatar_url()     │
+│   - suspend()/resume │  │   - rebase_editor_helper.py    │  │ • Concrete Adapters:     │
+│   - 300ms debounce   │  │ • sparse_checkout.py (Cone)    │  │   - GitHubAdapter        │
+│ • polling_fallback.py│  │ • security_sanitizer.py        │  │   - GitLabAdapter        │
+│ • Signals Emitted:   │  │   - SEC-2 URL / SEC-3 Redact   │  │   - ForgejoAdapter       │
 │   - status_changed   │  │ • discovery.py (FR-1.12 scan)  │  │   - BitbucketAdapter     │
 │   - adaptive_fallback│  │ • paths.py / ssh_agent.py      │  │ • author_avatar_url maps │
 │     _activated       │  │ • snapshots.py / lock_recovery │  │ • github_device_flow.py  │
@@ -155,8 +156,8 @@ Wrench is engineered around six non-negotiable architectural tenets:
 ### 2.1 Subsystem Dataflow & Interaction Summary
 
 1. **User Interface (`src/wrench/ui`)**:
-   - `MainWindow` coordinates top-level application actions, modal dialogs (`CloneDialog`, `SparseCheckoutDialog`, `PartialStagingDialog`, `MergeDialog`, `RemotesDialog`, `AccountsDialog`, `LinkRepoDialog`, `DiscoverReposDialog`, `SubmoduleDialog`, `SettingsDialog`, `AboutDialog`, `BusyOperationDialog`, `PushRecoveryDialogs`), live setting propagation (`_on_registry_setting_changed`), background `commit-graph` maintenance, and actionable error routing.
-   - `TabContainer` manages dynamic tab lifecycles (`ChangesTab`, `HistoryTab`, `PRListTab`, `IssueListTab`, `PRDetailTab`, `IssueDetailTab`).
+   - `MainWindow` coordinates top-level application actions, modal dialogs (`CloneDialog`, `SparseCheckoutDialog`, `PartialStagingDialog`, `MergeDialog`, `InteractiveRebaseDialog`, `RemotesDialog`, `AccountsDialog`, `LinkRepoDialog`, `DiscoverReposDialog`, `SubmoduleDialog`, `SettingsDialog`, `AboutDialog`, `BusyOperationDialog`, `PushRecoveryDialogs`), live setting propagation (`_on_registry_setting_changed`), background `commit-graph` maintenance, coalesced `DeferredDelete` heap reclamation (`_heap_trim_timer`), and actionable error routing.
+   - `TabContainer` manages dynamic tab lifecycles (`ChangesTab`, `HistoryTab`, `PRListTab`, `IssueListTab`, `PRDetailTab`, `IssueDetailTab`), disposing closed hidden tab widgets and pooled HTTP clients cleanly.
    - Theme changes in `theme.py` trigger recursive palette recalculation and broadcast across all child widgets, status pills, and open dialogs without application restarts.
    - Heavy background tasks run through `run_in_background` (`ui/workers.py`) and `QThreadPool` workers (`_GraphPageWorker`, `_GraphSearchWorker`, `_TreeExpandWorker`, `_ApplySparseWorker`, `_CommitGraphWorker`), posting results via thread-safe Qt queued `_Dispatcher` signals back to the main thread.
    - **Avatar Subsystem (`ui/widgets/avatar.py`)**: `AvatarLoader` singleton resolves user avatars via a 2-tier cache (memory + 7-day disk cache with SHA-256 keying) and non-blocking background downloads. `AvatarWidget` renders anti-aliased circular avatars with deterministic initials badges. Commit author Gravatars are strictly gated behind the default-OFF `ui.avatars_gravatar` privacy setting on `SettingsDialog`.
@@ -164,7 +165,7 @@ Wrench is engineered around six non-negotiable architectural tenets:
    - **Submodules & Monorepo Dialogs (`ui/dialogs/submodule_dialog.py`, `clone_dialog.py`, `sparse_checkout_dialog.py`)**: Non-blocking dialogs for submodule workflows, partial/sparse clones (`--filter=blob:none` / `tree:0`, `--sparse`), and Cone-mode sparse-checkout tree management with live secret-redacted `CliCommandPreviewBar` footers.
 
 2. **Core Git Operations (`src/wrench/core`)**:
-   - Strict read/write separation: read operations (status, diffs, paginated log traversal via `_ACTIVE_WALKER_CACHE`, blame, submodule listing, reflog listing) execute in-memory via `pygit2`/libgit2 (`read_ops.py`, `submodules.py`, `reflog_ops.py`); write operations (commit, branch creation/switching/renaming, push, pull, fetch, merge, rebase, submodule update/sync, sparse-checkout, partial clone, `commit-graph write`, bundles) invoke the system `git` CLI (`write_ops.py`, `sparse_checkout.py`, `lfs_ops.py`, `bundles.py`).
+   - Strict read/write separation: read operations (status, diffs, paginated log traversal via `_ACTIVE_WALKER_CACHE`, blame, submodule listing, reflog listing) execute in-memory via `pygit2`/libgit2 (`read_ops.py`, `submodules.py`, `reflog_ops.py`) with a bounded 32 MB `libgit2` LRU cache cap (`configure_libgit2_memory_limits`); write operations (commit, branch creation/switching/renaming, push, pull, fetch, merge, interactive/standard rebase, submodule update/sync, sparse-checkout, partial clone, `commit-graph write`, bundles) invoke the system `git` CLI (`write_ops.py`, `rebase_sequencer.py`, `rebase_editor_helper.py`, `sparse_checkout.py`, `lfs_ops.py`, `bundles.py`).
    - All write executions funnel through `run_git_streaming` with pipe draining and cooperative `threading.Event` cancellation, while `security_sanitizer.py` enforces clone URL scheme/option safety (`SEC-2`), git ref validation, and UI/log secret redaction (`SEC-3`).
    - Destructive operations are guarded by automatic pre-operation safety snapshots (`snapshots.py`, conditionally enabled by `safety.pre_op_snapshot.enabled`) and lock recovery (`lock_recovery.py`).
    - **Git LFS Ops (`lfs_ops.py`)**: Automatic Git LFS detection, `.gitattributes` filter inspection, pointer file parsing without shelling out, and safe `lfs track`, `lfs untrack`, and `lfs pull` routines.
@@ -217,7 +218,8 @@ Wrench is engineered around six non-negotiable architectural tenets:
     - `MergeRequiredError`: Offers actionable choices between "Merge" and "Rebase" using Phase 2 tools.
     - `RemoteNotFoundError`: Prompts and opens the Remotes configuration dialog.
   - **Asynchronous Clone & Sparse-Checkout**: Routes repository cloning (including partial filter `--filter=blob:none`/`tree:0` and `--sparse`) through `CloneDialog` + `run_in_background` with cancellable `BusyOperationDialog` and atomic filesystem placement; exposes `Repository -> Sparse-Checkout Directories…` (`_run_sparse_checkout_dialog`) wrapped with `watcher.suspend()`/`resume(grace_ms=150)` and bottom-right status pills (`sparse_status_btn`, `watcher_mode_label`).
-  - **Live Registry Propagation & Background Maintenance**: `_on_registry_setting_changed` live-applies changes to `ui.theme_mode`, `ui.font_size_pt` (`_apply_font_size_pt`), `ui.avatars_gravatar`, `ui.humor_lines`, `ui.activity_dock.max_lines`, `remote.auto_fetch.enabled`, `monorepo.sparse_checkout_ui.enabled`, and `maintenance.auto_commit_graph.enabled` (using `_CommitGraphDispatcher`, `_CommitGraphWorker`, and `_maybe_write_commit_graph` with generation cancellation). `_propagate_theme_refresh()` refreshes status bar pills (`_apply_status_bar_theme()`) and open `QDialog`s (`_active_settings_dialog`, `_sparse_dialog`, and child dialogs).
+  - **Live Registry Propagation, Repo-Switch Hygiene & Background Maintenance**: `_on_registry_setting_changed` live-applies changes to `ui.theme_mode`, `ui.font_size_pt` (`_apply_font_size_pt`), `ui.avatars_gravatar`, `ui.humor_lines`, `ui.activity_dock.max_lines`, `remote.auto_fetch.enabled`, `monorepo.sparse_checkout_ui.enabled`, `rebase.interactive_ui.enabled`, and `maintenance.auto_commit_graph.enabled` (using `_CommitGraphDispatcher`, `_CommitGraphWorker`, and `_maybe_write_commit_graph` with generation cancellation). `_propagate_theme_refresh()` refreshes status bar pills (`_apply_status_bar_theme()`) and open `QDialog`s (`_active_settings_dialog`, `_sparse_dialog`, `_interactive_rebase_dialog`, and child dialogs). `QSignalBlocker` prevents duplicate repo-open events on programmatic combo updates, `request_restart()` restarts Wrench cleanly for restart-flagged settings (`ui.theme_mode`), and `_reclaim_heap_after_switch()` + coalesced 150ms single-shot `_heap_trim_timer` (`_on_delayed_heap_trim`) run `gc.collect()` and `malloc_trim(0)` after `DeferredDelete` cycles with closing/validity guards.
+  - **Interactive Rebase Coordinator (`_on_history_interactive_rebase` / `_run_interactive_rebase_dialog`)**: Launches non-modal `InteractiveRebaseDialog` from `HistoryTab.interactive_rebase_requested`, suspends `RepoWatcher` during `rebase_started` and resumes on `rebase_completed`/`rebase_failed`, routes paused/conflicted outcomes back to `ChangesTab`, and enforces single-instance activation.
   - Hosts the central `TabContainer`.
   - **GUI Session Persistence Engine**: Runs a continuous 1000ms debounced auto-save timer (`_auto_save_timer`) coalescing window geometry, splitter ratios, tab list/order/pinning, active repo, and per-repo selections/drafts into `app_settings` key `ui.session_state`.
   - Synchronous flush on `closeEvent(event)` ensures state is never lost on shutdown or unexpected termination.
@@ -281,6 +283,7 @@ Wrench is engineered around six non-negotiable architectural tenets:
     - Handles `QEvent.PaletteChange` and `ApplicationPaletteChange` with an internal recursion guard (`_updating_style`) to eliminate stylesheet re-entry loops.
     - `TabContainer` provides `refresh_theme()` to synchronously trigger styling updates across all tab buttons when themes change.
 - **`ChangesTab` (`ui/tabs/changes_tab.py`)**: Primary working tree changes workspace.
+  - Resets `_selected_file = None` and `_current_status = None` at the start of `set_repo()` and validates persisted `selected_file` keys against populated `files_list` rows inside `restore_repo_state()`, preventing stale cross-repo `get_diff` subprocess fallbacks on repository switches.
   - Flush borderless repository selector `QComboBox` with mode-isolated theme styling (`_update_repo_combo_theme()`): retains original stylesheet with `color: palette(window-text);` in dark mode, and applies explicit `#4c4f69` (charcoal slate) text on `#ffffff` card base in light mode to prevent invisible white text caused by static palette stylesheet binding.
   - Embedded `BranchSwitcherWidget` with theme-adaptive colors.
   - Visible 1px divider `QSplitter::handle` with interactive hover highlight.
@@ -299,6 +302,7 @@ Wrench is engineered around six non-negotiable architectural tenets:
   - Right-click context actions: `Create New Branch…`, `Rename Branch…`, `Delete Branch…`.
   - **Theme Integration**: Employs `ACCENT_COLORS` for detached HEAD indicators (`#df8e1d` in Light, `#f9e2af` in Dark), `palette(placeholder-text)` for unborn branch states, and listens to `PaletteChange` with recursion protection.
 - **`HistoryTab` (`ui/tabs/history_tab.py`)**: Git log and history visualization workspace.
+  - Exposes `interactive_rebase_requested` forwarded from `CommitGraphWidget` and uses `QSignalBlocker` when refreshing author filters.
   - Top search and filter bar (search input, dynamic author filter from active commits, path filter, clear button) with 300ms debouncing.
   - Hosts `CommitGraphWidget` with infinite scroll pagination, selection synchronization, and detail panel display.
   - Full UI state persistence: saves/restores table header column widths (`save_header_state()` / `restore_header_state()`) and vertical content splitter position (`save_splitter_state()` / `restore_splitter_state()`) in SQLite `ui.session_state`.
@@ -312,7 +316,9 @@ Wrench is engineered around six non-negotiable architectural tenets:
   - **100k+ Cursor Pagination & Virtualized Painting (`VP-16`)**: Fetches pages off the UI thread via `_GraphWorkerDispatcher`, `_GraphPageWorker`, and `_GraphSearchWorker` on `QThreadPool` using `engine.get_log_page` sized by `performance.graph_page_size` when vertical scroll crosses 80% (`CommitTableModel.append_rows`), clips `paintEvent` strictly to visible viewport rows (`_last_painted_row_range`), and caches DPR-scaled ref pills and 18px avatars in `QPixmapCache` (invalidated via `invalidate_paint_caches()`).
   - Interactive column resizing across all header sections with boundary clipping and auto-save triggering on resize.
   - Auto-scrolling to selected commit nodes with glowing halo accent rings (`NODE_RADIUS + 3.0`).
+  - Commit context menu exposes `"Interactive Rebase from Here..."` (`interactive_rebase_requested` Signal) gated by `rebase.interactive_ui.enabled`.
 - **`CommitDetailPanel` (`ui/commit_graph/detail_panel.py`)**: Detailed commit inspection panel.
+  - Cleans up embedded table `cellWidget` items cleanly via `deleteLater()` in `_clear_files_table()` prior to row reset.
   - Displays selected commit metadata: full commit message, author name, committer, SHA-1 with 1-click clipboard copy, parent SHAs, commit timestamp, and stat badges.
   - Embeds a 24px `AvatarWidget` for the commit author, resolving avatars via Gravatar hashing (MD5/SHA-256 of author email) when the `ui.avatars_gravatar` setting is enabled, or gracefully falling back to deterministic initials badges when disabled.
 - **`Topological Layout Calculator` (`ui/commit_graph/layout.py`)**:
@@ -320,6 +326,10 @@ Wrench is engineered around six non-negotiable architectural tenets:
   - 10-color deterministic color persistence and slot recycling algorithm preventing lane explosion.
 - **`MergeDialog` (`ui/dialogs/merge_dialog.py`)**: 3-Way visual merge conflict resolution tool.
   - Side-by-side Ours, Base, and Theirs diff viewers with block-level conflict acceptance and index staging.
+- **`InteractiveRebaseDialog` (`ui/dialogs/interactive_rebase_dialog.py`, `VP-2`, `FR-3.5`)**: Visual interactive rebase planner and executor.
+  - Loads commits in `base_oid..HEAD` asynchronously in oldest-first `git rebase -i` order via `_LoadCommitsWorker` and queued `_RebaseDialogDispatcher` signals (`OPT-6` generation tokens), enforcing a 1,000-commit safety cap.
+  - Renders `_RebaseTodoTableWidget` (`InternalMove` drag-and-drop row reordering emitting `row_move_requested`), per-row action selectors (`pick`, `reword`, `edit`, `squash`, `fixup`, `drop`) styled with `REBASE_ACTION_COLORS`, inline message editor for `reword`/`squash`, and validation blocking top-row `squash`/`fixup`.
+  - Hosts `--autostash` / `--autosquash` toggles, Preferences gear button (`⚙`), live secret-redacted `CliCommandPreviewBar` footer, and async execution via `_RunInteractiveRebaseWorker` (`rebase_started`, `rebase_completed`, `rebase_failed` signals).
 - **`DiscoverReposDialog` (`ui/dialogs/discover_repos_dialog.py`)**:
   - Multi-repository discovery review and import dialog (FR-1.12).
   - Displays discovered local Git repositories and worktrees in a checkable list with Select All / Deselect All controls, path canonicalization, and Catppuccin theme token styling.
@@ -332,6 +342,7 @@ Wrench is engineered around six non-negotiable architectural tenets:
   - **Instant Search & Tier Filtering (`OPT-2`)**: `SettingRowWidget.matches_query()` + `CategorySettingsPage.filter_rows()` toggle row and navigation item visibility in $< 5\text{ ms}$ across key, label, description, and category without recreating widgets.
   - **Hierarchical Scope Switcher**: Toggles between `🌐 Global Defaults` and `📁 Repo Override: <name>` in `Advanced` mode.
   - **Zero-Overhead Debounced Auto-Save & Close Flush (`OPT-2`)**: Boolean/choice toggles save immediately while `QSpinBox`/`QLineEdit` inputs use a 150ms single-shot debounce timer plus immediate `editingFinished` and `flush_pending()` execution inside `done()`/`closeEvent()`, preventing lost edits on quick close.
+  - **Bottom-Right `Apply Changes` / `Apply Changes & Restart` Staging Bar (`btn_apply`)**: Supports explicit staged preference mutations (`stage_change`, `apply_pending_changes`, `pending_requires_restart`), switching the button label to `Apply Changes & Restart` when a `SettingSpec.requires_restart` preference (such as `ui.theme_mode`) is modified and invoking `MainWindow.request_restart()` on apply.
   - **Lifecycle Sync (`showEvent` / `reload_key` / `select_category`)**: Reconnects `registry.setting_changed` cleanly on re-open, refreshes row values on show (`showEvent`), skips in-flight debounced rows in `reload_key`, and auto-switches from `Normal` to `Advanced` when `select_category(..., highlight_key)` targets an advanced preference.
   - **Preset Engine**: 1-click `[⚡ Apply Minimalist Preset…]` button disables background fetching, forge polling, telemetry, and external avatar lookups.
   - **100-Entry SQLite Delta Undo/Redo (`OPT-3`)**: `[↶]` / `Ctrl+Z` and `[↷]` / `Ctrl+Y` buttons driven by `SettingsRegistry.undo_last_change()` and `redo_last_change()` backed by SQLite `settings_undo_log` (pruned to 100 entries).
@@ -351,9 +362,9 @@ Wrench is engineered around six non-negotiable architectural tenets:
   - Strict compliance with Catppuccin Velvet Pastel theme tokens and zero hardcoded hex colors.
 - **`AvatarWidget` & `AvatarLoader` (`ui/widgets/avatar.py`)**:
   - **`AvatarLoader` Singleton**: Application-wide thread-safe manager for asynchronous avatar downloads and caching.
-    - **Dual-Tier Cache**: In-memory `_mem_cache` (`QPixmap`, `mtime`) for instant zero-latency retrieval; on-disk SHA-256 hashed cache files stored in `$XDG_CACHE_HOME/wrench/avatars` (`paths.cache_dir() / "avatars"`) with a 7-day TTL.
+    - **Dual-Tier Cache**: Bounded in-memory LRU cache (`maxsize=128` `QPixmap` entries) paired with `QPixmapCache.setCacheLimit(16384)` (16 MB), plus on-disk SHA-256 hashed cache files stored in `$XDG_CACHE_HOME/wrench/avatars` (`paths.cache_dir() / "avatars"`) with a 7-day TTL.
     - **In-Flight Request Coalescing**: Collapses duplicate concurrent requests for identical URLs into a single network operation.
-    - **Non-Blocking Architecture**: Disk reads and network downloads execute on background worker threads (`urllib.request.urlopen` with a 5-second timeout). Pixmap decoding and widget repainting are marshalled safely back to the Qt main thread via the `avatar_loaded` Qt signal.
+    - **Non-Blocking Architecture**: Disk reads and network downloads execute on background worker threads using a shared pooled `httpx.Client` (no cookie storage, bounded timeout). Pixmap decoding and widget repainting are marshalled safely back to the Qt main thread via the `avatar_loaded` Qt signal.
     - **Silent Failure Fallback**: Network errors, HTTP 404s, offline airplane mode, or corrupt cache files fail silently without popups, cleanly falling back to initials.
   - **`AvatarWidget`**: Circular, anti-aliased avatar widget supporting standard size buckets (24px, 40px, 64px).
     - Renders fallback colored badges containing two-letter initials derived from username/author.
@@ -377,6 +388,7 @@ Wrench is engineered around six non-negotiable architectural tenets:
 - **`RecoveryDialog` (`ui/dialogs/recovery_dialog.py`)**:
   - Actionable diagnostics and recovery workflows for stale locks, interrupted rebases, detached HEADs, and reflogs.
 - **`DiffView` (`ui/diff_view/diff_widget.py`)**: Syntax-highlighted diff viewer.
+  - `set_repo(repo)` unconditionally clears `_current_path = None`, `_diff = None`, `_read_only = False`, `_force_full_diff = False`, and resets action/truncation controls before displaying the next repository's selection.
   - Renders diff lines with line-number metadata and theme-adaptive Catppuccin Velvet Pastel contrast (using compact CSS rendering above 5,000 lines).
   - Enforces a default truncation cap (`DEFAULT_MAX_DIFF_LINES = 5000` and `performance.max_diff_file_size_kb`) with a non-modal warning `truncation_banner` and 1-click `[Load Full Diff]` (`load_full_diff_btn`) override.
   - Automatically re-renders loaded diffs on `PaletteChange`, `ApplicationPaletteChange`, or `ThemeChange` without requiring file re-selection.
@@ -398,6 +410,7 @@ Wrench is engineered around six non-negotiable architectural tenets:
   - Remotes façade: `list_remotes(repo)`, `add_remote(repo, name, url)`, `remove_remote(repo, name)`, `set_remote_url(repo, name, url)`, and `_probe_reachability(repo_path, remote_name)`.
   - Monorepo, Graph & Maintenance façade: `get_log_page`, `get_repo_refs_signature`, `is_unborn_repo`, `refresh_repo_handle`, `is_sparse_checkout_enabled`, `get_sparse_checkout_state`, `init_sparse_checkout`, `list_sparse_directories`, `set_sparse_directories`, `disable_sparse_checkout`, `list_head_top_directories`, `list_tree_subdirectories`, `write_commit_graph`, `maybe_write_commit_graph`, `validate_clone_url`, `validate_git_ref`, `redact_secrets`, and `resolve_git_dir`.
   - Feature gating facade: `is_feature_enabled(feature_key, repo_path)` and `get_settings(repo_path)` providing zero-overhead short-circuits (`OPT-1`).
+  - Interactive Rebase façade (`VP-2`): `build_interactive_rebase_cli_args`, `get_interactive_rebase_target_label`, `list_commits_for_interactive_rebase`, `list_commits_for_interactive_rebase_checked`, and `interactive_rebase` (creating pre-operation safety snapshots and honoring `rebase.autostash`/`rebase.autosquash`).
   - LFS façade: `is_lfs_installed()`, `repo_uses_lfs(repo)`, `is_lfs_pointer_file(repo, path)`, `lfs_track(repo, pattern)`, `lfs_untrack(repo, pattern)`, `lfs_pull(repo)`, and `lfs_status(repo)`.
   - Submodules façade: `list_submodules(repo)`, `init_submodule(repo, name)`, `update_submodules(repo, recursive, init)`, `sync_submodules(repo)`, and `add_submodule(repo, url, path, branch)`.
   - Bundles façade: `create_bundle(repo, output_path, rev_range)`, `verify_bundle(repo, bundle_path)`, and `unbundle(repo, bundle_path)`.
@@ -409,8 +422,13 @@ Wrench is engineered around six non-negotiable architectural tenets:
   - `BundleVerificationResult`: Holds bundle validity flag, header metadata, prerequisite commit SHAs, and contained reference heads.
   - `CloneResult`: Outcome metadata for atomic clone operations (success, repo_path, duration_seconds, error_message).
   - `LogPage`, `CommitGraphStats`, `SparseCheckoutState`, `TreeDirectoryEntry`, and `WatcherStatusInfo`: Monorepo pagination, commit-graph maintenance, cone-mode sparse-checkout, and adaptive watcher telemetry models (`VP-16`).
+  - `RebaseTodoEntry`: Immutable interactive rebase plan row (`action`, `oid`, `short_oid`, `summary`, `author`, `new_message`, `VP-2`).
+- **`rebase_sequencer.py` (`VP-2`, `FR-3.5`, `FR-10.1`)**: Core engine for graphical interactive rebase:
+  - `list_commits_for_interactive_rebase_checked` / `list_commits_for_interactive_rebase`: Enumerates `base_oid..HEAD` in oldest-first `git rebase -i` order via `pygit2` (`GIT_SORT_TOPOLOGICAL | GIT_SORT_REVERSE`, capped at `MAX_INTERACTIVE_REBASE_COMMITS = 1000`) without subprocesses.
+  - `run_interactive_rebase`: Validates `RebaseTodoEntry` sequences (blocking leading `squash`/`fixup` and invalid OIDs), writes the plan JSON inside a `0o700` temporary directory with `0o600` file permissions (`SEC-4`), and executes `git rebase -i` (`shell=False`, `--` separator `SEC-1`) with `GIT_SEQUENCE_EDITOR` and `GIT_EDITOR` bound to `python -m wrench.core.rebase_editor_helper <plan_json>`.
+- **`rebase_editor_helper.py` (`VP-2`)**: Standalone CLI editor entrypoint invoked by Git during interactive rebase (`apply_sequence_plan` for `git-rebase-todo`; `apply_commit_message` for `COMMIT_EDITMSG` matching `rebase-merge/done` OIDs or ordered fallback message slots with `0o600` atomic writes).
 - **`lfs_ops.py`**: Git Large File Storage (LFS) operations and detection:
-  - Detection: Probes system PATH for `git-lfs` executable with cached probe results; parses `.gitattributes` for `filter=lfs` bindings.
+  - Detection: `is_lfs_installed()` decorated with `@functools.lru_cache(maxsize=1)` checks `shutil.which("git-lfs")` before creating directories or invoking `git lfs version`; parses `.gitattributes` for `filter=lfs` bindings.
   - In-Memory Pointer Inspection: Inspects blob headers via `pygit2.Blob` in-process (`version https://git-lfs...`, `oid sha256:...`, `size ...`), eliminating subprocess overhead.
   - Operations: Enforces safety checks via `require_lfs()` before executing `git lfs track`, `git lfs untrack`, or `git lfs pull` with argument sanitization and `--` separators (`SEC-1`).
 - **`submodules.py`**: Git submodule management:
@@ -423,8 +441,9 @@ Wrench is engineered around six non-negotiable architectural tenets:
 - **`reflog_ops.py`**: Git reference log inspection and recovery:
   - Traversal: Iterates reference log entries via `pygit2.Repository.references[ref].log()` or git CLI fallback.
   - Restoration: Resets working branch to historical states (`git reset --hard <sha>`) or creates named recovery branches directly from reflog points without modifying active checkouts.
-- **`read_ops.py`**: `pygit2`-backed status, diffs, paginated log traversal (`get_log_page` returning `LogPage` backed by a thread-safe `_ACTIVE_WALKER_CACHE` LRU of size 8 validated via `_repo_refs_digest`), branch enumeration, and line-by-line blame.
+- **`read_ops.py`**: `pygit2`-backed status, diffs, paginated log traversal (`get_log_page` returning `LogPage` backed by a thread-safe `_ACTIVE_WALKER_CACHE` LRU of size 8 validated via `_repo_refs_digest`), branch enumeration, line-by-line blame, and `configure_libgit2_memory_limits()` (32 MB global `libgit2` LRU cache cap + 48 MB `mwindow_mapped_limit` initialized once by `GitEngine`).
 - **`write_ops.py`**: Subprocess helpers managing Git CLI execution:
+  - `ensure_credential_config`: Checks `repo.config` via `pygit2` under a per-repo lock before spawning `git config --local` subprocesses for `credential.helper` / `credential.useHttpPath`.
   - `clone_repository` / `clone_repo`: Atomic clone with partial-clone `filter_spec` (`blob:none`, `tree:0`) and `sparse` flags, validated via `security_sanitizer.validate_clone_url`.
   - `write_commit_graph`: Lock- and unborn-repo-safe `git commit-graph write --reachable --changed-paths --no-progress` returning `CommitGraphStats`.
   - `run_git`: Standard synchronous runner with timeout and sanitized environment (`GIT_TERMINAL_PROMPT=0`).
@@ -485,7 +504,7 @@ Wrench is engineered around six non-negotiable architectural tenets:
 
 ### 3.4 File Watcher (`src/wrench/watcher/`)
 - **`inotify_watcher.py` (`RepoWatcher`)**:
-  - **Tier 1 (`full_inotify`)**: Uses `watchdog.observers.Observer` + `_WatchdogHandler` excluding internal `.git/` paths, capturing `on_modified`, `on_created`, `on_deleted`, and `on_moved` / `IN_MOVED_TO` events (including atomic tempfile renames) behind a configurable single-shot `QTimer` (`watcher.debounce_ms`, default 300ms).
+  - **Tier 1 (`full_inotify`)**: Uses `watchdog.observers.Observer` + `_WatchdogHandler` excluding internal `.git/` paths, capturing `on_modified`, `on_created`, `on_deleted`, and `on_moved` / `IN_MOVED_TO` events (including atomic tempfile renames) behind a configurable single-shot `QTimer` (`watcher.debounce_ms`, default 300ms). Both `_WatchdogHandler` and `_GitDirMetadataHandler` filter out internal `objects/info/commit-graph*` and `commit-graph.lock` writes so background commit-graph maintenance never triggers redundant self-reloads.
   - **Tier 2 (`git_dir_inotify` adaptive fallback)**: When `ENOSPC` / `EMFILE` watch limits are hit and `watcher.monorepo_adaptive_fallback.enabled` is active, switches to `_GitDirMetadataHandler` watching only `<gitdir>/{HEAD,index,packed-refs,config,config.worktree}`, `info/sparse-checkout`, and `refs/` via `core.paths.resolve_git_dir`.
   - **Tier 3 (`polling`)**: Falls back to Qt-thread `PollingFallback` when `inotify` is unavailable or disabled.
   - Exposes `suspend()` / `resume(grace_ms=150)`, dynamic `setting_changed` updates (`_on_setting_changed`), `adaptive_fallback_activated(mode, reason)` signal, and `status_info` (`WatcherStatusInfo`).
@@ -1281,6 +1300,34 @@ To eliminate telemetry leakage and strictly protect developer privacy:
                 └── DiffView -> caps rendering at 5,000 lines / performance.max_diff_file_size_kb with 1-click full-diff reload
 ```
 
+### 4.20 Visual Interactive Rebase & `GIT_SEQUENCE_EDITOR` Workflow (`VP-2`)
+```text
+[User Right-Clicks Commit in CommitGraphWidget -> "Interactive Rebase from Here..."]
+         │
+         ├── HistoryTab.interactive_rebase_requested(base_oid) -> MainWindow._on_history_interactive_rebase
+         ▼
+[InteractiveRebaseDialog (ui/dialogs/interactive_rebase_dialog.py)]
+         ├── 1. _LoadCommitsWorker (QThreadPool + generation_id OPT-6)
+         │      └── engine.list_commits_for_interactive_rebase_checked() -> pygit2 topological reverse walk (<= 1000)
+         ├── 2. User edits sequence:
+         │      ├── _RebaseTodoTableWidget (InternalMove drag-and-drop -> row_move_requested)
+         │      ├── Per-row action selector (pick | reword | edit | squash | fixup | drop)
+         │      ├── Inline message editor (reword/squash) & top-row squash/fixup guard
+         │      └── Live CliCommandPreviewBar footer (SEC-3 redacted)
+         ▼
+[User Clicks "Start Rebase" -> _RunInteractiveRebaseWorker]
+         ├── Emit rebase_started -> MainWindow suspends RepoWatcher
+         ├── core.engine.interactive_rebase -> snapshots.maybe_create_safety_snapshot()
+         ├── core.rebase_sequencer.run_interactive_rebase():
+         │      ├── Write plan.json inside 0o700 tempdir with 0o600 file permissions (SEC-4)
+         │      └── git -C <repo> rebase -i [--autostash] [--autosquash] -- <base_oid> (SEC-1)
+         │             ├── GIT_SEQUENCE_EDITOR -> python -m wrench.core.rebase_editor_helper (git-rebase-todo)
+         │             └── GIT_EDITOR          -> python -m wrench.core.rebase_editor_helper (COMMIT_EDITMSG)
+         └── Emit rebase_completed(RebaseResult) / rebase_failed(redacted_err)
+                ├── Resume RepoWatcher (+150ms grace)
+                └── Route 'paused' / 'conflict' states to ChangesTab sequencer controls
+```
+
 ---
 
 ## 5. Relational Database Schema (Version 3)
@@ -1401,6 +1448,8 @@ wrench/
 │   │   ├── models.py             # Core dataclass models (LFS, submodules, bundles, reflog, VP-16)
 │   │   ├── read_ops.py           # pygit2 read operations & _ACTIVE_WALKER_CACHE
 │   │   ├── write_ops.py          # subprocess CLI write, streaming ops & write_commit_graph
+│   │   ├── rebase_sequencer.py   # VP-2: pygit2 rebase walk & GIT_SEQUENCE_EDITOR runner
+│   │   ├── rebase_editor_helper.py # VP-2: standalone CLI editor for rebase-todo/COMMIT_EDITMSG
 │   │   ├── sparse_checkout.py    # Cone-mode sparse-checkout & HEAD/ls-tree subdir listing
 │   │   ├── security_sanitizer.py # Clone URL, git ref & CLI/log secret redaction (SEC-2/SEC-3)
 │   │   ├── lfs_ops.py            # Git LFS detection, attributes & pointer inspection
@@ -1464,6 +1513,7 @@ wrench/
 │   │   │   ├── accounts_dialog.py# Forge accounts manager & OAuth Device Flow
 │   │   │   ├── clone_dialog.py   # Partial/sparse CloneDialog & _SingleLinePathLabel
 │   │   │   ├── discover_repos_dialog.py # Multi-repo discovery review & batch import
+│   │   │   ├── interactive_rebase_dialog.py # VP-2: drag-to-reorder interactive rebase dialog
 │   │   │   ├── link_dialog.py    # Remote-to-forge account association dialog
 │   │   │   ├── partial_staging_dialog.py # MM/AM intent resolver dialog
 │   │   │   ├── push_recovery_dialogs.py # Secret scanning, branch, network & size recovery
@@ -1500,20 +1550,23 @@ wrench/
 │   │       ├── cli_preview_bar.py# Secret-redacted CLI command preview footer
 │   │       └── loading_overlay.py# Semi-transparent loading spinner overlay
 │   └── watcher/                  # 3-tier inotify/git-dir/polling filesystem watcher
-└── tests/                        # Comprehensive test suite (core, unit, integration, UI)
-    ├── core/
-    │   └── test_sparse_checkout.py     # Cone sparse-checkout, partial clone & sanitizer tests
-    ├── integration/                    # Adapter integration suites (github, gitlab, forgejo, bitbucket)
-    ├── unit/                           # Core, storage, credentials, forge & theme/widget unit tests
-    │   ├── test_no_shortcuts_guard.py  # AST security & anti-hallucination guard
-    │   ├── test_settings_registry.py   # SettingsRegistry unit tests
-    │   ├── test_lfs_ops.py             # Git LFS ops unit tests
-    │   ├── test_submodules.py          # Submodule operations unit tests
-    │   ├── test_bundles.py             # Git bundle operations unit tests
-    │   └── test_reflog_ops.py          # Reflog operations unit tests
-    └── ui/
-        ├── test_clone_picker.py        # CloneDialog & _SingleLinePathLabel tests
-        ├── test_large_graph_virtualization.py # 100k+ pagination, diff cap & sparse UI tests
+├── tests/                        # Comprehensive test suite (core, unit, integration, UI)
+│   ├── core/
+│   │   ├── test_interactive_rebase.py # VP-2 interactive rebase core & helper tests
+│   │   └── test_sparse_checkout.py     # Cone sparse-checkout, partial clone & sanitizer tests
+│   ├── integration/                    # Adapter integration suites (github, gitlab, forgejo, bitbucket)
+│   ├── unit/                           # Core, storage, credentials, forge & theme/widget unit tests
+│   │   ├── test_no_shortcuts_guard.py  # AST security & anti-hallucination guard
+│   │   ├── test_settings_registry.py   # SettingsRegistry unit tests
+│   │   ├── test_lfs_ops.py             # Git LFS ops unit tests
+│   │   ├── test_submodules.py          # Submodule operations unit tests
+│   │   ├── test_bundles.py             # Git bundle operations unit tests
+│   │   └── test_reflog_ops.py          # Reflog operations unit tests
+│   └── ui/
+│       ├── test_clone_picker.py        # CloneDialog & _SingleLinePathLabel tests
+│       ├── test_forge_repo_switch.py   # Repo switch memory, diff reset & tab disposal tests
+│       ├── test_interactive_rebase_dialog.py # VP-2 InteractiveRebaseDialog & theme tests
+│       ├── test_large_graph_virtualization.py # 100k+ pagination, diff cap & sparse UI tests
         ├── test_lazy_tabs.py           # Lazy/multi-forge tab lifecycle tests
         ├── test_main_window_feedback.py# ActivityLogBar, humor toggle & AboutDialog tests
         ├── test_partial_staging_dialog.py # PartialStagingDialog tests

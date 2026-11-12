@@ -216,6 +216,10 @@ def test_no_flash_api_hallucinations_or_truncation_markers():
             for bad_token, reason in FORBIDDEN_FLASH_PATTERNS:
                 if bad_token in line:
                     violations.append(f"{py_file}:{lineno} [{reason}]: {line.strip()}")
+                        if py_file.name == "history_view.py" and (".setCellWidget(" in line or ".setIndexWidget(" in line):
+                violations.append(
+                    f"{py_file}:{lineno} [OPT-11 Violation: Never use setCellWidget/setIndexWidget in history_view.py; paint via QStyledItemDelegate]"
+                )
             if "from PySide6.QtWidgets import" in line and "QAction" in line:
                 violations.append(
                     f"{py_file}:{lineno} [In Qt6/PySide6, QAction lives in PySide6.QtGui, not QtWidgets]"
@@ -595,7 +599,89 @@ class RebaseTodoEntry:
 
 ### Acceptance Check
 
-- [ ] Reordering commits, squashing two commits, rewording a commit, and dropping a commit via `InteractiveRebaseDialog` rewrites history cleanly and takes a pre-op snapshot if `safety.pre_op_snapshot.enabled` is `True`.
+- [x] Reordering commits, squashing two commits, rewording a commit, and dropping a commit via `InteractiveRebaseDialog` rewrites history cleanly and takes a pre-op snapshot if `safety.pre_op_snapshot.enabled` is `True`.
+
+**Status:** Completed (`rebase_sequencer.py`, `rebase_editor_helper.py`, `interactive_rebase_dialog.py`, `tests/core/test_interactive_rebase.py`, `tests/ui/test_interactive_rebase_dialog.py`).
+
+### VP-2.5 — Signature Visual Identity, SVG Vector Icon Engine, 4-Cell Context Bar, Launchpad & 3-Column Neon Graph IDE
+
+**Implements:** `FR-3.16`, `FR-3.17`, `FR-11.7`, `FR-11.8`, `FR-11.9`, `FR-11.10`, `ui-planning.md §6.29`
+**Feature Toggle Keys (`SettingsRegistry`):**
+* `graph.include_remote_branches` (`True`, category `"Commit Graph & History"`)
+* `graph.show_wip_row` (`True`, category `"Commit Graph & History"`)
+* `ui.history_three_column_layout` (`True`, category `"General & UI"`)
+* `ui.show_context_header_bar` (`True`, category `"General & UI"`)
+* `ui.show_empty_state_launchpad` (`True`, category `"General & UI"`)
+
+**Mandatory Execution Steps (Execute in exact numerical order per `FLASH-7`):**
+
+* **Step 1: Built-In Tintable SVG Vector Icon Registry (`src/wrench/ui/icons.py` — `FR-11.8`)**
+  * Create `src/wrench/ui/icons.py` using `PySide6.QtSvg.QSvgRenderer` (or `QPainterPath` fallback if `QtSvg` is unavailable) + `QPainter` + `@lru_cache(maxsize=256)`.
+  * Define crisp 24×24 SVG vector templates for: `repo`, `branch`, `merge`, `laptop`, `cloud`, `github`, `tag`, `stash`, `pop`, `fetch`, `pull`, `push`, `undo`, `redo`, `terminal`, `folder`, `folder_open`, `file_code`, `check`, `warning`, `search`, `sliders`, `external_link`, `copy`, `plus`, `close`.
+  * Expose `get_icon(name: str, color: str = "#cdd6f4", size: int = 16) -> QIcon` and `get_pixmap(name: str, color: str = "#cdd6f4", size: int = 16) -> QPixmap` so every button, branch pill, and tree item in Wrench renders crisp vector icons with zero blank buttons or missing Linux icon-theme glyphs.
+
+* **Step 2: 4-Tier Catppuccin `QPalette` & Total QSS Chrome Overhaul (`src/wrench/ui/theme.py` — `FR-11.7`)**
+  * Implement `build_catppuccin_palette(theme_name: str) -> QPalette` setting all 18 `QPalette.ColorRole` values (`Window` = `#181825` Mantle, `WindowText` = `#cdd6f4`, `Base` = `#1e1e2e` Base, `AlternateBase` = `#181825`, `ToolTipBase` = `#11111b`, `ToolTipText` = `#cdd6f4`, `PlaceholderText` = `#6c7086`, `Text` = `#cdd6f4`, `Button` = `#313244` Surface0, `ButtonText` = `#cdd6f4`, `BrightText` = `#f38ba8`, `Link` = `#89b4fa`, `Highlight` = `#313244`, `HighlightedText` = `#89b4fa`) for both `mocha` and `latte`.
+  * Update `apply_theme(app: QApplication, theme_name: str)` to call `app.setStyle("Fusion")`, `app.setPalette(build_catppuccin_palette(theme_name))`, and apply the complete 4-Tier QSS stylesheet (`ui-planning.md §6.29.1`) covering `QMainWindow`, `QDialog`, `QWidget`, flat uppercase `QHeaderView::section` (no 3D bevels), `1px` `#313244` `QSplitter::handle`, `2px` `#89b4fa` underlined `QTabBar::tab:selected`, and `8px` pill `QScrollBar` thumbs with zero stepper arrows.
+
+* **Step 3: Multi-Branch & Remote DAG Walk + Ahead/Behind Sync Metadata (`src/wrench/core/models.py` & `src/wrench/core/read_ops.py` — `FR-3.16`)**
+  * In `src/wrench/core/models.py` (append-only per `FLASH-1`):
+    * Add `BranchSyncStatus(branch_name: str, upstream_name: str | None, ahead: int = 0, behind: int = 0, is_detached: bool = False)`.
+    * Add `RefSidebarTree(local_branches: tuple[BranchInfo, ...], remote_branches: tuple[BranchInfo, ...], tags: tuple[TagInfo, ...], stashes: tuple[StashEntry, ...])`.
+  * In `src/wrench/core/read_ops.py`:
+    * Fix `get_commit_log(repo_path, ..., all_branches=True)`:
+      * When `all_branches=True` (and `graph.include_remote_branches` is `True`), push `HEAD`, all `refs/heads/*`, all `refs/remotes/*` (excluding `/HEAD` symrefs like `refs/remotes/origin/HEAD`, sorted by commit time descending and capped at `150` remote tips so 300+ branch repos walk in `< 35 ms`), and peeled `refs/tags/*` into the `pygit2` walker!
+      * Build `ref_map` with explicit source prefixes (`"local:main"`, `"remote:origin/main"`, `"remote:origin/assets/pr-10949"`, `"tag:v1.0"`, `"HEAD"`). Always omit `refs/remotes/<remote>/HEAD` symrefs so duplicate pills are never drawn.
+    * Add `get_branch_sync_status(repo_path: Path) -> BranchSyncStatus` and `get_ref_sidebar_tree(repo_path: Path) -> RefSidebarTree` in `read_ops.py` and expose on `GitEngine` (`engine.py`).
+
+    * **Enforce `OPT-11` (`libgit2` 32 MB Cache Cap & Zero Stale Repo Handles):**
+      * Add `configure_libgit2_memory_limits(max_cache_mb: int = 32) -> None` in `src/wrench/core/read_ops.py` calling `pygit2.settings.cache_max_size(max_cache_mb * 1024 * 1024)` (and setting `pygit2.settings.mwindow_mapped_limit = 64 * 1024 * 1024` inside a `try/except AttributeError` guard) and invoke it in `GitEngine.__init__()`.
+      * Ensure every function in `read_ops.py` opens `pygit2.Repository(str(repo_path))` as a local variable and allows it to go out of scope immediately upon return (never storing persistent `pygit2.Repository` instances on `self`), freeing `mmap` packfile windows immediately.
+
+* **Step 4: Segmented 4-Cell Top Context Bar, Collapsible Git Terminal Drawer & Single Status Bar (`src/wrench/ui/widgets/context_header_bar.py` & `src/wrench/ui/main_window.py` — `FR-11.9`)**
+  * Create `ContextHeaderBar(QFrame)` (`height: 48px`, `#11111b` Crust background, `1px solid #313244` borders):
+    * **Cell 1 (`RepoContextCell`):** `repo` SVG icon + `Current repository` (`10px` `#a6adc8`) + bold `<repo_name> ▾`, emitting `repo_selector_clicked()`.
+    * **Cell 2 (`BranchContextCell`):** `branch` SVG icon + `Current branch` (`10px` `#a6adc8`) + bold `<branch_name> ▾` + inline `N↑ M↓` badge, emitting `branch_selector_clicked()`.
+    * **Cell 3 (`SyncActionCell`):** Dynamic SVG button (`Fetch origin` / `Pull origin (N↓)` / `Push origin (N↑)` / `Sync branch (N↑ M↓)` / `Publish branch` + `"Last fetched..."` subtitle), emitting `sync_requested(action_kind: str)`.
+    * **Cell 4 (`QuickActionsStrip`):** Right-aligned SVG icon+label buttons for `[Undo]`, `[Pull]`, `[Push]`, `[Stash]`, `[Pop]`, `[>_ Terminal]`, and `[Command Palette (Ctrl+K)]`.
+  * Create `GitTerminalDrawer(QFrame)` (`180px` collapsible bottom drawer toggled by `[>_ Terminal]` or `` Ctrl+` ``) showing timestamped `git` command output history and a quick `git <subcommand>` input box (`shell=False`).
+  * Consolidate the duplicate bottom status bars in `MainWindow` into a single `24px` `#11111b` status bar.
+
+* **Step 5: Edge-to-Edge `ChangesView`, Dual-Gutter `DiffViewer` & `ZeroChangesLaunchpadWidget` (`src/wrench/ui/changes_view.py` — `FR-11.10`)**
+  * Remove the redundant internal repo/branch header (and broken blank button) from `ChangesView`.
+  * Set left sidebar `contentsMargins(0, 0, 0, 0)` and `spacing(0)` with `#181825` Mantle background; remove the `QGroupBox("Commit")` border; make `[Commit to <branch>]` a full-width `36px` primary button (`#89b4fa` fill when enabled, `#313244` when disabled).
+  * Implement `ZeroChangesLaunchpadWidget(QWidget)` (`ui-planning.md §6.29.4`) with the 4 SVG-icon Bordered Action Cards (Dynamic Remote Sync Card, Open in Terminal/Editor, Show in File Manager, View History / Command Palette) + rotating Linus/Git quote at the bottom, shown whenever `total_changes == 0`.
+  * Upgrade `DiffViewer` with a `#181825` dual line-number gutter (`old | new`) and `3px` solid `#a6e3a1` / `#f38ba8` addition/deletion bars.
+
+* **Step 6: GitKraken-Class 3-Column `HistoryView`, Left `BRANCH / TAG` Connector Column & Neon Avatar Graph (`src/wrench/ui/history_view.py` — `FR-3.17`)**
+  * Restructure `HistoryView` into a 3-column horizontal `QSplitter` (`0px` margins, `1px` `#313244` handles):
+    1. **Left `RefsSidebarWidget` (`230px`, `#181825` Mantle):** Search filter + collapsible `QTreeWidget` with `LOCAL (N)` (`laptop` SVG + `N↑ M↓` pills), `REMOTE (N)` (`cloud` SVG, grouped hierarchically into `/` folder nodes like `origin` ➔ `assets` ➔ `pr-10949`), `TAGS (N)` (`tag` SVG), and `STASHES (N)` (`stash` SVG). Clicking any ref scrolls the center graph to that commit OID; double-clicking a local branch checks it out.
+    2. **Center Full-Height Neon Commit Graph (`#1e1e2e` Base, `rowHeight=34px`):**
+       * Columns: `BRANCH / TAG` (`175px`) | `GRAPH` (`140px`) | `COMMIT MESSAGE` (`stretch`) | `AUTHOR` (`140px`) | `DATE` (`130px`) | `SHA` (`85px`).
+       * **Dedicated `BRANCH / TAG` Left Column + Horizontal Connector Wire:** Render rounded branch/tag pills (`laptop` SVG for `local:`, `cloud` SVG for `remote:`, `tag` SVG for `tag:`) inside the `BRANCH / TAG` column and draw a `1.5px` `lane_color` horizontal connector line from the pill right into the commit's node in the `GRAPH` column!
+       * **`// WIP` Virtual Top Row:** When uncommitted changes exist and `graph.show_wip_row` is `True`, insert Row 0 (`// WIP — N uncommitted changes`) with a dashed lane line to `HEAD`.
+       * **12% Alpha Lane-Colored Row Gradient Tint:** Paint a horizontal `QLinearGradient` (`rgba(lane_color, 36)` ➔ `rgba(lane_color, 6)`) behind each row matching its active lane color.
+       * **Avatar-Inside-Node Rendering:** Paint `2.2px` antialiased cubic Bézier lanes and draw a **`20px × 20px` circular author avatar / 2-letter initials badge framed by a glowing `2px` `lane_color` ring** at `(lane_x, row_center_y)`.
+    3. **Right `CommitInspectorDock` (`380px`, `#181825` Mantle):** Commit SHA + `[Copy SHA]` + clickable parent SHAs, commit message card, author/committer header card, `[≡ Path | 🌿 Tree]` file list with `+N -M` diffstats, and integrated dual-gutter `DiffViewer`.
+
+       * **`OPT-11` Pure-Delegate Painting & Shared Avatar `QPixmap` LRU Cache (Zero `setCellWidget`):**
+         * **FORBIDDEN:** Do NOT call `setCellWidget()` or `setIndexWidget()` anywhere in `HistoryView`! Instantiating child `QWidget`s per commit row wastes 40+ MB of RAM and is blocked by `test_no_shortcuts_guard.py`.
+         * Implement `CommitGraphRowDelegate(QStyledItemDelegate)` that paints the `12%` alpha row gradient tint, the `BRANCH / TAG` pills + `1.5px` horizontal connector wires, the `2.2px` cubic Bézier lanes, and the `20px` circular avatar nodes in a single C++ `QPainter` pass.
+         * Cache rendered circular avatar/initials `QPixmap`s in `AvatarPixmapCache` (`OrderedDict` LRU with `maxsize=128` keyed by `(author_email.lower(), size_px, ring_color_hex)`).
+
+* **Step 7: Automated Verification Gate (`tests/unit/test_vp25_graph_and_sync.py` & `tests/ui/test_vp25_visual_identity.py`)**
+  * Unit tests (`tmp_path` Git repo with local `main` + simulated `refs/remotes/origin/main` 1 commit ahead + `refs/remotes/origin/assets/pr-10949` branched off):
+    * Verify `get_commit_log(..., all_branches=True)` walks `origin/main` and `origin/assets/pr-10949` even when only 1 local branch exists!
+    * Verify `ref_map` contains `"remote:origin/main"`, `"remote:origin/assets/pr-10949"`, and `"local:main"`, and omits `"remote:origin/HEAD"`.
+    * Verify `get_branch_sync_status` reports `behind=1, ahead=0`.
+  * Headless UI tests (`QT_QPA_PLATFORM=offscreen`, zero blocking `.exec()` calls per `FLASH-4`):
+    * Verify `icons.get_icon("branch", "#89b4fa")` returns a non-null `QIcon` with non-empty pixmap.
+    * Verify `build_catppuccin_palette("mocha")` sets `QPalette.ColorRole.Window` to `#181825` and `Base` to `#1e1e2e` (never `#2a2a2a`).
+    * Verify `ContextHeaderBar` updates its repo, branch, and `Pull origin (1↓)` / `Push origin (N↑)` state and toggles `GitTerminalDrawer`.
+    * Verify `ChangesView` shows `ZeroChangesLaunchpadWidget` with 4 action cards when clean, and switches to `DiffViewer` when files are modified.
+    * Verify `HistoryView` instantiates the 3-column splitter (`RefsSidebarWidget`, center graph table with `BRANCH / TAG` column, `CommitInspectorDock`), populates hierarchical remote folders (`origin -> assets -> pr-10949`), renders the `// WIP` virtual row when dirty, and jumps to the target commit when a sidebar ref is clicked.
+
+---
 
 ## VP-3 — Git Worktrees UI, Bare-Hub Mode & Cross-Worktree Operations (`FR-1.13`, `FR-1.15`, `FR-1.17`)
 

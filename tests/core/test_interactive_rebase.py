@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import sqlite3
 import subprocess
 from dataclasses import replace
@@ -26,9 +27,18 @@ from wrench.storage.settings_registry import SettingsRegistry
 
 
 def _git(cwd: Path, *args: str) -> str:
+    env = os.environ.copy()
+    for var in (
+        "GIT_AUTHOR_NAME",
+        "GIT_AUTHOR_EMAIL",
+        "GIT_COMMITTER_NAME",
+        "GIT_COMMITTER_EMAIL",
+    ):
+        env.pop(var, None)
     res = subprocess.run(
         ["git", *args],
         cwd=cwd,
+        env=env,
         capture_output=True,
         text=True,
         check=True,
@@ -81,7 +91,7 @@ def test_list_commits_oldest_first_and_bounded(tmp_path: Path) -> None:
     for e in entries:
         assert e.action == "pick"
         assert len(e.short_oid) == 7
-        assert e.author == "Test Runner"
+        assert e.author == "Test User"
 
     bounded, truncated = engine.list_commits_for_interactive_rebase_checked(repo, base_oid, limit=2)
     assert len(bounded) == 2

@@ -1576,7 +1576,7 @@ All scripts verify the presence of the vendored native prefix (`.build/libgit2/u
 
 ### 11.4 Continuous Integration Pipeline Architecture
 GitHub Actions workflows (`.github/workflows/ci.yml`) mirror the local developer environment:
-- **Standardized Runtime**: Configured with `actions/setup-python@v5` targeting Python `3.15` across all pipeline stages (`lint`, `unit-tests`, `integration-tests`, and `ui-tests`).
+- **Standardized Runtime**: Configured with `actions/checkout@v7` and `actions/setup-python@v7` (Node.js 24 native) targeting Python `3.15` across all pipeline stages (`lint`, `unit-tests`, `integration-tests`, and `ui-tests`).
 - **Platform Abstraction Guard**: Enforces architectural boundaries (FR-11.1–FR-11.3) by verifying no platform-specific primitives (`secretstorage`, `SSH_AUTH_SOCK`, `XDG_`) leak outside `src/wrench/credentials/`, `src/wrench/core/paths.py`, or `src/wrench/core/ssh_agent.py`.
 - **Composite Setup Action (`.github/actions/setup-test-env/action.yml`)**: Installs minimal Ubuntu Qt runtime libraries (`libgl1`, `libegl1`, `libxkbcommon-x11-0`, `libdbus-1-3`, `libfontconfig1`) with GPG-strict APT retry/mirror fallback (`azure.archive.ubuntu.com` -> `archive.ubuntu.com`) and pre-built Python wheels (`--prefer-binary --only-binary=pygit2,PySide6,cffi`) under headless `QT_QPA_PLATFORM: offscreen` execution.
 

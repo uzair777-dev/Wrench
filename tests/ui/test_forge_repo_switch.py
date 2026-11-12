@@ -225,47 +225,49 @@ class TestForgeRepoSwitch:
             conn = sqlite3.connect(db_path)
             conn.row_factory = sqlite3.Row
             win = MainWindow(conn=conn)
-            qtbot.addWidget(win)
-            win.show()
+            try:
+                qtbot.addWidget(win)
+                win.show()
 
-            # Open Repo A
-            win._on_repo_changed(path_a)
+                # Open Repo A
+                win._on_repo_changed(path_a)
 
-            # Open PR list tab and Issues list tab
-            win._on_add_category_tab("pr_list")
-            win._on_add_category_tab("issues_list")
+                # Open PR list tab and Issues list tab
+                win._on_add_category_tab("pr_list")
+                win._on_add_category_tab("issues_list")
 
-            pr_idx = win.tab_container.find_tab("pr_list", path_a)
-            issues_idx = win.tab_container.find_tab("issues_list", path_a)
-            assert pr_idx is not None
-            assert issues_idx is not None
+                pr_idx = win.tab_container.find_tab("pr_list", path_a)
+                issues_idx = win.tab_container.find_tab("issues_list", path_a)
+                assert pr_idx is not None
+                assert issues_idx is not None
 
-            pr_tab = win.tab_container.widget(pr_idx)
-            issues_tab = win.tab_container.widget(issues_idx)
+                pr_tab = win.tab_container.widget(pr_idx)
+                issues_tab = win.tab_container.widget(issues_idx)
 
-            assert pr_tab.repo_path == path_a
-            assert pr_tab.table_model.rowCount() == 2
-            assert issues_tab.repo_path == path_a
-            assert issues_tab.table_model.rowCount() == 2
+                assert pr_tab.repo_path == path_a
+                assert pr_tab.table_model.rowCount() == 2
+                assert issues_tab.repo_path == path_a
+                assert issues_tab.table_model.rowCount() == 2
 
-            # Now switch to Repo B in MainWindow
-            win._on_repo_changed(path_b)
+                # Now switch to Repo B in MainWindow
+                win._on_repo_changed(path_b)
 
-            # Check that both tabs were updated to path_b
-            assert pr_tab.repo_path == path_b
-            assert pr_tab.table_model.rowCount() == 0
-            assert not pr_tab.empty_widget.isHidden()
-            assert pr_tab.table_view.isHidden()
+                # Check that both tabs were updated to path_b
+                assert pr_tab.repo_path == path_b
+                assert pr_tab.table_model.rowCount() == 0
+                assert not pr_tab.empty_widget.isHidden()
+                assert pr_tab.table_view.isHidden()
 
-            assert issues_tab.repo_path == path_b
-            assert issues_tab.table_model.rowCount() == 0
-            assert not issues_tab.empty_widget.isHidden()
-            assert issues_tab.table_view.isHidden()
+                assert issues_tab.repo_path == path_b
+                assert issues_tab.table_model.rowCount() == 0
+                assert not issues_tab.empty_widget.isHidden()
+                assert issues_tab.table_view.isHidden()
 
-            # Check that TabContainer metadata was updated to path_b
-            assert win.tab_container.find_tab("pr_list", path_b) == pr_idx
-            assert win.tab_container.find_tab("pr_list", path_a) is None
-            assert win.tab_container.find_tab("issues_list", path_b) == issues_idx
-            assert win.tab_container.find_tab("issues_list", path_a) is None
-
-            win.close()
+                # Check that TabContainer metadata was updated to path_b
+                assert win.tab_container.find_tab("pr_list", path_b) == pr_idx
+                assert win.tab_container.find_tab("pr_list", path_a) is None
+                assert win.tab_container.find_tab("issues_list", path_b) == issues_idx
+                assert win.tab_container.find_tab("issues_list", path_a) is None
+            finally:
+                win.close()
+                conn.close()

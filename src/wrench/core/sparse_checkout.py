@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+import re
+import stat
 from pathlib import Path
 
 import pygit2
@@ -11,10 +13,14 @@ from . import write_ops
 from .exceptions import GitCommandError, WrenchRepoNotFoundError
 from .models import SparseCheckoutState, TreeDirectoryEntry
 from .paths import resolve_git_dir
+from .security_sanitizer import redact_secrets
 
 logger = logging.getLogger(__name__)
 
 _FORBIDDEN_GLOB_CHARS = frozenset({"*", "?", "[", "]"})
+_MAX_SPARSE_FILE_BYTES = 2 * 1024 * 1024
+_CONE_INCLUDE_RE = re.compile(r'^/([^\x00*?#"\\]+)/$')
+_CONE_EXCLUDE_RE = re.compile(r'^!/([^\x00*?#"\\]+)/\*/$')
 
 
 def _validate_sparse_dir(rel_dir: str) -> str:
@@ -71,30 +77,134 @@ def _read_str_config(repo: pygit2.Repository, key: str) -> str | None:
         return None
 
 
+def _parse_cone_sparse_file(sparse_file: Path, *, cone_mode: bool) -> list[str] | None:
+    """Strictly parse simple cone-mode sparse-checkout files; fall back to git CLI otherwise."""
+    if not cone_mode:
+        return None
+
+    try:
+        st = sparse_file.lstat()
+    except OSError as exc:
+        logger.debug("Unable to stat sparse-checkout file '%s': %s", sparse_file, exc)
+        return None
+
+    if stat.S_ISLNK(st.st_mode) or not stat.S_ISREG(st.st_mode):
+        return None
+    if st.st_size > _MAX_SPARSE_FILE_BYTES:
+        return None
+
+    try:
+        raw = sparse_file.read_bytes()
+    except OSError as exc:
+        logger.debug("Unable to read sparse-checkout file '%s': %s", sparse_file, exc)
+        return None
+
+    if b"\0" in raw:
+        return None
+
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+
+    lines = [ln.rstrip("\r") for ln in text.splitlines() if ln.strip()]
+    if len(lines) < 2 or lines[0] != "/*" or lines[1] != "!/*/":
+        return None
+
+    includes: list[str] = []
+    include_set: set[str] = set()
+    excluded_parents: set[str] = set()
+
+    for line in lines[2:]:
+        ex_match = _CONE_EXCLUDE_RE.match(line)
+        if ex_match is not None:
+            parent = ex_match.group(1)
+            try:
+                clean_parent = _validate_sparse_dir(parent)
+            except ValueError:
+                return None
+            if clean_parent != parent or parent not in include_set or parent in excluded_parents:
+                return None
+            excluded_parents.add(parent)
+            continue
+
+        inc_match = _CONE_INCLUDE_RE.match(line)
+        if inc_match is None:
+            return None
+        inc = inc_match.group(1)
+        try:
+            clean_inc = _validate_sparse_dir(inc)
+        except ValueError:
+            return None
+        if clean_inc != inc:
+            return None
+        if inc not in include_set:
+            include_set.add(inc)
+            includes.append(inc)
+
+    # Every excluded parent container must have at least one selected descendant directory
+    for parent in excluded_parents:
+        prefix = parent + "/"
+        if not any(d.startswith(prefix) and d not in excluded_parents for d in includes):
+            return None
+
+    return [d for d in includes if d not in excluded_parents]
+
+
+def _extract_git_warnings(stderr_text: str) -> str | None:
+    """Extract and redact non-fatal git warning lines from stderr (SEC-3)."""
+    if not stderr_text:
+        return None
+    warnings: list[str] = []
+    for raw_line in stderr_text.splitlines():
+        stripped = raw_line.strip()
+        if stripped.lower().startswith("warning:"):
+            warnings.append(redact_secrets(stripped))
+    if not warnings:
+        return None
+    joined = " | ".join(warnings)
+    if len(joined) > 280:
+        return joined[:277] + "..."
+    return joined
+
+
 def is_sparse_checkout_enabled(repo_path: Path | str) -> bool:
     """Return True if sparse-checkout is enabled for the repository or linked worktree."""
     git_dir = resolve_git_dir(repo_path)
+    sparse_file = git_dir / "info" / "sparse-checkout"
+    if not sparse_file.is_file():
+        return False
     r = _open_pygit2_repo(repo_path)
-    config_enabled = _read_bool_config(r, "core.sparsecheckout", default=False)
-    sparse_file_exists = (git_dir / "info" / "sparse-checkout").is_file()
-    return config_enabled and sparse_file_exists
+    return _read_bool_config(r, "core.sparsecheckout", default=False)
 
 
 def get_sparse_checkout_state(repo_path: Path | str) -> SparseCheckoutState:
     """Inspect current sparse-checkout enablement, cone mode, selected dirs, and filter."""
+    git_dir = resolve_git_dir(repo_path)
     r = _open_pygit2_repo(repo_path)
-    enabled = is_sparse_checkout_enabled(repo_path)
-    cone_mode = _read_bool_config(r, "core.sparsecheckoutcone", default=True)
+    sparse_file = git_dir / "info" / "sparse-checkout"
+    enabled = sparse_file.is_file() and _read_bool_config(r, "core.sparsecheckout", default=False)
+    cone_mode = _read_bool_config(r, "core.sparsecheckoutcone", default=True) if enabled else True
 
-    partial_filter = _read_str_config(r, "remote.origin.partialclonefilter")
-    if partial_filter is None:
-        for remote in r.remotes:
-            val = _read_str_config(r, f"remote.{remote.name}.partialclonefilter")
-            if val is not None:
-                partial_filter = val
-                break
+    partial_filter: str | None = None
+    remote_names = [remote.name for remote in r.remotes]
+    if "origin" in remote_names:
+        remote_names = ["origin"] + [n for n in remote_names if n != "origin"]
+    for name in remote_names:
+        val = _read_str_config(r, f"remote.{name}.partialclonefilter")
+        if val is not None:
+            partial_filter = val
+            break
 
-    directories = tuple(list_sparse_directories(repo_path)) if enabled else ()
+    directories = (
+        tuple(
+            list_sparse_directories(
+                repo_path, _repo=r, _sparse_file=sparse_file, _cone_mode=cone_mode
+            )
+        )
+        if enabled
+        else ()
+    )
     return SparseCheckoutState(
         enabled=enabled,
         cone_mode=cone_mode,
@@ -111,13 +221,33 @@ def init_sparse_checkout(repo_path: Path | str, *, cone: bool = True) -> None:
     write_ops.run_git(p, ["sparse-checkout", "init", flag], check=True)
 
 
-def list_sparse_directories(repo_path: Path | str) -> list[str]:
+def list_sparse_directories(
+    repo_path: Path | str,
+    *,
+    _repo: pygit2.Repository | None = None,
+    _sparse_file: Path | None = None,
+    _cone_mode: bool | None = None,
+) -> list[str]:
     """List currently active sparse-checkout directory patterns cleanly."""
     p = Path(repo_path)
-    if not is_sparse_checkout_enabled(p):
+    sparse_file = _sparse_file or (resolve_git_dir(p) / "info" / "sparse-checkout")
+    if not sparse_file.is_file():
         return []
 
-    res = write_ops.run_git(p, ["sparse-checkout", "list"], check=False)
+    r = _repo or _open_pygit2_repo(p)
+    if not _read_bool_config(r, "core.sparsecheckout", default=False):
+        return []
+
+    cone_mode = (
+        _cone_mode
+        if _cone_mode is not None
+        else _read_bool_config(r, "core.sparsecheckoutcone", default=True)
+    )
+    parsed = _parse_cone_sparse_file(sparse_file, cone_mode=cone_mode)
+    if parsed is not None:
+        return parsed
+
+    res = write_ops.run_git(p, ["--no-optional-locks", "sparse-checkout", "list"], check=False)
     if res.returncode != 0:
         stderr_lower = res.stderr.lower()
         if ".lock" in stderr_lower or "fatal:" in stderr_lower:
@@ -144,6 +274,7 @@ def set_sparse_directories(
     dirs: list[str],
     *,
     cone: bool = True,
+    warnings_out: list[str] | None = None,
 ) -> None:
     """Set sparse-checkout directories safely via validated --stdin input."""
     p = Path(repo_path)
@@ -160,20 +291,32 @@ def set_sparse_directories(
 
     mode_flag = "--cone" if cone else "--no-cone"
     stdin_payload = ("\n".join(clean_dirs) + "\n") if clean_dirs else ""
-    write_ops.run_git(
+    res = write_ops.run_git(
         p,
         ["sparse-checkout", "set", mode_flag, "--stdin"],
         input_text=stdin_payload,
         check=True,
     )
+    if warnings_out is not None:
+        warn = _extract_git_warnings(res.stderr or "")
+        if warn:
+            warnings_out.append(warn)
 
 
-def disable_sparse_checkout(repo_path: Path | str) -> None:
+def disable_sparse_checkout(
+    repo_path: Path | str,
+    *,
+    warnings_out: list[str] | None = None,
+) -> None:
     """Disable sparse-checkout and materialize full working tree."""
     p = Path(repo_path)
     if not is_sparse_checkout_enabled(p):
         return
-    write_ops.run_git(p, ["sparse-checkout", "disable"], check=True)
+    res = write_ops.run_git(p, ["sparse-checkout", "disable"], check=True)
+    if warnings_out is not None:
+        warn = _extract_git_warnings(res.stderr or "")
+        if warn:
+            warnings_out.append(warn)
 
 
 def list_tree_subdirectories(
@@ -190,7 +333,12 @@ def list_tree_subdirectories(
     if parent_rel_path and parent_rel_path.strip():
         parent_clean = _validate_sparse_dir(parent_rel_path)
 
-    active = set(list_sparse_directories(p))
+    sparse_file = resolve_git_dir(p) / "info" / "sparse-checkout"
+    active = (
+        set(list_sparse_directories(p, _repo=r, _sparse_file=sparse_file))
+        if sparse_file.is_file() and _read_bool_config(r, "core.sparsecheckout", default=False)
+        else set()
+    )
 
     try:
         root_tree = r.head.peel(pygit2.Commit).tree
@@ -214,14 +362,17 @@ def list_tree_subdirectories(
                 continue
             name = entry.name
             rel_path = f"{parent_clean}/{name}" if parent_clean else name
-            has_children = False
-            try:
-                sub_obj = r[entry.id]
-                if isinstance(sub_obj, pygit2.Tree):
-                    has_children = any(c.type == pygit2.GIT_OBJECT_TREE for c in sub_obj)
-            except (KeyError, pygit2.GitError) as exc:
-                logger.debug("Lazy child peek fallback for '%s': %s", rel_path, exc)
-                has_children = True
+            has_children = True
+            if r.odb.exists(entry.id):
+                try:
+                    sub_obj = r[entry.id]
+                    if isinstance(sub_obj, pygit2.Tree):
+                        has_children = any(c.type == pygit2.GIT_OBJECT_TREE for c in sub_obj)
+                    else:
+                        has_children = False
+                except (KeyError, pygit2.GitError) as exc:
+                    logger.debug("Lazy child peek fallback for '%s': %s", rel_path, exc)
+                    has_children = True
 
             results.append(
                 TreeDirectoryEntry(

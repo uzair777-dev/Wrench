@@ -10,6 +10,7 @@ import threading
 import time
 from typing import Any, Callable
 
+import shiboken6
 from PySide6.QtCore import QCoreApplication, QObject, Qt, Signal, Slot
 
 logger = logging.getLogger(__name__)
@@ -21,6 +22,13 @@ def set_activity_log(log: Any) -> None:
     """Register the global activity log model for background workers."""
     global _activity_log
     _activity_log = log
+
+
+def clear_activity_log(expected_log: Any = None) -> None:
+    """Clear the global activity log reference if it matches expected_log (or unconditionally)."""
+    global _activity_log
+    if expected_log is None or _activity_log is expected_log:
+        _activity_log = None
 
 
 def _post_activity(text: str, level: str = "info") -> None:
@@ -72,6 +80,8 @@ class _Dispatcher(QObject):
     @Slot(str, str)
     def _handle_activity(self, text: str, level: str) -> None:
         if _activity_log is not None:
+            if isinstance(_activity_log, QObject) and not shiboken6.isValid(_activity_log):
+                return
             try:
                 _activity_log.post(text, level)
             except Exception as e:
@@ -83,7 +93,7 @@ _dispatcher: _Dispatcher | None = None
 
 def _get_dispatcher() -> _Dispatcher:
     global _dispatcher
-    if _dispatcher is None:
+    if _dispatcher is None or not shiboken6.isValid(_dispatcher):
         app = QCoreApplication.instance()
         _dispatcher = _Dispatcher(parent=app)
     return _dispatcher
@@ -205,6 +215,16 @@ class WorkerThread(threading.Thread):
 
 
 _active_workers: set[WorkerThread] = set()
+
+
+def wait_for_active_workers(timeout: float = 2.0) -> bool:
+    """Wait up to ``timeout`` seconds for active background WorkerThreads to finish."""
+    deadline = time.monotonic() + max(0.0, timeout)
+    for thread in list(_active_workers):
+        remaining = max(0.0, deadline - time.monotonic())
+        if thread.is_alive():
+            thread.join(timeout=remaining)
+    return all(not t.is_alive() for t in list(_active_workers))
 
 
 def run_in_background(

@@ -2,6 +2,7 @@
 
 import logging
 
+import shiboken6
 from PySide6.QtCore import QUrl, Signal
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
@@ -222,6 +223,8 @@ class PRDetailTab(QWidget):
         )
 
     def _on_pr_loaded(self, result: PullRequest | list[PullRequest]) -> None:
+        if not shiboken6.isValid(self):
+            return
         if isinstance(result, list):
             target_pr = next((p for p in result if p.id == self.pr_id), None)
         else:
@@ -257,6 +260,8 @@ class PRDetailTab(QWidget):
             )
 
     def _on_ci_loaded(self, status: CIStatus) -> None:
+        if not shiboken6.isValid(self):
+            return
         self.ci_icon.set_status(status)
         desc = status.description or f"State: {status.state.capitalize()}"
         self.ci_desc_label.setText(f"CI Status: {desc}")
@@ -267,7 +272,20 @@ class PRDetailTab(QWidget):
             self.ci_link_btn.setVisible(False)
 
     def _on_error(self, exc: Exception) -> None:
+        if not shiboken6.isValid(self):
+            return
         self.title_label.setText(f"Failed to load PR: {exc}")
+
+    def closeEvent(self, event) -> None:
+        if hasattr(self, "avatar_widget") and shiboken6.isValid(self.avatar_widget):
+            self.avatar_widget.close()
+        if self._adapter is not None:
+            try:
+                self._adapter.close()
+            except Exception as e:
+                logger.debug("Failed closing adapter in PR detail tab closeEvent: %s", e)
+            self._adapter = None
+        super().closeEvent(event)
 
     def _open_in_browser(self) -> None:
         if self._pr and self._pr.url:
@@ -289,8 +307,14 @@ class PRDetailTab(QWidget):
             int(self.pr_id),
             parent=self,
         )
-        dlg.review_submitted.connect(self._load_adapter_and_data)
-        dlg.exec()
+        dlg.review_submitted.connect(
+            lambda: self._load_adapter_and_data() if shiboken6.isValid(self) else None
+        )
+        try:
+            dlg.exec()
+        finally:
+            if shiboken6.isValid(dlg):
+                dlg.close()
 
     def _checkout_branch(self) -> None:
         if not self._pr or not self._pr.source_branch:

@@ -38,6 +38,7 @@ class SnapshotsPanel(QWidget):
         self._conn = conn if conn is not None else get_connection()
         self._repo: RepoHandle | None = None
         self._snapshots_list: list[snapshots.Snapshot] = []
+        self._needs_refresh: bool = False
 
         self._init_ui()
 
@@ -100,7 +101,16 @@ class SnapshotsPanel(QWidget):
             self._needs_refresh = False
             self.refresh()
 
+    def refresh_if_visible(self) -> None:
+        """Refresh immediately if visible, otherwise defer until shown."""
+        if self.isVisible():
+            self._needs_refresh = False
+            self.refresh()
+        else:
+            self._needs_refresh = True
+
     def refresh(self) -> None:
+        self._needs_refresh = False
         if not self._repo:
             self.table.setRowCount(0)
             return

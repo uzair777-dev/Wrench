@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import sqlite3
 import subprocess
 from pathlib import Path
@@ -9,7 +10,7 @@ from pathlib import Path
 import pygit2
 import pytest
 
-from wrench.core import engine
+from wrench.core import engine, write_ops
 from wrench.core.exceptions import WrenchRepoNotFoundError
 from wrench.core.models import (
     CommitGraphStats,
@@ -20,7 +21,11 @@ from wrench.core.models import (
 )
 from wrench.core.paths import resolve_git_dir
 from wrench.core.security_sanitizer import redact_secrets, validate_clone_url, validate_git_ref
-from wrench.core.sparse_checkout import _validate_sparse_dir
+from wrench.core.sparse_checkout import (
+    _extract_git_warnings,
+    _parse_cone_sparse_file,
+    _validate_sparse_dir,
+)
 from wrench.storage.db import run_migrations
 from wrench.storage.settings_registry import SettingsRegistry
 
@@ -391,3 +396,145 @@ def test_large_50k_line_diff_truncation_and_binary_guard(tmp_path: Path) -> None
     wt_capped = engine.get_diff(handle, "huge.txt", staged=False, max_lines=100)
     assert wt_capped.is_truncated is True
     assert sum(len(h.lines) for h in wt_capped.hunks) == 100
+
+
+def test_sparse_stale_handle_reload_main_and_worktree_no_false_deletions(tmp_path: Path) -> None:
+    """Opening RepoHandle before CLI sparse-checkout never leaves false WT_DELETED entries."""
+    main_repo = _init_repo(tmp_path / "stale_main")
+    wt_dir = tmp_path / "stale_wt"
+    _git(main_repo, "worktree", "add", "-b", "feature/stale-wt", str(wt_dir))
+
+    # Open both handles BEFORE sparse-checkout is initialized externally
+    main_handle = engine.open_repo(main_repo)
+    wt_handle = engine.open_repo(wt_dir)
+    gen_main_before = main_handle._generation
+    gen_wt_before = wt_handle._generation
+
+    _git(main_repo, "sparse-checkout", "init", "--cone")
+    _git(main_repo, "sparse-checkout", "set", "docs")
+    assert not (main_repo / "apps").exists()
+
+    # Even before reload(), _is_sparse_checkout_active detects config.worktree accurately
+    pre_status = engine.get_status(main_handle)
+    assert pre_status.staged == []
+    assert pre_status.unstaged == []
+    assert pre_status.untracked == []
+
+    # reload() bumps _generation cleanly and keeps post-reload status clean
+    engine.refresh_repo_handle(main_handle)
+    assert main_handle._generation == gen_main_before + 1
+    post_status = engine.get_status(main_handle)
+    assert post_status.unstaged == []
+
+    # Same guarantee on a linked worktree whose sparse-checkout is stored in worktree config
+    _git(wt_dir, "sparse-checkout", "init", "--cone")
+    _git(wt_dir, "sparse-checkout", "set", "libs/core")
+    wt_pre = engine.get_status(wt_handle)
+    assert wt_pre.unstaged == []
+
+    engine.refresh_repo_handle(wt_handle)
+    assert wt_handle._generation == gen_wt_before + 1
+    wt_post = engine.get_status(wt_handle)
+    assert wt_post.staged == []
+    assert wt_post.unstaged == []
+    assert wt_post.untracked == []
+
+
+def test_parse_cone_sparse_file_strict_parity_and_fallbacks(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Strict cone parser matches git sparse-checkout list & falls back on anomalies."""
+    repo = _init_repo(tmp_path / "parser_repo")
+    handle = engine.open_repo(repo)
+
+    # Normal non-sparse repo must emit zero config-lookup debug spam
+    caplog.clear()
+    with caplog.at_level(logging.DEBUG):
+        assert engine.is_sparse_checkout_enabled(repo) is False
+        engine.list_tree_subdirectories(repo)
+        engine.get_status(handle)
+
+    assert "Git config bool lookup missed 'core.sparsecheckout'" not in caplog.text
+    assert "Sparse checkout config check fell back to False" not in caplog.text
+
+    # Enable nested cone dirs so sparse-checkout file contains parent exclusions (!/apps/*/)
+    engine.set_sparse_directories(repo, ["apps/api", "docs"], cone=True)
+    sparse_file = resolve_git_dir(repo) / "info" / "sparse-checkout"
+    cli_dirs = [ln.strip().strip("/") for ln in _git(repo, "sparse-checkout", "list").splitlines()]
+    parsed = _parse_cone_sparse_file(sparse_file, cone_mode=True)
+    assert parsed == cli_dirs == ["apps/api", "docs"]
+
+    # Must return None when cone_mode=False
+    assert _parse_cone_sparse_file(sparse_file, cone_mode=False) is None
+
+    # Security / anomaly cases forcing clean CLI fallback (return None)
+    test_file = tmp_path / "synthetic-sparse"
+    for bad_text in [
+        "/*\n",  # Missing !/*/
+        "/apps/\n!/apps/*/\n",  # Wrong preamble
+        "/*\n!/*/\n# comment\n/docs/\n",  # Comments
+        '/*\n!/*/\n"/docs/"\n',  # C-quoted paths
+        "/*\n!/*/\n/docs\\n/\n",  # Backslash / escape
+        "/*\n!/*/\n/apps/?/\n",  # Glob ?
+        "/*\n!/*/\n/apps/[a]/\n",  # Glob [ ]
+        "/*\n!/*/\n/../etc/\n",  # Traversal
+        "/*\n!/*/\n/apps/\n!/apps/*/\n",  # Excluded parent without selected child
+    ]:
+        test_file.write_text(bad_text, encoding="utf-8")
+        assert _parse_cone_sparse_file(test_file, cone_mode=True) is None
+
+    # Symlink rejection
+    link_file = tmp_path / "symlink-sparse"
+    link_file.symlink_to(sparse_file)
+    assert _parse_cone_sparse_file(link_file, cone_mode=True) is None
+
+    # > 2 MiB size cap rejection
+    huge_sparse = tmp_path / "huge-sparse"
+    huge_sparse.write_bytes(b"/*\n!/*/\n" + b"x" * (2 * 1024 * 1024 + 16))
+    assert _parse_cone_sparse_file(huge_sparse, cone_mode=True) is None
+
+    # End-to-end --no-cone fallback via git CLI still returns exact patterns
+    _git(repo, "sparse-checkout", "set", "--no-cone", "README.md", "docs/*.md")
+    state = engine.get_sparse_checkout_state(repo)
+    assert state.enabled is True
+    assert state.cone_mode is False
+    assert "README.md" in state.directories
+
+
+def test_sparse_checkout_nonfatal_warnings_extracted_and_redacted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Non-fatal git sparse-checkout stderr warnings are captured and secret-redacted."""
+    repo = _init_repo(tmp_path / "warn_repo")
+    engine.set_sparse_directories(repo, ["apps/api", "docs"], cone=True)
+
+    # Modify docs/guide.md locally then remove 'docs' from sparse cone:
+    # Git keeps the dirty file and emits a non-fatal warning on stderr with exit code 0.
+    (repo / "docs" / "guide.md").write_text("# Uncommitted guide\n", encoding="utf-8")
+    real_warnings: list[str] = []
+    engine.set_sparse_directories(repo, ["apps/api"], cone=True, warnings_out=real_warnings)
+    assert (repo / "docs" / "guide.md").exists()
+    assert len(real_warnings) == 1
+    assert "warning:" in real_warnings[0].lower()
+
+    # Secret redaction check via _extract_git_warnings & set_sparse_directories
+    leaked = (
+        "warning: failed sync for https://alice:s3cr3tpass@github.com/org/repo.git "
+        "using ghp_1234567890abcdef\n"
+    )
+    cleaned = _extract_git_warnings(leaked)
+    assert cleaned is not None
+    assert "s3cr3tpass" not in cleaned
+    assert "ghp_1234567890abcdef" not in cleaned
+    assert "https://***:***@github.com/org/repo.git" in cleaned
+
+    monkeypatch.setattr(
+        write_ops,
+        "run_git",
+        lambda *_args, **_kw: subprocess.CompletedProcess(["git"], 0, stdout="", stderr=leaked),
+    )
+    redacted_out: list[str] = []
+    engine.set_sparse_directories(repo, ["apps/api"], cone=True, warnings_out=redacted_out)
+    assert len(redacted_out) == 1
+    assert "s3cr3tpass" not in redacted_out[0]
+    assert "ghp_1234567890abcdef" not in redacted_out[0]

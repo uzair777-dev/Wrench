@@ -24,6 +24,7 @@ from wrench.ui.theme import (
     DIFF_TEXT_COLOR,
     SECONDARY_TEXT,
     get_banner_style,
+    get_secondary_button_style,
     is_dark_theme,
 )
 
@@ -114,6 +115,8 @@ class DiffWidget(QWidget):
         self.editor.setLineWrapMode(QTextEdit.NoWrap)
         layout.addWidget(self.editor)
 
+        self._apply_banner_theme(is_dark_theme(self))
+
     def set_settings_registry(self, registry: SettingsRegistry | None) -> None:
         self._settings_registry = registry
 
@@ -141,6 +144,8 @@ class DiffWidget(QWidget):
         self.truncation_label.setStyleSheet(
             f"color: {style['fg']}; font-weight: bold; border: none; background: transparent;"
         )
+        if hasattr(self, "load_full_diff_btn"):
+            self.load_full_diff_btn.setStyleSheet(get_secondary_button_style(is_dark, compact=True))
 
     def _on_load_full_diff_clicked(self) -> None:
         prev_diff = self._diff

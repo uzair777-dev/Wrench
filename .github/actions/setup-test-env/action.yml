@@ -1,0 +1,86 @@
+name: 'Setup Wrench Test Environment'
+description: 'Installs minimal Qt runtime libraries with GPG-strict APT retry/mirror fallback and pre-built Python wheels.'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Install Qt runtime system dependencies
+      shell: bash
+      run: |
+        set -euo pipefail
+        PKGS=(libgl1 libegl1 libxkbcommon-x11-0 libdbus-1-3 libfontconfig1)
+        MISSING=()
+        for pkg in "${PKGS[@]}"; do
+          if ! dpkg -s "$pkg" >/dev/null 2>&1; then
+            MISSING+=("$pkg")
+          fi
+        done
+
+        if [ "${#MISSING[@]}" -eq 0 ]; then
+          echo "All required Qt runtime packages are already present."
+        else
+          APT_OPTS=(
+            -o APT::Update::Error-Mode=any
+            -o Acquire::Retries=5
+            -o Acquire::http::Timeout=20
+            -o Acquire::https::Timeout=20
+            -o Acquire::ForceIPv4=true
+          )
+
+          switch_from_azure_mirror() {
+            echo "Azure Ubuntu mirror unreachable; switching apt mirror config to archive.ubuntu.com..."
+            sudo apt-get clean || true
+            local f
+            shopt -s nullglob
+            for f in /etc/apt/apt-mirrors.txt /etc/apt/sources.list /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources; do
+              if [ -f "$f" ] && grep -q 'azure\.archive\.ubuntu\.com' "$f"; then
+                sudo sed -i 's|azure\.archive\.ubuntu\.com|archive.ubuntu.com|g' "$f"
+              fi
+            done
+            shopt -u nullglob
+          }
+
+          installed=false
+          for attempt in 1 2 3; do
+            echo "APT setup attempt $attempt/3 for packages: ${MISSING[*]}"
+            log_file="$(mktemp)"
+            set +e
+            {
+              sudo apt-get "${APT_OPTS[@]}" update && \
+              sudo DEBIAN_FRONTEND=noninteractive apt-get "${APT_OPTS[@]}" install -y --no-install-recommends "${MISSING[@]}"
+            } 2>&1 | tee "$log_file"
+            rc=${PIPESTATUS[0]}
+            set -e
+
+            if [ "$rc" -eq 0 ]; then
+              rm -f "$log_file"
+              installed=true
+              break
+            fi
+
+            if [ "$attempt" -eq 1 ] && grep -qi 'azure\.archive\.ubuntu\.com' "$log_file"; then
+              switch_from_azure_mirror
+            fi
+            rm -f "$log_file"
+
+            if [ "$attempt" -lt 3 ]; then
+              if [ "$attempt" -eq 1 ]; then
+                sleep 5
+              else
+                sleep 15
+              fi
+            fi
+          done
+
+          if [ "$installed" != "true" ]; then
+            echo "::error::Failed to install Qt runtime packages after 3 attempts: ${MISSING[*]}"
+            exit 1
+          fi
+        fi
+
+    - name: Install Python test dependencies (pre-built wheels)
+      shell: bash
+      run: |
+        set -euo pipefail
+        python -m pip install --prefer-binary --only-binary=pygit2,PySide6,cffi -e ".[dev]"
+        python -c "import pygit2, PySide6, shiboken6, pytestqt; print('Verified:', pygit2.__version__, PySide6.__version__)"

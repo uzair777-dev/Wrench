@@ -1,6 +1,7 @@
 """Unit tests for engine remotes management and façade remote operations."""
 
 import sqlite3
+from unittest.mock import patch
 
 import pytest
 
@@ -118,31 +119,37 @@ class TestEngineRemotesManagement:
 
         db_file = tmp_path / "test.db"
         conn = sqlite3.connect(str(db_file))
-        conn.row_factory = sqlite3.Row
-        conn.execute("""CREATE TABLE app_settings (
-                key TEXT PRIMARY KEY,
-                value TEXT NOT NULL,
-                updated_at TEXT DEFAULT CURRENT_TIMESTAMP
-            )""")
-        conn.commit()
+        try:
+            conn.row_factory = sqlite3.Row
+            conn.execute("""CREATE TABLE app_settings (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL,
+                    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+                )""")
+            conn.commit()
 
-        engine.add_remote(
-            repo,
-            "upstream",
-            "https://github.com/upstream/repo.git",
-            db_conn=conn,
-        )
+            with patch("wrench.core.engine._probe_reachability"):
+                engine.add_remote(
+                    repo,
+                    "upstream",
+                    "https://github.com/upstream/repo.git",
+                    db_conn=conn,
+                )
 
-        remotes = [r.name for r in engine.list_remotes(repo, db_conn=conn)]
-        assert "upstream" in remotes
+            remotes = [r.name for r in engine.list_remotes(repo, db_conn=conn)]
+            assert "upstream" in remotes
 
-        # Verify credential helper configuration was applied
-        h = write_ops.run_git(clone1_dir, ["config", "--local", "credential.helper"]).stdout.strip()
-        p = write_ops.run_git(
-            clone1_dir, ["config", "--local", "credential.useHttpPath"]
-        ).stdout.strip()
-        assert h == "wrench"
-        assert p == "true"
+            # Verify credential helper configuration was applied
+            h = write_ops.run_git(
+                clone1_dir, ["config", "--local", "credential.helper"]
+            ).stdout.strip()
+            p = write_ops.run_git(
+                clone1_dir, ["config", "--local", "credential.useHttpPath"]
+            ).stdout.strip()
+            assert h == "wrench"
+            assert p == "true"
+        finally:
+            conn.close()
 
     def test_remove_remote(self, bare_repo_fixture):
         _, clone1_dir = bare_repo_fixture

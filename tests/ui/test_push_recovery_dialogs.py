@@ -34,8 +34,11 @@ class TestSecretScanningDialog:
             unblock_url="https://github.com/org/repo/security/secret-scanning/unblock-secret/xyz",
         )
         dlg = SecretScanningDialog(exc)
-        assert "Stripe API Key" in dlg.secret_type_label.text()
-        assert "backend/billing.py:42" in dlg.location_label.text()
+        try:
+            assert "Stripe API Key" in dlg.secret_type_label.text()
+            assert "backend/billing.py:42" in dlg.location_label.text()
+        finally:
+            dlg.close()
 
     def test_unblock_button_opens_url(self):
         exc = SecretScanningRejectedError(
@@ -43,14 +46,20 @@ class TestSecretScanningDialog:
             unblock_url="https://github.com/org/repo/security/secret-scanning/unblock-secret/xyz",
         )
         dlg = SecretScanningDialog(exc)
-        with patch("PySide6.QtGui.QDesktopServices.openUrl") as mock_open:
-            dlg.unblock_btn.click()
-            mock_open.assert_called_once()
+        try:
+            with patch("PySide6.QtGui.QDesktopServices.openUrl") as mock_open:
+                dlg.unblock_btn.click()
+                mock_open.assert_called_once()
+        finally:
+            dlg.close()
 
     def test_no_unblock_url_disables_button(self):
         exc = SecretScanningRejectedError("Secret detected")
         dlg = SecretScanningDialog(exc)
-        assert not dlg.unblock_btn.isEnabled()
+        try:
+            assert not dlg.unblock_btn.isEnabled()
+        finally:
+            dlg.close()
 
 
 class TestProtectedBranchDialog:
@@ -61,7 +70,10 @@ class TestProtectedBranchDialog:
             reason="Changes must be made through a pull request",
         )
         dlg = ProtectedBranchDialog(exc, default_new_branch="patch-1")
-        assert dlg.branch_name_edit.text() == "patch-1"
+        try:
+            assert dlg.branch_name_edit.text() == "patch-1"
+        finally:
+            dlg.close()
 
     def test_get_new_branch_name(self):
         exc = ProtectedBranchRejectedError(
@@ -69,7 +81,10 @@ class TestProtectedBranchDialog:
             branch_name="main",
         )
         dlg = ProtectedBranchDialog(exc, default_new_branch="fix/my-change")
-        assert dlg.get_new_branch_name() == "fix/my-change"
+        try:
+            assert dlg.get_new_branch_name() == "fix/my-change"
+        finally:
+            dlg.close()
 
 
 class TestFileTooLargeDialog:
@@ -81,5 +96,8 @@ class TestFileTooLargeDialog:
             limit_mb=100.0,
         )
         dlg = FileTooLargeDialog(exc)
-        assert "data/raw.parquet" in dlg.filename_label.text()
-        assert "155.2" in dlg.filesize_label.text()
+        try:
+            assert "data/raw.parquet" in dlg.filename_label.text()
+            assert "155.2" in dlg.filesize_label.text()
+        finally:
+            dlg.close()

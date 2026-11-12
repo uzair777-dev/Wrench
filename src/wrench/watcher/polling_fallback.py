@@ -50,6 +50,8 @@ class PollingFallback(QObject):
             self._git_dir / "HEAD",
             self._git_dir / "index",
             self._git_dir / "packed-refs",
+            self._git_dir / "config",
+            self._git_dir / "config.worktree",
             self._git_dir / "info" / "sparse-checkout",
         ]
         refs_dir = self._git_dir / "refs"

@@ -4,12 +4,14 @@ import logging
 import time
 from typing import Any
 
+import shiboken6
 from PySide6.QtCore import (
     QAbstractTableModel,
     QModelIndex,
     Qt,
     QTimer,
     Signal,
+    Slot,
 )
 from PySide6.QtGui import QPainter
 from PySide6.QtWidgets import (
@@ -215,8 +217,9 @@ class PRListTab(QWidget):
         self.table_model = PRTableModel(self)
         self.table_view.setModel(self.table_model)
         self.table_view.setItemDelegateForColumn(4, PRStateDelegate(self))
+        self._avatar_loader_connected: bool = False
         get_avatar_loader().avatar_ready.connect(self._on_avatar_ready)
-        self.destroyed.connect(self._disconnect_avatar_loader)
+        self._avatar_loader_connected = True
 
         self.table_view.setSelectionBehavior(QTableView.SelectRows)
         self.table_view.setSelectionMode(QTableView.SingleSelection)
@@ -254,16 +257,34 @@ class PRListTab(QWidget):
         self.empty_widget.setVisible(False)
         main_layout.addWidget(self.empty_widget, 1)
 
+    def closeEvent(self, event) -> None:
+        self._load_generation += 1
+        if hasattr(self, "_debounce_timer") and shiboken6.isValid(self._debounce_timer):
+            self._debounce_timer.stop()
+        if hasattr(self, "error_banner") and shiboken6.isValid(self.error_banner):
+            self.error_banner.hide_banner()
+        if self._active_adapter is not None:
+            try:
+                self._active_adapter.close()
+            except Exception as e:
+                logger.debug("Failed closing active adapter in pr tab closeEvent: %s", e)
+            self._active_adapter = None
+        self._disconnect_avatar_loader()
+        super().closeEvent(event)
+
     def _disconnect_avatar_loader(self, *_) -> None:
+        if not getattr(self, "_avatar_loader_connected", False):
+            return
+        self._avatar_loader_connected = False
         try:
             get_avatar_loader().avatar_ready.disconnect(self._on_avatar_ready)
         except RuntimeError, TypeError:
             pass
 
-    def _on_avatar_ready(self, *_) -> None:
+    @Slot(str, int)
+    @Slot()
+    def _on_avatar_ready(self, *_args: Any) -> None:
         try:
-            import shiboken6
-
             if not shiboken6.isValid(self) or not hasattr(self, "table_view"):
                 return
             if not shiboken6.isValid(self.table_view):
@@ -356,7 +377,7 @@ class PRListTab(QWidget):
     def _on_prs_loaded(
         self, prs: list[PullRequest], gen_id: int, cache_key: tuple[str, str]
     ) -> None:
-        if gen_id != self._load_generation:
+        if not shiboken6.isValid(self) or gen_id != self._load_generation:
             return
 
         self.refresh_btn.setEnabled(True)
@@ -374,7 +395,7 @@ class PRListTab(QWidget):
             self.table_view.setVisible(True)
 
     def _on_prs_failed(self, exc: Exception, gen_id: int) -> None:
-        if gen_id != self._load_generation:
+        if not shiboken6.isValid(self) or gen_id != self._load_generation:
             return
         self.refresh_btn.setEnabled(True)
         self.error_banner.show_error(exc)
@@ -453,8 +474,14 @@ class PRListTab(QWidget):
             current_branch=current,
             parent=self,
         )
-        dlg.pr_created.connect(lambda _: self.load_prs(bypass_cache=True))
-        dlg.exec()
+        dlg.pr_created.connect(
+            lambda _: self.load_prs(bypass_cache=True) if shiboken6.isValid(self) else None
+        )
+        try:
+            dlg.exec()
+        finally:
+            if shiboken6.isValid(dlg):
+                dlg.close()
 
     def _on_error_banner_action(self, action: str) -> None:
         if action == "retry":

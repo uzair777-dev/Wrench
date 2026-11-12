@@ -55,6 +55,7 @@ class HistoryTab(QWidget):
         super().__init__(parent)
         self._repo: RepoHandle | None = None
         self._settings_registry: SettingsRegistry | None = settings_registry
+        self._last_refs_signature: tuple[str, bool, bool, str, str, str] | None = None
         self._debounce_timer = QTimer(self)
         self._debounce_timer.setSingleShot(True)
         self._debounce_timer.setInterval(300)
@@ -182,19 +183,39 @@ class HistoryTab(QWidget):
 
     def set_repo(self, repo: RepoHandle | None) -> None:
         self._repo = repo
+        self._last_refs_signature = None
         self.detail_panel.set_repo(repo)
-        self.refresh()
+        self.refresh(force=True)
 
-    def refresh(self) -> None:
-        """Refreshes the history view state."""
+    def _refs_signature(self) -> tuple[str, bool, bool, str, str, str] | None:
         if not self._repo:
+            return None
+        return engine.get_repo_refs_signature(self._repo)
+
+    def refresh(self, force: bool = False) -> None:
+        """Refreshes the history view state when refs change or when forced."""
+        if not self._repo:
+            self._last_refs_signature = None
             self._show_no_repo_state()
             return
 
+        sig = self._refs_signature()
+        if (
+            not force
+            and sig is not None
+            and self._last_refs_signature is not None
+            and sig == self._last_refs_signature
+        ):
+            return
+
         try:
-            is_unborn = self._repo.pygit2_repo.head_is_unborn
+            is_unborn = sig[1] if sig is not None else self._repo.pygit2_repo.head_is_unborn
             if is_unborn:
                 self.graph_widget.setVisible(False)
+                self.empty_title.setText(self.tr("No history yet"))
+                self.empty_sub.setText(
+                    self.tr("Make your first commit to see the branch graph here.")
+                )
                 self.empty_state_widget.setVisible(True)
                 self.detail_panel.set_commit(None)
             else:
@@ -203,6 +224,7 @@ class HistoryTab(QWidget):
                 self.graph_widget.set_repo(self._repo)
 
             self._populate_authors()
+            self._last_refs_signature = sig
         except Exception as e:
             logger.error("Failed to refresh history tab: %s", e)
 
@@ -302,6 +324,15 @@ class HistoryTab(QWidget):
                 self.content_splitter.restoreState(byte_array)
             except Exception as e:
                 logger.warning("Could not restore history splitter state: %s", e)
+
+    def closeEvent(self, event) -> None:
+        if hasattr(self, "_debounce_timer"):
+            self._debounce_timer.stop()
+        if hasattr(self, "graph_widget"):
+            self.graph_widget.close()
+        if hasattr(self, "detail_panel"):
+            self.detail_panel.close()
+        super().closeEvent(event)
 
     def changeEvent(self, event: QEvent) -> None:
         super().changeEvent(event)

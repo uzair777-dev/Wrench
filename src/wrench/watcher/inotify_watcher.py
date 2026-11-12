@@ -72,6 +72,8 @@ class _GitDirMetadataHandler(FileSystemEventHandler):
                 str(resolved_git / "HEAD"),
                 str(resolved_git / "index"),
                 str(resolved_git / "packed-refs"),
+                str(resolved_git / "config"),
+                str(resolved_git / "config.worktree"),
                 str(resolved_git / "info" / "sparse-checkout"),
             }
         )
@@ -130,7 +132,7 @@ class RepoWatcher(QObject):
         repo_path: Path | str,
         on_change=None,
         parent=None,
-        debounce_ms: int = 300,
+        debounce_ms: int | None = None,
         settings_registry: SettingsRegistry | None = None,
     ):
         super().__init__(parent)
@@ -140,6 +142,9 @@ class RepoWatcher(QObject):
         self._observer: Observer | None = None
         self._fallback: PollingFallback | None = None
         self._is_stopped = False
+        self._event_pending = False
+        self._suppress_depth = 0
+        self._pending_resumes = 0
         self._lock = threading.Lock()
         self._start_thread: threading.Thread | None = None
         self._ready_event = threading.Event()
@@ -154,15 +159,22 @@ class RepoWatcher(QObject):
         if on_change:
             self.status_changed.connect(on_change)
 
-        effective_debounce = debounce_ms
         reg = self._resolve_registry()
-        if reg is not None:
+        if debounce_ms is not None:
+            effective_debounce = debounce_ms
+        elif reg is not None:
             effective_debounce = reg.get_int("watcher.debounce_ms", str(self._repo_path))
+        else:
+            effective_debounce = 300
 
         self._debounce_timer = QTimer(self)
         self._debounce_timer.setSingleShot(True)
         self._debounce_timer.setInterval(max(50, effective_debounce))
         self._debounce_timer.timeout.connect(self._on_timer_timeout)
+
+        self._resume_timer = QTimer(self)
+        self._resume_timer.setSingleShot(True)
+        self._resume_timer.timeout.connect(self._on_resume_timer_timeout)
 
         # Cross-thread safe: Qt queues worker events to the owning GUI thread
         self._raw_event_signal.connect(self._on_fs_event_queued, Qt.ConnectionType.QueuedConnection)
@@ -176,7 +188,6 @@ class RepoWatcher(QObject):
         )
 
         self._connect_settings_registry()
-        self.destroyed.connect(self._disconnect_settings_registry)
 
     def _resolve_registry(self) -> SettingsRegistry | None:
         return self._settings_registry or peek_settings_registry()
@@ -296,8 +307,56 @@ class RepoWatcher(QObject):
             fallback.start()
         self.adaptive_fallback_activated.emit("polling", reason)
 
+    def suspend(self) -> None:
+        """Suppress filesystem event queuing during internal mass worktree writes."""
+        with self._lock:
+            self._suppress_depth = max(0, self._suppress_depth - self._pending_resumes) + 1
+            self._pending_resumes = 0
+            self._event_pending = False
+        if qt_is_valid(self):
+            self._resume_timer.stop()
+            self._debounce_timer.stop()
+
+    @Slot()
+    def _on_resume_timer_timeout(self) -> None:
+        with self._lock:
+            if self._is_stopped:
+                self._suppress_depth = 0
+                self._pending_resumes = 0
+                return
+            consume = self._pending_resumes
+            self._pending_resumes = 0
+            self._suppress_depth = max(0, self._suppress_depth - consume)
+            self._event_pending = False
+
+    def resume(self, grace_ms: int = 150) -> None:
+        """Re-enable event queuing immediately or after a grace window for kernel tail events."""
+        if grace_ms <= 0 or not qt_is_valid(self):
+            with self._lock:
+                if self._is_stopped:
+                    self._suppress_depth = 0
+                    self._pending_resumes = 0
+                    return
+                self._suppress_depth = max(0, self._suppress_depth - 1)
+                if self._pending_resumes > self._suppress_depth:
+                    self._pending_resumes = self._suppress_depth
+                self._event_pending = False
+            if qt_is_valid(self) and self._pending_resumes == 0:
+                self._resume_timer.stop()
+            return
+        with self._lock:
+            if self._is_stopped:
+                return
+            self._pending_resumes += 1
+        if qt_is_valid(self):
+            self._resume_timer.start(grace_ms)
+
     @Slot()
     def _on_fs_event_queued(self):
+        with self._lock:
+            self._event_pending = False
+            if self._is_stopped or self._suppress_depth > 0:
+                return
         if qt_is_valid(self):
             self._debounce_timer.start()
 
@@ -305,6 +364,9 @@ class RepoWatcher(QObject):
     def _on_timer_timeout(self):
         if not qt_is_valid(self):
             return
+        with self._lock:
+            if self._is_stopped or self._suppress_depth > 0:
+                return
         logger.debug(
             "[watcher] Debounce timer expired, emitting status_changed for %s",
             self._repo_path,
@@ -312,6 +374,10 @@ class RepoWatcher(QObject):
         self.status_changed.emit()
 
     def _on_watchdog_event(self):
+        with self._lock:
+            if self._is_stopped or self._suppress_depth > 0 or self._event_pending:
+                return
+            self._event_pending = True
         self._raw_event_signal.emit()
 
     def _schedule_git_dir_inotify(self, git_dir: Path, reason: str) -> WatcherStatusInfo:
@@ -365,6 +431,7 @@ class RepoWatcher(QObject):
         self._connect_settings_registry()
         with self._lock:
             self._is_stopped = False
+            self._event_pending = False
             self._ready_event.clear()
 
         if not self._inotify_enabled():
@@ -461,7 +528,9 @@ class RepoWatcher(QObject):
         return self._ready_event.wait(timeout)
 
     def _stop_active_backends(self) -> None:
-        self._debounce_timer.stop()
+        if qt_is_valid(self):
+            self._resume_timer.stop()
+            self._debounce_timer.stop()
         with self._lock:
             obs = self._observer
             self._observer = None
@@ -480,6 +549,9 @@ class RepoWatcher(QObject):
     def stop(self) -> None:
         with self._lock:
             self._is_stopped = True
+            self._event_pending = False
+            self._suppress_depth = 0
+            self._pending_resumes = 0
         self._disconnect_settings_registry()
         self._stop_active_backends()
         logger.debug("[watcher] Stopped watcher for %s", self._repo_path)

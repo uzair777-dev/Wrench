@@ -239,3 +239,54 @@ class TestClonePicker:
             record = repo_registry.get_repo_by_path(db_conn, expected_dest)
             assert record is not None
         win.close()
+
+    def test_clone_empty_dest_ux_and_repo_name_sanitization(self, db_conn, tmp_path):
+        """Empty destination shows clean prompt text and traversal-like URLs sanitize safely."""
+        dlg = CloneDialog(conn=db_conn)
+        assert dlg.resolved_dest_label.text() == "Choose a folder above to set destination path"
+        assert "<choose destination>" not in dlg.resolved_dest_label.text().lower()
+        assert "<destination>/repository" in dlg.preview_bar.preview_text
+
+        for evil_url in [
+            "https://example.com/org/..",
+            "https://example.com/org/..git",
+            "https://example.com/org/.",
+            "https://example.com/org/--upload-pack.git",
+            "https://example.com/org/.git",
+        ]:
+            dlg.url_input.setText(evil_url)
+            assert dlg.repo_name() == "repository"
+
+        dlg.url_input.setText("https://example.com/org/")
+        assert dlg.repo_name() == "org"
+
+        dlg.url_input.setText("git@github.com:org/monorepo.git?tab=1#top")
+        assert dlg.repo_name() == "monorepo"
+        dlg.dest_parent_input.setText(str(tmp_path))
+        assert dlg.resolved_dest_label.text() == str(tmp_path / "monorepo")
+        dlg.close()
+
+        # MainWindow boundary defense if a stubbed dialog injects a '..' repo_name()
+        win = MainWindow(conn=db_conn)
+        safe_parent = tmp_path / "safe_root"
+        safe_parent.mkdir(parents=True, exist_ok=True)
+
+        class _BadCloneStub(CloneDialog):
+            def repo_name(self) -> str:
+                return ".."
+
+        def _fake_exec(d):
+            d.url_input.setText("https://github.com/org/repo.git")
+            d.dest_parent_input.setText(str(safe_parent))
+            return QDialog.DialogCode.Accepted
+
+        with (
+            patch("wrench.ui.main_window.CloneDialog", _BadCloneStub),
+            patch.object(win, "_exec_dialog", side_effect=_fake_exec),
+            patch("wrench.ui.main_window.run_in_background") as mock_bg,
+            patch("wrench.ui.main_window.QMessageBox.critical") as mock_crit,
+        ):
+            win._on_clone_repo()
+            assert not mock_bg.called
+            assert mock_crit.called
+        win.close()

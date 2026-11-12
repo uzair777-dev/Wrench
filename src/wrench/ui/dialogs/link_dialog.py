@@ -209,7 +209,10 @@ class LinkRepoDialog(QDialog):
 
     def _open_accounts_manager(self) -> None:
         dlg = AccountsDialog(self)
-        dlg.exec()
+        try:
+            dlg.exec()
+        finally:
+            dlg.close()
         self.reload_data()
 
     def _save_links(self) -> None:

@@ -32,6 +32,7 @@ class TestLazyTabConstruction:
         assert isinstance(meta.widget, QFrame)
         assert meta.widget.accessibleName() == "not loaded"
         assert call_count == 0, "Factory must NOT be called before activation"
+        container.close()
 
     def test_factory_called_on_activation(self, qapp):
         """set_current_index triggers ensure_loaded and invokes the factory exactly once."""
@@ -58,6 +59,7 @@ class TestLazyTabConstruction:
         assert meta.is_loaded is True
         assert meta.factory is None
         assert meta.widget.objectName() == "real_content"
+        container.close()
 
     def test_double_activation_does_not_call_factory_again(self, qapp):
         """Switching to an already-loaded lazy tab must not invoke the factory a second time."""
@@ -79,6 +81,7 @@ class TestLazyTabConstruction:
         container.set_current_index(0)
         container.set_current_index(idx)
         assert call_count == 1, "Factory must be called exactly once"
+        container.close()
 
     def test_ensure_loaded_returns_widget(self, qapp):
         """ensure_loaded returns the materialised widget."""
@@ -88,6 +91,7 @@ class TestLazyTabConstruction:
         idx = container.add_tab(lambda: target_label, "Lazy", tab_type="el", activate=False)
         result = container.ensure_loaded(idx)
         assert result is target_label
+        container.close()
 
     def test_eager_tab_not_affected(self, qapp):
         """add_tab with a QWidget directly still works as before."""
@@ -99,6 +103,7 @@ class TestLazyTabConstruction:
         assert meta.is_loaded is True
         assert meta.factory is None
         assert meta.widget is w
+        container.close()
 
     def test_deduplication_works_with_lazy_tabs(self, qapp):
         """find_tab / deduplication operates on metadata without forcing load."""
@@ -124,6 +129,7 @@ class TestLazyTabConstruction:
 
         meta = container.tab_metadata(idx1)
         assert meta.is_loaded is False, "Deduplication must not force-load the tab"
+        container.close()
 
     def test_pinning_works_with_lazy_tabs(self, qapp):
         """Pinning/unpinning operates on metadata without forcing load."""
@@ -135,6 +141,7 @@ class TestLazyTabConstruction:
         meta = container.tab_metadata(idx)
         assert meta.is_pinned is True
         assert meta.is_loaded is False, "Pinning must not force-load the tab"
+        container.close()
 
 
 class TestLoadingOverlay:
@@ -153,6 +160,7 @@ class TestLoadingOverlay:
         container.hide_loading()
         assert container._loading_overlay.isHidden()
         assert not container._loading_overlay.isVisible()
+        container.close()
 
 
 class TestSessionRestoreLazyTabs:
@@ -186,25 +194,27 @@ class TestSessionRestoreLazyTabs:
 
         with patch("wrench.storage.db.get_connection", return_value=conn):
             mw = MainWindow(conn=conn)
+            try:
+                # Tab 0 (changes) should be loaded because active_index=0
+                meta0 = mw.tab_container.tab_metadata(0)
+                assert meta0.is_loaded is True
 
-            # Tab 0 (changes) should be loaded because active_index=0
-            meta0 = mw.tab_container.tab_metadata(0)
-            assert meta0.is_loaded is True
+                # Tab 1 (pr_list) should NOT be loaded
+                meta1 = mw.tab_container.tab_metadata(1)
+                assert meta1.is_loaded is False
+                assert meta1.factory is not None
 
-            # Tab 1 (pr_list) should NOT be loaded
-            meta1 = mw.tab_container.tab_metadata(1)
-            assert meta1.is_loaded is False
-            assert meta1.factory is not None
+                # Tab 2 (issues_list) should NOT be loaded
+                meta2 = mw.tab_container.tab_metadata(2)
+                assert meta2.is_loaded is False
+                assert meta2.factory is not None
 
-            # Tab 2 (issues_list) should NOT be loaded
-            meta2 = mw.tab_container.tab_metadata(2)
-            assert meta2.is_loaded is False
-            assert meta2.factory is not None
-
-            # Activating tab 1 should materialise it
-            mw.tab_container.set_current_index(1)
-            meta1_after = mw.tab_container.tab_metadata(1)
-            assert meta1_after.is_loaded is True
-            assert meta1_after.factory is None
+                # Activating tab 1 should materialise it
+                mw.tab_container.set_current_index(1)
+                meta1_after = mw.tab_container.tab_metadata(1)
+                assert meta1_after.is_loaded is True
+                assert meta1_after.factory is None
+            finally:
+                mw.close()
 
         conn.close()

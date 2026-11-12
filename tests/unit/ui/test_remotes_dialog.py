@@ -70,21 +70,26 @@ class TestRemotesDialog:
 
     def test_remotes_dialog_add_remote(self, repo_with_remote, db_conn):
         dialog = RemotesDialog(repo_with_remote, db_conn=db_conn)
+        try:
+            with (
+                patch("wrench.core.engine._probe_reachability"),
+                patch(
+                    "wrench.ui.dialogs.remotes_dialog.AddRemoteDialog.get_remote_data"
+                ) as mock_get,
+            ):
+                mock_get.return_value = ("upstream", "https://github.com/upstream/repo.git")
+                dialog._on_add_remote()
 
-        with patch("wrench.ui.dialogs.remotes_dialog.AddRemoteDialog.get_remote_data") as mock_get:
-            mock_get.return_value = ("upstream", "https://github.com/upstream/repo.git")
-            dialog._on_add_remote()
+            table = dialog.table
+            assert table.rowCount() == 2
+            names = [table.item(i, 0).text() for i in range(2)]
+            assert "origin" in names
+            assert "upstream" in names
 
-        table = dialog.table
-        assert table.rowCount() == 2
-        names = [table.item(i, 0).text() for i in range(2)]
-        assert "origin" in names
-        assert "upstream" in names
-
-        remotes = [r.name for r in repo_with_remote.pygit2_repo.remotes]
-        assert "upstream" in remotes
-
-        dialog.close()
+            remotes = [r.name for r in repo_with_remote.pygit2_repo.remotes]
+            assert "upstream" in remotes
+        finally:
+            dialog.close()
 
     def test_remotes_dialog_add_remote_validation_error(self, repo_with_remote, db_conn):
         dialog = RemotesDialog(repo_with_remote, db_conn=db_conn)

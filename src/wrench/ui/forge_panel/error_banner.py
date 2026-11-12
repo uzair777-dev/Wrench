@@ -2,6 +2,7 @@
 
 import time
 
+import shiboken6
 from PySide6.QtCore import QTimer, Signal
 from PySide6.QtWidgets import (
     QFrame,
@@ -127,6 +128,10 @@ class ForgeErrorBanner(QFrame):
             self.action_btn.setVisible(True)
 
     def _on_tick(self) -> None:
+        if not shiboken6.isValid(self) or not self.isVisible():
+            if hasattr(self, "_countdown_timer") and shiboken6.isValid(self._countdown_timer):
+                self._countdown_timer.stop()
+            return
         self._update_rate_limit_text()
 
     def _on_action_clicked(self) -> None:
@@ -135,5 +140,16 @@ class ForgeErrorBanner(QFrame):
             self.action_requested.emit(str(act))
 
     def hide_banner(self) -> None:
-        self._countdown_timer.stop()
+        if hasattr(self, "_countdown_timer") and shiboken6.isValid(self._countdown_timer):
+            self._countdown_timer.stop()
         self.setVisible(False)
+
+    def hideEvent(self, event) -> None:
+        if hasattr(self, "_countdown_timer") and shiboken6.isValid(self._countdown_timer):
+            self._countdown_timer.stop()
+        super().hideEvent(event)
+
+    def closeEvent(self, event) -> None:
+        if hasattr(self, "_countdown_timer") and shiboken6.isValid(self._countdown_timer):
+            self._countdown_timer.stop()
+        super().closeEvent(event)

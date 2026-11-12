@@ -19,7 +19,9 @@ def changes_tab(qtbot, simple_repo):
     tab = ChangesTab(conn)
     qtbot.addWidget(tab)
     tab.set_repo(simple_repo)
-    return tab
+    yield tab
+    tab.close()
+    conn.close()
 
 
 def test_changes_tab_displays_composite_mm_badge(changes_tab, simple_repo) -> None:

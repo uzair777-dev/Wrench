@@ -9,13 +9,18 @@ from pathlib import Path
 from typing import Any
 
 import shiboken6
-from PySide6.QtCore import QEvent, Qt, Slot
+from PySide6.QtCore import QEvent, Qt, QTimer, Slot
 from PySide6.QtGui import QFont, QGuiApplication
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QToolButton, QWidget
 
 from wrench.core import engine
 from wrench.storage.settings_registry import SettingsRegistry, peek_settings_registry
-from wrench.ui.theme import CLI_PREVIEW_STYLES, SECONDARY_TEXT, is_dark_theme
+from wrench.ui.theme import (
+    CLI_PREVIEW_STYLES,
+    SECONDARY_TEXT,
+    get_icon_button_style,
+    is_dark_theme,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -36,12 +41,14 @@ class CliCommandPreviewBar(QFrame):
         self._repo_path: str | None = str(repo_path) if repo_path else None
         self._redacted_command: str = ""
         self._applying_theme: bool = False
+        self._copy_reset_timer = QTimer(self)
+        self._copy_reset_timer.setSingleShot(True)
+        self._copy_reset_timer.timeout.connect(self._restore_copy_label)
 
         self._init_ui()
         self._apply_theme()
         self._ensure_registry_connection()
         self._refresh_visibility()
-        self.destroyed.connect(self._disconnect_registry)
 
     def _init_ui(self) -> None:
         self.setFrameShape(QFrame.Shape.StyledPanel)
@@ -86,6 +93,7 @@ class CliCommandPreviewBar(QFrame):
                 f"color: {muted}; border: none; background: transparent;"
             )
             self.command_label.setStyleSheet(f"color: {fg}; border: none; background: transparent;")
+            self.copy_btn.setStyleSheet(get_icon_button_style(mode == "dark"))
         finally:
             self._applying_theme = False
 
@@ -98,8 +106,13 @@ class CliCommandPreviewBar(QFrame):
         ):
             self._apply_theme()
 
-    def closeEvent(self, event) -> None:
+    def _cleanup(self) -> None:
+        if hasattr(self, "_copy_reset_timer") and shiboken6.isValid(self._copy_reset_timer):
+            self._copy_reset_timer.stop()
         self._disconnect_registry()
+
+    def closeEvent(self, event) -> None:
+        self._cleanup()
         super().closeEvent(event)
 
     def _ensure_registry_connection(self) -> None:
@@ -123,8 +136,9 @@ class CliCommandPreviewBar(QFrame):
             pass
         self._connected_registry = None
 
+    @Slot(str, object)
     @Slot(str, object, object)
-    def _on_setting_changed(self, key: str, _value: Any, _repo_path: Any) -> None:
+    def _on_setting_changed(self, key: str, _value: Any, _repo_path: Any = None) -> None:
         if not shiboken6.isValid(self):
             return
         if key == "ui.show_cli_preview_in_dialogs":
@@ -178,3 +192,10 @@ class CliCommandPreviewBar(QFrame):
         cb = QGuiApplication.clipboard()
         if cb is not None:
             cb.setText(self._redacted_command)
+        self.copy_btn.setText(self.tr("Copied ✓"))
+        self._copy_reset_timer.start(1500)
+
+    @Slot()
+    def _restore_copy_label(self) -> None:
+        if shiboken6.isValid(self) and shiboken6.isValid(self.copy_btn):
+            self.copy_btn.setText(self.tr("Copy"))

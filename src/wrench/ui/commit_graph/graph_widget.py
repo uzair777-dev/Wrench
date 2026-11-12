@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import logging
 import math
+import weakref
 from pathlib import Path
 from typing import Any
 
 import shiboken6
 from PySide6.QtCore import (
     QAbstractTableModel,
+    QCoreApplication,
     QEvent,
     QModelIndex,
     QObject,
@@ -314,6 +316,7 @@ class CommitTableModel(QAbstractTableModel):
         self._conn = None
         self._max_active_lane: int = 0
         self._paint_cache_epoch: int = 0
+        self._avatar_url_cache: dict[tuple[str, str, tuple[str, ...]], str | None] = {}
 
     @staticmethod
     def _row_max_lane(row: GraphRow) -> int:
@@ -330,6 +333,7 @@ class CommitTableModel(QAbstractTableModel):
     def set_rows(self, rows: list[GraphRow]):
         self.beginResetModel()
         self._rows = list(rows)
+        self._avatar_url_cache.clear()
         self._max_active_lane = max((self._row_max_lane(r) for r in self._rows), default=0)
         self.endResetModel()
 
@@ -408,12 +412,21 @@ class CommitTableModel(QAbstractTableModel):
             remote_urls = getattr(self, "_remote_urls", None)
             db_conn = getattr(self, "_conn", None)
             author_label = row.commit.author_name or row.commit.author_email or "?"
-            url = resolve_author_avatar_url(
-                row.commit.author_name,
-                row.commit.author_email,
-                remote_urls=remote_urls,
-                db_conn=db_conn,
+            url_cache_key = (
+                row.commit.author_name or "",
+                row.commit.author_email or "",
+                tuple(remote_urls or ()),
             )
+            if url_cache_key in self._avatar_url_cache:
+                url = self._avatar_url_cache[url_cache_key]
+            else:
+                url = resolve_author_avatar_url(
+                    row.commit.author_name,
+                    row.commit.author_email,
+                    remote_urls=remote_urls,
+                    db_conn=db_conn,
+                )
+                self._avatar_url_cache[url_cache_key] = url
             avatar_key_id = url or f"{row.commit.author_name}|{row.commit.author_email}"
             cache_key = f"wrench:avatar:{avatar_key_id}:{int(is_dark)}:18:{dpr:.2f}:{epoch}"
             cached_pm = QPixmapCache.find(cache_key)
@@ -445,13 +458,68 @@ class CommitTableModel(QAbstractTableModel):
         return None
 
 
-class _GraphWorkerSignals(QObject):
-    """Queued signal bridge connecting background QThreadPool graph tasks to GUI."""
+class _GraphWorkerDispatcher(QObject):
+    """Application-lifetime queued dispatcher routing graph worker callbacks to live widgets."""
 
-    page_ready = Signal(int, object, object, object)
-    page_failed = Signal(int, str)
-    search_ready = Signal(int, object, object, object)
-    search_failed = Signal(int, str)
+    page_ready = Signal(object, int, object, object, object)
+    page_failed = Signal(object, int, str)
+    search_ready = Signal(object, int, object, object, object)
+    search_failed = Signal(object, int, str)
+
+    def __init__(self, parent: QObject | None = None) -> None:
+        super().__init__(parent)
+        self.page_ready.connect(self._deliver_page_ready, Qt.ConnectionType.QueuedConnection)
+        self.page_failed.connect(self._deliver_page_failed, Qt.ConnectionType.QueuedConnection)
+        self.search_ready.connect(self._deliver_search_ready, Qt.ConnectionType.QueuedConnection)
+        self.search_failed.connect(self._deliver_search_failed, Qt.ConnectionType.QueuedConnection)
+
+    @Slot(object, int, object, object, object)
+    def _deliver_page_ready(
+        self,
+        widget_ref: Any,
+        generation_id: int,
+        page: Any,
+        rows: Any,
+        next_state: Any,
+    ) -> None:
+        widget = widget_ref() if callable(widget_ref) else None
+        if widget is not None and shiboken6.isValid(widget):
+            widget._on_page_ready(generation_id, page, rows, next_state)
+
+    @Slot(object, int, str)
+    def _deliver_page_failed(self, widget_ref: Any, generation_id: int, error_msg: str) -> None:
+        widget = widget_ref() if callable(widget_ref) else None
+        if widget is not None and shiboken6.isValid(widget):
+            widget._on_page_failed(generation_id, error_msg)
+
+    @Slot(object, int, object, object, object)
+    def _deliver_search_ready(
+        self,
+        widget_ref: Any,
+        generation_id: int,
+        page: Any,
+        rows: Any,
+        next_state: Any,
+    ) -> None:
+        widget = widget_ref() if callable(widget_ref) else None
+        if widget is not None and shiboken6.isValid(widget):
+            widget._on_search_ready(generation_id, page, rows, next_state)
+
+    @Slot(object, int, str)
+    def _deliver_search_failed(self, widget_ref: Any, generation_id: int, error_msg: str) -> None:
+        widget = widget_ref() if callable(widget_ref) else None
+        if widget is not None and shiboken6.isValid(widget):
+            widget._on_search_failed(generation_id, error_msg)
+
+
+_graph_worker_dispatcher: _GraphWorkerDispatcher | None = None
+
+
+def _get_graph_dispatcher() -> _GraphWorkerDispatcher:
+    global _graph_worker_dispatcher
+    if _graph_worker_dispatcher is None or not shiboken6.isValid(_graph_worker_dispatcher):
+        _graph_worker_dispatcher = _GraphWorkerDispatcher(parent=QCoreApplication.instance())
+    return _graph_worker_dispatcher
 
 
 class _GraphPageWorker(QRunnable):
@@ -468,7 +536,8 @@ class _GraphPageWorker(QRunnable):
         all_refs: bool,
         ref_labels: dict[str, list[RefLabel]],
         layout_state: GraphLayoutState,
-        signals: _GraphWorkerSignals,
+        widget_ref: weakref.ref[CommitGraphWidget],
+        dispatcher: _GraphWorkerDispatcher,
     ) -> None:
         super().__init__()
         self._generation_id = generation_id
@@ -479,10 +548,13 @@ class _GraphPageWorker(QRunnable):
         self._all_refs = all_refs
         self._ref_labels = ref_labels
         self._layout_state = layout_state
-        self._signals = signals
+        self._widget_ref = widget_ref
+        self._dispatcher = dispatcher
         self.setAutoDelete(True)
 
     def run(self) -> None:
+        if self._widget_ref() is None:
+            return
         try:
             worker_repo = RepoHandle(self._repo_path)
             page = engine.get_log_page(
@@ -497,12 +569,14 @@ class _GraphPageWorker(QRunnable):
                 ref_labels=self._ref_labels,
                 state=self._layout_state,
             )
-            if shiboken6.isValid(self._signals):
-                self._signals.page_ready.emit(self._generation_id, page, rows, next_state)
+            if self._widget_ref() is not None and shiboken6.isValid(self._dispatcher):
+                self._dispatcher.page_ready.emit(
+                    self._widget_ref, self._generation_id, page, rows, next_state
+                )
         except Exception as exc:
             logger.exception("Background commit graph page load failed: %s", exc)
-            if shiboken6.isValid(self._signals):
-                self._signals.page_failed.emit(self._generation_id, str(exc))
+            if self._widget_ref() is not None and shiboken6.isValid(self._dispatcher):
+                self._dispatcher.page_failed.emit(self._widget_ref, self._generation_id, str(exc))
 
 
 class _GraphSearchWorker(QRunnable):
@@ -517,7 +591,8 @@ class _GraphSearchWorker(QRunnable):
         limit: int,
         all_refs: bool,
         ref_labels: dict[str, list[RefLabel]],
-        signals: _GraphWorkerSignals,
+        widget_ref: weakref.ref[CommitGraphWidget],
+        dispatcher: _GraphWorkerDispatcher,
     ) -> None:
         super().__init__()
         self._generation_id = generation_id
@@ -526,10 +601,13 @@ class _GraphSearchWorker(QRunnable):
         self._limit = limit
         self._all_refs = all_refs
         self._ref_labels = ref_labels
-        self._signals = signals
+        self._widget_ref = widget_ref
+        self._dispatcher = dispatcher
         self.setAutoDelete(True)
 
     def run(self) -> None:
+        if self._widget_ref() is None:
+            return
         try:
             worker_repo = RepoHandle(self._repo_path)
             page = engine.get_log_page(
@@ -544,12 +622,14 @@ class _GraphSearchWorker(QRunnable):
                 ref_labels=self._ref_labels,
                 state=GraphLayoutState(),
             )
-            if shiboken6.isValid(self._signals):
-                self._signals.search_ready.emit(self._generation_id, page, rows, next_state)
+            if self._widget_ref() is not None and shiboken6.isValid(self._dispatcher):
+                self._dispatcher.search_ready.emit(
+                    self._widget_ref, self._generation_id, page, rows, next_state
+                )
         except Exception as exc:
             logger.exception("Background commit graph search failed: %s", exc)
-            if shiboken6.isValid(self._signals):
-                self._signals.search_failed.emit(self._generation_id, str(exc))
+            if self._widget_ref() is not None and shiboken6.isValid(self._dispatcher):
+                self._dispatcher.search_failed.emit(self._widget_ref, self._generation_id, str(exc))
 
 
 class CommitGraphWidget(QTableView):
@@ -588,7 +668,6 @@ class CommitGraphWidget(QTableView):
         self._search_generation_id: int = 0
         self._paint_cache_epoch: int = 0
         self._last_painted_row_range: tuple[int, int] = (0, 0)
-        self._pending_worker_signals: set[_GraphWorkerSignals] = set()
 
         self._settings_registry: SettingsRegistry | None = settings_registry
         self._connected_registry: SettingsRegistry | None = None
@@ -606,11 +685,24 @@ class CommitGraphWidget(QTableView):
 
         self._init_ui()
         self._ensure_registry_connection()
+        self._avatar_loader_connected: bool = False
         get_avatar_loader().avatar_ready.connect(self._on_avatar_ready)
-        self.destroyed.connect(self._disconnect_avatar_loader)
-        self.destroyed.connect(self._disconnect_registry)
+        self._avatar_loader_connected = True
+
+    def closeEvent(self, event) -> None:
+        self._page_generation_id += 1
+        self._search_generation_id += 1
+        self._is_loading_batch = False
+        if hasattr(self, "_model") and shiboken6.isValid(self._model):
+            self._model._avatar_url_cache.clear()
+        self._disconnect_avatar_loader()
+        self._disconnect_registry()
+        super().closeEvent(event)
 
     def _disconnect_avatar_loader(self, *_) -> None:
+        if not getattr(self, "_avatar_loader_connected", False):
+            return
+        self._avatar_loader_connected = False
         try:
             get_avatar_loader().avatar_ready.disconnect(self._on_avatar_ready)
         except RuntimeError, TypeError:
@@ -637,8 +729,9 @@ class CommitGraphWidget(QTableView):
             pass
         self._connected_registry = None
 
+    @Slot(str, object)
     @Slot(str, object, object)
-    def _on_setting_changed(self, key: str, _value: Any, _repo_path: Any) -> None:
+    def _on_setting_changed(self, key: str, _value: Any, _repo_path: Any = None) -> None:
         if not shiboken6.isValid(self):
             return
         if key == "performance.graph_page_size":
@@ -663,6 +756,7 @@ class CommitGraphWidget(QTableView):
         """Bump paint-cache epoch so pills/avatars re-render for palette or DPR."""
         self._paint_cache_epoch += 1
         self._model._paint_cache_epoch = self._paint_cache_epoch
+        self._model._avatar_url_cache.clear()
         if shiboken6.isValid(self) and self.viewport() is not None:
             self.viewport().update()
 
@@ -718,7 +812,9 @@ class CommitGraphWidget(QTableView):
             # Bottom empty space below last row: keep ev_rect to clear background.
             super().paintEvent(event)
 
-    def _on_avatar_ready(self, *_) -> None:
+    @Slot(str, int)
+    @Slot()
+    def _on_avatar_ready(self, _url: str = "", _size: int = 0) -> None:
         try:
             if not shiboken6.isValid(self):
                 return
@@ -904,6 +1000,7 @@ class CommitGraphWidget(QTableView):
 
     def set_repo(self, repo: RepoHandle | None):
         self._repo = repo
+        self._model._avatar_url_cache.clear()
         self._ensure_registry_connection()
         if repo:
             try:
@@ -1035,11 +1132,7 @@ class CommitGraphWidget(QTableView):
         gen_id = self._page_generation_id
         page_size = self._effective_page_size()
 
-        signals = _GraphWorkerSignals(None)
-        self._pending_worker_signals.add(signals)
-        signals.page_ready.connect(self._on_page_ready, Qt.ConnectionType.QueuedConnection)
-        signals.page_failed.connect(self._on_page_failed, Qt.ConnectionType.QueuedConnection)
-
+        dispatcher = _get_graph_dispatcher()
         worker = _GraphPageWorker(
             generation_id=gen_id,
             repo_path=self._repo.path,
@@ -1049,7 +1142,8 @@ class CommitGraphWidget(QTableView):
             all_refs=self._all_refs_mode,
             ref_labels=dict(self._ref_labels_cache),
             layout_state=self._clone_layout_state(self._layout_state),
-            signals=signals,
+            widget_ref=weakref.ref(self),
+            dispatcher=dispatcher,
         )
         QThreadPool.globalInstance().start(worker)
 
@@ -1062,11 +1156,7 @@ class CommitGraphWidget(QTableView):
         self._is_loading_batch = True
         page_size = self._effective_page_size()
 
-        signals = _GraphWorkerSignals(None)
-        self._pending_worker_signals.add(signals)
-        signals.search_ready.connect(self._on_search_ready, Qt.ConnectionType.QueuedConnection)
-        signals.search_failed.connect(self._on_search_failed, Qt.ConnectionType.QueuedConnection)
-
+        dispatcher = _get_graph_dispatcher()
         worker = _GraphSearchWorker(
             generation_id=gen_id,
             repo_path=self._repo.path,
@@ -1074,7 +1164,8 @@ class CommitGraphWidget(QTableView):
             limit=page_size,
             all_refs=self._all_refs_mode,
             ref_labels=dict(self._ref_labels_cache),
-            signals=signals,
+            widget_ref=weakref.ref(self),
+            dispatcher=dispatcher,
         )
         QThreadPool.globalInstance().start(worker)
 
@@ -1086,9 +1177,6 @@ class CommitGraphWidget(QTableView):
         new_rows: list[GraphRow],
         next_state: GraphLayoutState,
     ) -> None:
-        sender_obj = self.sender()
-        if isinstance(sender_obj, _GraphWorkerSignals):
-            self._pending_worker_signals.discard(sender_obj)
         if not shiboken6.isValid(self) or generation_id != self._page_generation_id:
             return
         self._is_loading_batch = False
@@ -1103,9 +1191,6 @@ class CommitGraphWidget(QTableView):
 
     @Slot(int, str)
     def _on_page_failed(self, generation_id: int, error_msg: str) -> None:
-        sender_obj = self.sender()
-        if isinstance(sender_obj, _GraphWorkerSignals):
-            self._pending_worker_signals.discard(sender_obj)
         if not shiboken6.isValid(self) or generation_id != self._page_generation_id:
             return
         self._is_loading_batch = False
@@ -1119,9 +1204,6 @@ class CommitGraphWidget(QTableView):
         rows: list[GraphRow],
         next_state: GraphLayoutState,
     ) -> None:
-        sender_obj = self.sender()
-        if isinstance(sender_obj, _GraphWorkerSignals):
-            self._pending_worker_signals.discard(sender_obj)
         if not shiboken6.isValid(self) or generation_id != self._search_generation_id:
             return
         self._is_loading_batch = False
@@ -1139,9 +1221,6 @@ class CommitGraphWidget(QTableView):
 
     @Slot(int, str)
     def _on_search_failed(self, generation_id: int, error_msg: str) -> None:
-        sender_obj = self.sender()
-        if isinstance(sender_obj, _GraphWorkerSignals):
-            self._pending_worker_signals.discard(sender_obj)
         if not shiboken6.isValid(self) or generation_id != self._search_generation_id:
             return
         self._is_loading_batch = False

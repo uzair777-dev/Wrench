@@ -14,12 +14,15 @@ from __future__ import annotations
 import json
 import logging
 import threading
+import weakref
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 import shiboken6
 from PySide6.QtCore import (
     QByteArray,
+    QCoreApplication,
     QEvent,
     QObject,
     QRunnable,
@@ -38,7 +41,6 @@ from PySide6.QtWidgets import (
     QLabel,
     QMainWindow,
     QMessageBox,
-    QStatusBar,
     QToolButton,
     QVBoxLayout,
     QWidget,
@@ -90,18 +92,38 @@ from wrench.ui.tabs.issue_list_tab import IssueListTab
 from wrench.ui.tabs.pr_detail_tab import PRDetailTab
 from wrench.ui.tabs.pr_list_tab import PRListTab
 from wrench.ui.tabs.tab_bar import TabContainer
-from wrench.ui.theme import apply_theme
+from wrench.ui.theme import apply_theme, get_status_pill_style, is_dark_theme
 from wrench.ui.widgets.activity_log import ActivityLogBar, ActivityLogModel
-from wrench.ui.workers import run_in_background, set_activity_log
+from wrench.ui.workers import clear_activity_log, run_in_background, set_activity_log
 from wrench.watcher.inotify_watcher import RepoWatcher
 
 logger = logging.getLogger(__name__)
 
 
-class _CommitGraphSignals(QObject):
-    """Queued signal bridge from background commit-graph maintenance worker to MainWindow."""
+class _CommitGraphDispatcher(QObject):
+    """Application-lifetime queued dispatcher routing background commit-graph maintenance."""
 
-    finished = Signal(int, object)  # (generation_id, CommitGraphStats | None)
+    finished = Signal(object, int, object)  # (window_ref, generation_id, CommitGraphStats | None)
+
+    def __init__(self, parent: QObject | None = None) -> None:
+        super().__init__(parent)
+        self.finished.connect(self._deliver_finished, Qt.ConnectionType.QueuedConnection)
+
+    @Slot(object, int, object)
+    def _deliver_finished(self, window_ref: Any, generation_id: int, stats: Any) -> None:
+        win = window_ref() if callable(window_ref) else None
+        if win is not None and win._is_alive():
+            win._on_commit_graph_finished(generation_id, stats)
+
+
+_commit_graph_dispatcher: _CommitGraphDispatcher | None = None
+
+
+def _get_commit_graph_dispatcher() -> _CommitGraphDispatcher:
+    global _commit_graph_dispatcher
+    if _commit_graph_dispatcher is None or not shiboken6.isValid(_commit_graph_dispatcher):
+        _commit_graph_dispatcher = _CommitGraphDispatcher(parent=QCoreApplication.instance())
+    return _commit_graph_dispatcher
 
 
 class _CommitGraphWorker(QRunnable):
@@ -113,16 +135,20 @@ class _CommitGraphWorker(QRunnable):
         generation_id: int,
         repo_path: Path,
         settings_registry: SettingsRegistry | None,
-        signals: _CommitGraphSignals,
+        window_ref: weakref.ref[MainWindow],
+        dispatcher: _CommitGraphDispatcher,
     ) -> None:
         super().__init__()
         self._generation_id = generation_id
         self._repo_path = repo_path
         self._settings_registry = settings_registry
-        self._signals = signals
+        self._window_ref = window_ref
+        self._dispatcher = dispatcher
         self.setAutoDelete(True)
 
     def run(self) -> None:
+        if self._window_ref() is None:
+            return
         stats = None
         try:
             stats = engine.maybe_write_commit_graph(
@@ -131,8 +157,8 @@ class _CommitGraphWorker(QRunnable):
             )
         except Exception as exc:
             logger.debug("Background commit-graph maintenance skipped: %s", exc)
-        if shiboken6.isValid(self._signals):
-            self._signals.finished.emit(self._generation_id, stats)
+        if self._window_ref() is not None and shiboken6.isValid(self._dispatcher):
+            self._dispatcher.finished.emit(self._window_ref, self._generation_id, stats)
 
 
 class MainWindow(QMainWindow):
@@ -151,10 +177,12 @@ class MainWindow(QMainWindow):
         self._watcher: RepoWatcher | None = None
         self._repos_state: dict[str, dict] = {}
         self._is_restoring: bool = True
+        self._is_closing: bool = False
         self._repo_switch_generation: int = 0
         self._commit_graph_generation: int = 0
+        self._discovery_cancel_event: threading.Event | None = None
         self._sparse_dialog: SparseCheckoutDialog | None = None
-        self._pending_maint_signals: set[_CommitGraphSignals] = set()
+        self._active_settings_dialog: QDialog | None = None
 
         # 1000ms debounce timer for coalescing auto-save writes
         self._auto_save_timer = QTimer(self)
@@ -172,9 +200,11 @@ class MainWindow(QMainWindow):
         self._snapshot_timer.start()
 
         self._current_theme_mode: str = "auto"
-        style_hints = QGuiApplication.styleHints()
-        if hasattr(style_hints, "colorSchemeChanged"):
-            style_hints.colorSchemeChanged.connect(self._on_system_color_scheme_changed)
+        self._style_hints = QGuiApplication.styleHints()
+        self._style_hints_connected: bool = False
+        if hasattr(self._style_hints, "colorSchemeChanged"):
+            self._style_hints.colorSchemeChanged.connect(self._on_system_color_scheme_changed)
+            self._style_hints_connected = True
 
         self._init_ui()
         self._restore_settings()
@@ -183,7 +213,6 @@ class MainWindow(QMainWindow):
             Qt.ConnectionType.QueuedConnection,
         )
         self._registry_connected = True
-        self.destroyed.connect(self._disconnect_settings_registry)
 
     def _init_ui(self) -> None:
         # Central TabContainer & Activity Dock
@@ -241,24 +270,21 @@ class MainWindow(QMainWindow):
         self.tab_container.add_category_tab_requested.connect(self._on_add_category_tab)
 
         # Connect auto-save signals on tab changes and UI layout adjustments
-        self.tab_container.current_changed.connect(lambda *_: self._schedule_auto_save())
-        self.tab_container.tabs_mutated.connect(lambda *_: self._schedule_auto_save())
-        self.tab_container.orientation_changed.connect(lambda *_: self._schedule_auto_save())
-        self.changes_tab.splitter.splitterMoved.connect(lambda *_: self._schedule_auto_save())
+        self.tab_container.current_changed.connect(self._schedule_auto_save)
+        self.tab_container.tabs_mutated.connect(self._schedule_auto_save)
+        self.tab_container.orientation_changed.connect(self._schedule_auto_save)
+        self.changes_tab.splitter.splitterMoved.connect(self._schedule_auto_save)
         self.history_tab.graph_widget.horizontalHeader().sectionResized.connect(
-            lambda *_: self._schedule_auto_save()
+            self._schedule_auto_save
         )
-        self.history_tab.content_splitter.splitterMoved.connect(
-            lambda *_: self._schedule_auto_save()
-        )
+        self.history_tab.content_splitter.splitterMoved.connect(self._schedule_auto_save)
 
         # Menu bar
 
         self._create_menu_bar()
 
-        # Status bar
-        self.status_bar = QStatusBar(self)
-        self.setStatusBar(self.status_bar)
+        # Status bar (always reuse QMainWindow's single built-in bar)
+        self.status_bar = self.statusBar()
         self.status_label = QLabel(self.tr("Ready"), self.status_bar)
         self.status_bar.addWidget(self.status_label)
 
@@ -273,9 +299,40 @@ class MainWindow(QMainWindow):
         self.status_bar.addPermanentWidget(self.sparse_status_btn)
         self._sync_sparse_ui_visibility()
 
-    def _schedule_auto_save(self) -> None:
+    def _is_alive(self) -> bool:
+        return shiboken6.isValid(self) and not getattr(self, "_is_closing", False)
+
+    @staticmethod
+    def _close_dialog_safely(dlg: Any) -> None:
+        if isinstance(dlg, QDialog) and shiboken6.isValid(dlg):
+            dlg.close()
+
+    @staticmethod
+    def _finish_busy_dialog(dlg: Any, *, accepted: bool) -> None:
+        if dlg is None:
+            return
+        if isinstance(dlg, QObject) and not shiboken6.isValid(dlg):
+            return
+        if accepted:
+            dlg.accept()
+        else:
+            dlg.reject()
+        if isinstance(dlg, QDialog) and shiboken6.isValid(dlg):
+            dlg.close()
+
+    @staticmethod
+    def _safe_busy_progress(dlg: Any) -> Callable[[int], None]:
+        def _update(pct: int) -> None:
+            if isinstance(dlg, QObject) and not shiboken6.isValid(dlg):
+                return
+            dlg.set_progress(pct)
+
+        return _update
+
+    @Slot()
+    def _schedule_auto_save(self, *_args: Any) -> None:
         """Restarts the 1000ms debounce timer to batch session persistence writes."""
-        if getattr(self, "_is_restoring", False):
+        if not self._is_alive() or getattr(self, "_is_restoring", False):
             return
         if hasattr(self, "_auto_save_timer"):
             self._auto_save_timer.start()
@@ -381,17 +438,17 @@ class MainWindow(QMainWindow):
         self.act_theme_auto = theme_menu.addAction(self.tr("&Auto (System Default)"))
         self.act_theme_auto.setCheckable(True)
         self.act_theme_auto.setChecked(True)
-        self.act_theme_auto.triggered.connect(lambda: self._set_theme("auto"))
+        self.act_theme_auto.triggered.connect(self._on_theme_auto_triggered)
         self.theme_group.addAction(self.act_theme_auto)
 
         self.act_theme_light = theme_menu.addAction(self.tr("Pastel &Light"))
         self.act_theme_light.setCheckable(True)
-        self.act_theme_light.triggered.connect(lambda: self._set_theme("light"))
+        self.act_theme_light.triggered.connect(self._on_theme_light_triggered)
         self.theme_group.addAction(self.act_theme_light)
 
         self.act_theme_dark = theme_menu.addAction(self.tr("Pastel &Dark"))
         self.act_theme_dark.setCheckable(True)
-        self.act_theme_dark.triggered.connect(lambda: self._set_theme("dark"))
+        self.act_theme_dark.triggered.connect(self._on_theme_dark_triggered)
         self.theme_group.addAction(self.act_theme_dark)
 
         view_menu.addSeparator()
@@ -435,7 +492,7 @@ class MainWindow(QMainWindow):
         self.act_forge_accounts.triggered.connect(self._on_manage_forge_accounts)
 
         self.act_link_forge = repo_menu.addAction(self.tr("&Link to Forge…"))
-        self.act_link_forge.triggered.connect(lambda: self._on_link_forge())
+        self.act_link_forge.triggered.connect(self._on_link_forge)
 
         repo_menu.addSeparator()
 
@@ -712,13 +769,49 @@ class MainWindow(QMainWindow):
 
         self._propagate_theme_refresh()
 
-    def _on_system_color_scheme_changed(self) -> None:
+    @Slot()
+    def _on_theme_auto_triggered(self) -> None:
+        self._set_theme("auto")
+
+    @Slot()
+    def _on_theme_light_triggered(self) -> None:
+        self._set_theme("light")
+
+    @Slot()
+    def _on_theme_dark_triggered(self) -> None:
+        self._set_theme("dark")
+
+    @Slot(Qt.ColorScheme)
+    @Slot()
+    def _on_system_color_scheme_changed(self, *_args: Any) -> None:
         """Reacts when desktop/system color scheme changes while in 'auto' mode."""
+        if not shiboken6.isValid(self):
+            return
         if getattr(self, "_current_theme_mode", "auto") == "auto":
             app = QApplication.instance()
             if app:
                 apply_theme(app, "auto")
             self._propagate_theme_refresh()
+
+    def _apply_status_bar_theme(self) -> None:
+        """Apply theme-tokenized styles on status bar pills."""
+        is_dark = is_dark_theme(self)
+        if hasattr(self, "sparse_status_btn"):
+            sparse_style = get_status_pill_style("sparse_active", is_dark)
+            self.sparse_status_btn.setStyleSheet(
+                f"QToolButton {{ background-color: {sparse_style['bg']}; "
+                f"color: {sparse_style['fg']}; "
+                f"border: 1px solid {sparse_style['border']}; border-radius: 9px; "
+                f"padding: 1px 8px; font-size: 11px; font-weight: bold; }}"
+            )
+        if hasattr(self, "watcher_mode_label"):
+            watcher_style = get_status_pill_style("watcher", is_dark)
+            self.watcher_mode_label.setStyleSheet(
+                f"QLabel {{ background-color: {watcher_style['bg']}; "
+                f"color: {watcher_style['fg']}; "
+                f"border: 1px solid {watcher_style['border']}; border-radius: 9px; "
+                f"padding: 1px 8px; font-size: 11px; }}"
+            )
 
     def _propagate_theme_refresh(self) -> None:
         """Propagates theme change to all child tabs and diff views."""
@@ -728,6 +821,7 @@ class MainWindow(QMainWindow):
             self.changes_tab.refresh_theme()
         if hasattr(self, "history_tab"):
             self.history_tab.refresh_theme()
+        self._apply_status_bar_theme()
 
     def _is_gravatar_enabled(self) -> bool:
         """Returns True if user opted into gravatar commit avatars (default False)."""
@@ -794,6 +888,10 @@ class MainWindow(QMainWindow):
         self._save_session_state()
 
     def closeEvent(self, event) -> None:
+        if getattr(self, "_is_closing", False):
+            super().closeEvent(event)
+            return
+
         # Quit guard 1: Check unsaved commit draft
         if self.changes_tab.has_unsaved_commit_text():
             reply = QMessageBox.question(
@@ -809,18 +907,106 @@ class MainWindow(QMainWindow):
                 event.ignore()
                 return
 
-        # Flush auto-save timer and persist session synchronously
+        self._is_closing = True
+        self._repo_switch_generation += 1
+        self._commit_graph_generation += 1
+        self._fetch_in_progress.clear()
+        if getattr(self, "_discovery_cancel_event", None) is not None:
+            self._discovery_cancel_event.set()
+
+        # Flush auto-save timer and persist session synchronously before closing child tabs
         if hasattr(self, "_auto_save_timer"):
             self._auto_save_timer.stop()
+        if hasattr(self, "_snapshot_timer"):
+            self._snapshot_timer.stop()
         self._save_session_state()
 
+        self._disconnect_style_hints()
         self._disconnect_settings_registry()
+
+        self._close_dialog_safely(getattr(self, "_sparse_dialog", None))
+        self._sparse_dialog = None
+        self._close_dialog_safely(getattr(self, "_active_settings_dialog", None))
+        self._active_settings_dialog = None
+        for child_dlg in list(self.findChildren(QDialog)):
+            self._close_dialog_safely(child_dlg)
+
+        closed_tab_ids: set[int] = set()
+        if hasattr(self, "tab_container") and shiboken6.isValid(self.tab_container):
+            self.tab_container.hide_loading()
+            for i in range(self.tab_container.count()):
+                meta = self.tab_container.tab_metadata(i)
+                if meta and meta.is_loaded:
+                    w = self.tab_container.widget(i)
+                    if w is not None and shiboken6.isValid(w) and id(w) not in closed_tab_ids:
+                        closed_tab_ids.add(id(w))
+                        w.close()
+
+        for tab_attr in ("changes_tab", "history_tab", "snapshots_panel"):
+            w = getattr(self, tab_attr, None)
+            if w is not None and shiboken6.isValid(w) and id(w) not in closed_tab_ids:
+                closed_tab_ids.add(id(w))
+                w.close()
+
+        if hasattr(self, "changes_tab") and shiboken6.isValid(self.changes_tab):
+            self.changes_tab._disconnect_avatar_loader()
+        if hasattr(self, "history_tab") and shiboken6.isValid(self.history_tab):
+            if hasattr(self.history_tab, "_debounce_timer"):
+                self.history_tab._debounce_timer.stop()
+            if hasattr(self.history_tab, "graph_widget") and shiboken6.isValid(
+                self.history_tab.graph_widget
+            ):
+                self.history_tab.graph_widget._page_generation_id += 1
+                self.history_tab.graph_widget._search_generation_id += 1
+                self.history_tab.graph_widget._disconnect_avatar_loader()
+                self.history_tab.graph_widget._disconnect_registry()
 
         if self._watcher:
             self._watcher.stop()
             self._watcher = None
 
+        for timer in list(self.findChildren(QTimer)):
+            if shiboken6.isValid(timer):
+                timer.stop()
+
+        sb = self.statusBar()
+        if sb is not None and shiboken6.isValid(sb):
+            sb.clearMessage()
+        clear_activity_log(getattr(self, "_activity_log", None))
+
         super().closeEvent(event)
+
+    def _reload_active_repo_handles(self) -> None:
+        """Reload open RepoHandle instances so .git/config.worktree changes are visible."""
+        candidates: list[Any] = [
+            getattr(self, "_current_repo", None),
+            getattr(getattr(self, "changes_tab", None), "_repo", None),
+            getattr(
+                getattr(getattr(self, "changes_tab", None), "branch_switcher", None),
+                "_repo",
+                None,
+            ),
+            getattr(getattr(self, "history_tab", None), "_repo", None),
+            getattr(getattr(self, "snapshots_panel", None), "_repo", None),
+        ]
+        seen: set[int] = set()
+        for handle in candidates:
+            if handle is None or id(handle) in seen:
+                continue
+            seen.add(id(handle))
+            try:
+                engine.refresh_repo_handle(handle)
+            except Exception as exc:
+                logger.debug("RepoHandle reload skipped: %s", exc)
+
+    def _on_external_watcher_change(self) -> None:
+        """Handle filesystem/git-dir watcher events cleanly without stale handles."""
+        if not shiboken6.isValid(self):
+            return
+        self._reload_active_repo_handles()
+        if hasattr(self, "changes_tab"):
+            self.changes_tab.refresh()
+        self._sync_sparse_ui_visibility()
 
     def _on_repo_changed(self, path: str) -> None:
         if self._watcher:
@@ -843,18 +1029,19 @@ class MainWindow(QMainWindow):
             # Start inotify watcher
             self._watcher = RepoWatcher(
                 path,
-                on_change=self.changes_tab.refresh,
+                on_change=self._on_external_watcher_change,
                 parent=self,
                 settings_registry=self._settings_registry,
             )
             self._watcher.status_changed.connect(self.history_tab.refresh)
-            self._watcher.status_changed.connect(self.snapshots_panel.refresh)
+            self._watcher.status_changed.connect(self.snapshots_panel.refresh_if_visible)
             self._watcher.adaptive_fallback_activated.connect(self._on_watcher_mode_changed)
             self._watcher.start()
             watcher_status = getattr(self._watcher, "status_info", None)
             if isinstance(getattr(watcher_status, "mode", None), str):
                 self._on_watcher_mode_changed(watcher_status.mode, watcher_status.reason or "")
             self._sync_sparse_ui_visibility()
+            self._apply_status_bar_theme()
             self._maybe_write_commit_graph(path)
 
             status = getattr(self.changes_tab, "_current_status", None)
@@ -1023,8 +1210,13 @@ class MainWindow(QMainWindow):
                 def _on_link_clicked(_owner=owner, _repo=repo, _rpath=repo_path):
                     self.changes_tab.hide_forge_link_banner()
                     dlg = LinkRepoDialog(_rpath, parent=self, conn=self._conn)
-                    dlg.links_changed.connect(lambda: self._on_repo_changed(_rpath))
-                    dlg.exec()
+                    dlg.links_changed.connect(
+                        lambda: self._on_repo_changed(_rpath) if self._is_alive() else None
+                    )
+                    try:
+                        dlg.exec()
+                    finally:
+                        self._close_dialog_safely(dlg)
 
                 def _on_dismiss_clicked(_key=decline_key, _conn=conn):
                     self.changes_tab.hide_forge_link_banner()
@@ -1068,6 +1260,8 @@ class MainWindow(QMainWindow):
                 return None
 
         def _on_done(avatar_url: str | None):
+            if not self._is_alive():
+                return
             if avatar_url:
                 settings.set_setting(self._conn, f"account.{acc.id}.avatar_url", avatar_url)
                 if hasattr(self, "changes_tab"):
@@ -1112,13 +1306,15 @@ class MainWindow(QMainWindow):
 
     def _on_auto_fetch_finished(self, remote: str, gen: int, repo_key: str | None = None) -> None:
         """Callback for successful auto-fetch."""
+        if not shiboken6.isValid(self):
+            return
         if repo_key is not None:
             self._fetch_in_progress.discard(repo_key)
         elif self._current_repo:
             self._fetch_in_progress.discard(str(self._current_repo.path))
 
-        if gen != self._repo_switch_generation:
-            return  # Stale switch — discard result
+        if not self._is_alive() or gen != self._repo_switch_generation:
+            return  # Stale or closed window — discard result
         self._refresh_after_git_op()
 
     def _on_auto_fetch_failed(self, exc: Exception, gen: int, repo_key: str | None = None) -> None:
@@ -1126,13 +1322,15 @@ class MainWindow(QMainWindow):
 
         NEVER shows a modal dialog, error banner, or retry loop.
         """
+        if not shiboken6.isValid(self):
+            return
         if repo_key is not None:
             self._fetch_in_progress.discard(repo_key)
         elif self._current_repo:
             self._fetch_in_progress.discard(str(self._current_repo.path))
 
-        if gen != self._repo_switch_generation:
-            return  # Stale switch — discard result
+        if not self._is_alive() or gen != self._repo_switch_generation:
+            return  # Stale or closed window — discard result
         reason = str(exc)[:80] if str(exc) else type(exc).__name__
         self.statusBar().showMessage(self.tr(f"Auto-fetch skipped ({reason})"), 5000)
 
@@ -1224,6 +1422,8 @@ class MainWindow(QMainWindow):
         )
 
         def _on_progress(n: int) -> None:
+            if not self._is_alive():
+                return
             self.statusBar().showMessage(
                 self.tr(f"Scanning for repositories in '{root_path}'... Found {n} so far"),
                 0,
@@ -1238,6 +1438,8 @@ class MainWindow(QMainWindow):
             )
 
         def _on_done(found_repos: list[Path]) -> None:
+            if not self._is_alive():
+                return
             self.statusBar().clearMessage()
             if not found_repos:
                 QMessageBox.information(
@@ -1251,33 +1453,40 @@ class MainWindow(QMainWindow):
                 return
 
             dlg = DiscoverReposDialog(repos=found_repos, root_dir=root_path, parent=self)
-            if dlg.exec() == QDialog.DialogCode.Accepted:
+            try:
+                if dlg.exec() != QDialog.DialogCode.Accepted:
+                    return
                 selected = dlg.selected_repositories()
-                added_count = 0
-                known_count = 0
-                for p in selected:
-                    p_str = str(p)
-                    rec = repo_registry.get_repo_by_path(self._conn, p_str)
-                    if rec and rec.is_missing:
-                        repo_registry.clear_missing(self._conn, rec.id)
-                        known_count += 1
-                    elif rec:
-                        known_count += 1
-                    else:
-                        repo_registry.add_repo(self._conn, p_str, p.name)
-                        added_count += 1
+            finally:
+                self._close_dialog_safely(dlg)
 
-                if selected:
-                    self.changes_tab.load_repos(select_path=str(selected[0]))
+            added_count = 0
+            known_count = 0
+            for p in selected:
+                p_str = str(p)
+                rec = repo_registry.get_repo_by_path(self._conn, p_str)
+                if rec and rec.is_missing:
+                    repo_registry.clear_missing(self._conn, rec.id)
+                    known_count += 1
+                elif rec:
+                    known_count += 1
                 else:
-                    self.changes_tab.load_repos()
+                    repo_registry.add_repo(self._conn, p_str, p.name)
+                    added_count += 1
 
-                self.statusBar().showMessage(
-                    self.tr(f"Added {added_count} repositories ({known_count} already known)"),
-                    5000,
-                )
+            if selected:
+                self.changes_tab.load_repos(select_path=str(selected[0]))
+            else:
+                self.changes_tab.load_repos()
+
+            self.statusBar().showMessage(
+                self.tr(f"Added {added_count} repositories ({known_count} already known)"),
+                5000,
+            )
 
         def _on_error(exc: Exception) -> None:
+            if not self._is_alive():
+                return
             self.statusBar().clearMessage()
             QMessageBox.warning(
                 self,
@@ -1299,28 +1508,69 @@ class MainWindow(QMainWindow):
             settings_registry=self._settings_registry,
             conn=self._conn,
         )
-        if self._exec_dialog(dlg) != QDialog.DialogCode.Accepted:
-            return
+        try:
+            if self._exec_dialog(dlg) != QDialog.DialogCode.Accepted:
+                return
+            raw_url = dlg.clone_url()
+            dest_parent = dlg.dest_parent()
+            repo_name = dlg.repo_name()
+            fspec = dlg.filter_spec()
+            use_sparse = dlg.sparse_enabled()
+            chosen_account_id = dlg.selected_account_id()
+        finally:
+            self._close_dialog_safely(dlg)
 
         try:
-            clean_url = engine.validate_clone_url(dlg.clone_url())
+            clean_url = engine.validate_clone_url(raw_url)
         except ValueError as exc:
             self.statusBar().showMessage(engine.redact_secrets(str(exc)), 6000)
             return
 
-        dest_parent = dlg.dest_parent()
         if not dest_parent:
             return
 
-        repo_name = dlg.repo_name()
+        if not repo_name or repo_name in (".", "..") or "/" in repo_name or "\\" in repo_name:
+            QMessageBox.critical(
+                self,
+                self.tr("Clone Repository"),
+                self.tr("Invalid repository destination path rejected."),
+            )
+            self.statusBar().showMessage(
+                self.tr("Invalid repository destination path rejected."),
+                6000,
+            )
+            return
+        try:
+            parent_resolved = Path(dest_parent).resolve()
+            dest_resolved = (parent_resolved / repo_name).resolve()
+            if dest_resolved.parent != parent_resolved or dest_resolved == parent_resolved:
+                QMessageBox.critical(
+                    self,
+                    self.tr("Clone Repository"),
+                    self.tr("Invalid repository destination path rejected."),
+                )
+                self.statusBar().showMessage(
+                    self.tr("Invalid repository destination path rejected."),
+                    6000,
+                )
+                return
+        except OSError:
+            QMessageBox.critical(
+                self,
+                self.tr("Clone Repository"),
+                self.tr("Invalid repository destination path rejected."),
+            )
+            self.statusBar().showMessage(
+                self.tr("Invalid repository destination path rejected."),
+                6000,
+            )
+            return
+
         target_dest = str(Path(dest_parent) / repo_name)
-        fspec = dlg.filter_spec()
         filter_opt = None if fspec in ("", "none") else fspec
-        use_sparse = dlg.sparse_enabled()
 
         # --- Phase 4.1: Multi-account clone pre-linking ---
         pre_created_repo = False
-        chosen_account_id = dlg.selected_account_id()
         url_parts = parse_remote_url(clean_url)
 
         if (
@@ -1356,7 +1606,9 @@ class MainWindow(QMainWindow):
         )
 
         def on_finished(_res):
-            busy_dlg.accept()
+            self._finish_busy_dialog(busy_dlg, accepted=True)
+            if not self._is_alive():
+                return
             if not pre_created_repo:
                 repo_registry.add_repo(self._conn, target_dest, repo_name)
             self.changes_tab.load_repos(select_path=target_dest)
@@ -1364,21 +1616,12 @@ class MainWindow(QMainWindow):
             if use_sparse and self._settings_registry.is_enabled(
                 "monorepo.sparse_checkout_ui.enabled", target_dest
             ):
-                sparse_dlg = SparseCheckoutDialog(
-                    target_dest,
-                    parent=self,
-                    settings_registry=self._settings_registry,
-                )
-                self._sparse_dialog = sparse_dlg
-                try:
-                    if self._exec_dialog(sparse_dlg) == QDialog.DialogCode.Accepted:
-                        self._refresh_after_git_op()
-                finally:
-                    if self._sparse_dialog is sparse_dlg:
-                        self._sparse_dialog = None
+                self._run_sparse_checkout_dialog(target_dest)
 
         def on_failed(exc):
-            busy_dlg.reject()
+            self._finish_busy_dialog(busy_dlg, accepted=False)
+            if not self._is_alive():
+                return
             # Mandatory rollback: remove pre-created row on clone failure
             if pre_created_repo:
                 repo_registry.remove_repo(self._conn, target_dest)
@@ -1393,7 +1636,7 @@ class MainWindow(QMainWindow):
             sparse=use_sparse,
             on_finished=on_finished,
             on_failed=on_failed,
-            on_progress=busy_dlg.set_progress,
+            on_progress=self._safe_busy_progress(busy_dlg),
             cancel_event=cancel_event,
         )
 
@@ -1452,12 +1695,13 @@ class MainWindow(QMainWindow):
 
     def _refresh_after_git_op(self) -> None:
         """Force full UI refresh after remote or write git operation."""
+        self._reload_active_repo_handles()
         if hasattr(self, "changes_tab"):
             self.changes_tab.refresh()
         if hasattr(self, "history_tab"):
             self.history_tab.refresh()
         if hasattr(self, "snapshots_panel"):
-            self.snapshots_panel.refresh()
+            self.snapshots_panel.refresh_if_visible()
         if self._current_repo:
             try:
                 status = getattr(self.changes_tab, "_current_status", None)
@@ -1486,8 +1730,12 @@ class MainWindow(QMainWindow):
             )
             return
         dlg = RemotesDialog(self._current_repo, parent=self, db_conn=self._conn, auto_probe=True)
-        dlg.exec()
-        self._refresh_after_git_op()
+        try:
+            dlg.exec()
+        finally:
+            self._close_dialog_safely(dlg)
+        if self._is_alive():
+            self._refresh_after_git_op()
 
     def _on_fetch_remote(self) -> None:
         if not self._current_repo:
@@ -1523,14 +1771,20 @@ class MainWindow(QMainWindow):
         )
 
         def on_finished(_res):
-            self._fetch_in_progress.discard(repo_key)
-            busy_dlg.accept()
+            if shiboken6.isValid(self):
+                self._fetch_in_progress.discard(repo_key)
+            self._finish_busy_dialog(busy_dlg, accepted=True)
+            if not self._is_alive():
+                return
             self._refresh_after_git_op()
             self.status_label.setText(self.tr(f"Fetched from '{remote}'."))
 
         def on_failed(exc):
-            self._fetch_in_progress.discard(repo_key)
-            busy_dlg.reject()
+            if shiboken6.isValid(self):
+                self._fetch_in_progress.discard(repo_key)
+            self._finish_busy_dialog(busy_dlg, accepted=False)
+            if not self._is_alive():
+                return
             self._route_remote_error(exc, remote, op="fetch")
 
         busy_dlg.show()
@@ -1540,7 +1794,7 @@ class MainWindow(QMainWindow):
             remote,
             on_finished=on_finished,
             on_failed=on_failed,
-            on_progress=busy_dlg.set_progress,
+            on_progress=self._safe_busy_progress(busy_dlg),
             cancel_event=cancel_event,
         )
 
@@ -1578,14 +1832,20 @@ class MainWindow(QMainWindow):
         )
 
         def on_finished(_res):
-            self._fetch_in_progress.discard(repo_key)
-            busy_dlg.accept()
+            if shiboken6.isValid(self):
+                self._fetch_in_progress.discard(repo_key)
+            self._finish_busy_dialog(busy_dlg, accepted=True)
+            if not self._is_alive():
+                return
             self._refresh_after_git_op()
             self.status_label.setText(self.tr(f"Pulled '{branch}' from '{remote}'."))
 
         def on_failed(exc):
-            self._fetch_in_progress.discard(repo_key)
-            busy_dlg.reject()
+            if shiboken6.isValid(self):
+                self._fetch_in_progress.discard(repo_key)
+            self._finish_busy_dialog(busy_dlg, accepted=False)
+            if not self._is_alive():
+                return
             self._route_remote_error(exc, remote, branch=branch, op="pull")
 
         busy_dlg.show()
@@ -1596,7 +1856,7 @@ class MainWindow(QMainWindow):
             branch,
             on_finished=on_finished,
             on_failed=on_failed,
-            on_progress=busy_dlg.set_progress,
+            on_progress=self._safe_busy_progress(busy_dlg),
             cancel_event=cancel_event,
         )
 
@@ -1631,10 +1891,13 @@ class MainWindow(QMainWindow):
             pre_dlg = PrePushLargeFilesDialog(
                 large_blobs, remote=remote, branch=branch, parent=self
             )
-            if pre_dlg.exec() != QDialog.DialogCode.Accepted:
-                return
-            if pre_dlg.action == "extreme_compression":
-                extra_config = engine.EXTREME_COMPRESSION_CONFIG.copy()
+            try:
+                if pre_dlg.exec() != QDialog.DialogCode.Accepted:
+                    return
+                if pre_dlg.action == "extreme_compression":
+                    extra_config = engine.EXTREME_COMPRESSION_CONFIG.copy()
+            finally:
+                self._close_dialog_safely(pre_dlg)
 
         title = self.tr("Force Push") if force else self.tr("Push")
         busy_dlg = BusyOperationDialog(
@@ -1646,12 +1909,16 @@ class MainWindow(QMainWindow):
         )
 
         def on_finished(_res):
-            busy_dlg.accept()
+            self._finish_busy_dialog(busy_dlg, accepted=True)
+            if not self._is_alive():
+                return
             self._refresh_after_git_op()
             self.status_label.setText(self.tr(f"Pushed '{branch}' to '{remote}'."))
 
         def on_failed(exc):
-            busy_dlg.reject()
+            self._finish_busy_dialog(busy_dlg, accepted=False)
+            if not self._is_alive():
+                return
             self._route_remote_error(exc, remote, branch=branch, op="push")
 
         busy_dlg.show()
@@ -1664,7 +1931,7 @@ class MainWindow(QMainWindow):
             extra_config=extra_config,
             on_finished=on_finished,
             on_failed=on_failed,
-            on_progress=busy_dlg.set_progress,
+            on_progress=self._safe_busy_progress(busy_dlg),
             cancel_event=cancel_event,
         )
 
@@ -1675,6 +1942,8 @@ class MainWindow(QMainWindow):
         branch: str | None = None,
         op: str = "remote",
     ) -> None:
+        if not self._is_alive():
+            return
         if isinstance(exc, CloneAbortedError):
             return
 
@@ -1732,38 +2001,54 @@ class MainWindow(QMainWindow):
                 self.tr("Manage Accounts…"), QMessageBox.ButtonRole.ActionRole
             )
             box.addButton(QMessageBox.StandardButton.Close)
-            box.exec()
-            if box.clickedButton() == reauth_btn:
+            try:
+                box.exec()
+                clicked = box.clickedButton()
+            finally:
+                self._close_dialog_safely(box)
+            if clicked == reauth_btn and self._is_alive():
                 self._on_manage_forge_accounts()
             return
 
         if isinstance(exc, SecretScanningRejectedError):
             dlg = SecretScanningDialog(exc, parent=self)
-            dlg.exec()
+            try:
+                dlg.exec()
+            finally:
+                self._close_dialog_safely(dlg)
             return
 
         if isinstance(exc, ProtectedBranchRejectedError):
             default_branch = f"patch-{branch}" if branch else "patch-1"
             dlg = ProtectedBranchDialog(exc, default_new_branch=default_branch, parent=self)
-            if dlg.exec() == QDialog.DialogCode.Accepted:
-                new_branch = dlg.get_new_branch_name()
-                if new_branch and self._current_repo:
-                    try:
-                        engine.create_branch(self._current_repo, new_branch)
-                        engine.switch_branch(self._current_repo, new_branch)
-                        self._refresh_after_git_op()
-                        self._on_push_remote(force=False)
-                    except Exception as e:
-                        QMessageBox.critical(
-                            self,
-                            self.tr("Branch Creation Failed"),
-                            str(e),
-                        )
+            accepted = False
+            new_branch = ""
+            try:
+                if dlg.exec() == QDialog.DialogCode.Accepted:
+                    accepted = True
+                    new_branch = dlg.get_new_branch_name()
+            finally:
+                self._close_dialog_safely(dlg)
+            if accepted and new_branch and self._current_repo and self._is_alive():
+                try:
+                    engine.create_branch(self._current_repo, new_branch)
+                    engine.switch_branch(self._current_repo, new_branch)
+                    self._refresh_after_git_op()
+                    self._on_push_remote(force=False)
+                except Exception as e:
+                    QMessageBox.critical(
+                        self,
+                        self.tr("Branch Creation Failed"),
+                        str(e),
+                    )
             return
 
         if isinstance(exc, FileTooLargeRejectedError):
             dlg = FileTooLargeDialog(exc, parent=self)
-            dlg.exec()
+            try:
+                dlg.exec()
+            finally:
+                self._close_dialog_safely(dlg)
             return
 
         if isinstance(exc, SignedCommitsRequiredError):
@@ -1824,21 +2109,32 @@ class MainWindow(QMainWindow):
                 has_multiple_commits=has_multiple,
                 parent=self,
             )
-            if dlg.exec() == QDialog.DialogCode.Accepted:
-                action = dlg.get_action()
+            accepted = False
+            action = ""
+            cfg_overrides: dict[str, str] = {}
+            ssh_url: str | None = None
+            try:
+                if dlg.exec() == QDialog.DialogCode.Accepted:
+                    accepted = True
+                    action = dlg.get_action()
+                    if action == "retry_config":
+                        cfg_overrides = dlg.get_config_overrides()
+                    elif action == "switch_ssh":
+                        ssh_url = dlg.get_ssh_url()
+            finally:
+                self._close_dialog_safely(dlg)
+
+            if accepted and self._is_alive():
                 target_branch = branch or "HEAD"
                 if action == "auto_heal":
                     self._start_auto_heal_push(
                         remote_name, target_branch, has_multiple=has_multiple
                     )
                 elif action == "retry_config":
-                    self._retry_push_with_config(
-                        remote_name, target_branch, dlg.get_config_overrides()
-                    )
+                    self._retry_push_with_config(remote_name, target_branch, cfg_overrides)
                 elif action == "chunk_push":
                     self._start_incremental_push(remote_name, target_branch)
                 elif action == "switch_ssh":
-                    ssh_url = dlg.get_ssh_url()
                     if ssh_url and self._current_repo:
                         try:
                             engine.set_remote_url(self._current_repo, remote_name, ssh_url)
@@ -1863,9 +2159,15 @@ class MainWindow(QMainWindow):
                 self.tr("Force Push (with lease)"), QMessageBox.ButtonRole.DestructiveRole
             )
             box.addButton(QMessageBox.StandardButton.Cancel)
-            box.exec()
+            try:
+                box.exec()
+                clicked = box.clickedButton()
+            finally:
+                self._close_dialog_safely(box)
 
-            clicked = box.clickedButton()
+            if not self._is_alive():
+                return
+
             if clicked == fetch_btn:
                 cancel_event = threading.Event()
                 fetch_dlg = BusyOperationDialog(
@@ -1877,12 +2179,16 @@ class MainWindow(QMainWindow):
                 )
 
                 def on_fetch_done(_):
-                    fetch_dlg.accept()
+                    self._finish_busy_dialog(fetch_dlg, accepted=True)
+                    if not self._is_alive():
+                        return
                     self._refresh_after_git_op()
                     self._on_push_remote(force=False)
 
                 def on_fetch_failed(e):
-                    fetch_dlg.reject()
+                    self._finish_busy_dialog(fetch_dlg, accepted=False)
+                    if not self._is_alive():
+                        return
                     self._route_remote_error(e, remote_name, branch=branch, op="fetch")
 
                 fetch_dlg.show()
@@ -1892,7 +2198,7 @@ class MainWindow(QMainWindow):
                     remote_name,
                     on_finished=on_fetch_done,
                     on_failed=on_fetch_failed,
-                    on_progress=fetch_dlg.set_progress,
+                    on_progress=self._safe_busy_progress(fetch_dlg),
                     cancel_event=cancel_event,
                 )
             elif clicked == force_btn:
@@ -1913,9 +2219,15 @@ class MainWindow(QMainWindow):
             merge_btn = box.addButton(self.tr("Merge"), QMessageBox.ButtonRole.ActionRole)
             rebase_btn = box.addButton(self.tr("Rebase"), QMessageBox.ButtonRole.ActionRole)
             box.addButton(QMessageBox.StandardButton.Cancel)
-            box.exec()
+            try:
+                box.exec()
+                clicked = box.clickedButton()
+            finally:
+                self._close_dialog_safely(box)
 
-            clicked = box.clickedButton()
+            if not self._is_alive():
+                return
+
             target_ref = f"{remote_name}/{branch}" if branch else remote_name
             if clicked == merge_btn:
                 self._on_history_merge(target_ref)
@@ -1983,7 +2295,9 @@ class MainWindow(QMainWindow):
         )
 
         def on_success(_):
-            dlg.accept()
+            self._finish_busy_dialog(dlg, accepted=True)
+            if not self._is_alive():
+                return
             self._refresh_after_git_op()
             if on_success_callback:
                 on_success_callback()
@@ -1991,7 +2305,9 @@ class MainWindow(QMainWindow):
                 self._prompt_save_network_config(extra_config)
 
         def on_failure(e):
-            dlg.reject()
+            self._finish_busy_dialog(dlg, accepted=False)
+            if not self._is_alive():
+                return
             if on_failure_callback:
                 on_failure_callback(e)
             else:
@@ -2007,7 +2323,7 @@ class MainWindow(QMainWindow):
             extra_config=extra_config,
             on_finished=on_success,
             on_failed=on_failure,
-            on_progress=dlg.set_progress,
+            on_progress=self._safe_busy_progress(dlg),
             cancel_event=cancel_event,
             op_name="Push (Resilient Config)",
         )
@@ -2026,7 +2342,9 @@ class MainWindow(QMainWindow):
         )
 
         def on_success(_):
-            dlg.accept()
+            self._finish_busy_dialog(dlg, accepted=True)
+            if not self._is_alive():
+                return
             self._refresh_after_git_op()
             QMessageBox.information(
                 self,
@@ -2035,7 +2353,9 @@ class MainWindow(QMainWindow):
             )
 
         def on_failure(e):
-            dlg.reject()
+            self._finish_busy_dialog(dlg, accepted=False)
+            if not self._is_alive():
+                return
             self._route_remote_error(e, remote_name, branch=branch, op="push")
 
         dlg.show()
@@ -2048,7 +2368,7 @@ class MainWindow(QMainWindow):
             force=False,
             on_finished=on_success,
             on_failed=on_failure,
-            on_progress=dlg.set_progress,
+            on_progress=self._safe_busy_progress(dlg),
             cancel_event=cancel_event,
             op_name="Push (Incremental Batches)",
         )
@@ -2110,6 +2430,8 @@ class MainWindow(QMainWindow):
         )
 
     def _prompt_save_network_config(self, config_dict: dict[str, str]) -> None:
+        if not self._is_alive():
+            return
         box = QMessageBox(self)
         box.setIcon(QMessageBox.Icon.Question)
         box.setWindowTitle(self.tr("Push Succeeded — Save Network Settings?"))
@@ -2128,9 +2450,14 @@ class MainWindow(QMainWindow):
             self.tr("Globally (All Repos)"), QMessageBox.ButtonRole.ActionRole
         )
         box.addButton(self.tr("Don't Save"), QMessageBox.ButtonRole.RejectRole)
-        box.exec()
+        try:
+            box.exec()
+            clicked = box.clickedButton()
+        finally:
+            self._close_dialog_safely(box)
 
-        clicked = box.clickedButton()
+        if not self._is_alive():
+            return
         if clicked == repo_btn and self._current_repo:
             for k, v in config_dict.items():
                 engine.set_git_config(self._current_repo, k, v, scope="local")
@@ -2247,6 +2574,10 @@ class MainWindow(QMainWindow):
 
     def restart_snapshot_timer(self) -> None:
         """Refreshes or stops the automatic snapshot timer based on active repository settings."""
+        if getattr(self, "_is_closing", False):
+            if hasattr(self, "_snapshot_timer"):
+                self._snapshot_timer.stop()
+            return
         if self._current_repo:
             try:
                 from wrench.core import snapshots
@@ -2267,6 +2598,17 @@ class MainWindow(QMainWindow):
         """Thin mockable modal dialog execution seam (FLASH-4)."""
         return dlg.exec()
 
+    def _disconnect_style_hints(self, *_) -> None:
+        if not getattr(self, "_style_hints_connected", False):
+            return
+        hints = getattr(self, "_style_hints", None)
+        if hints is not None and shiboken6.isValid(hints) and hasattr(hints, "colorSchemeChanged"):
+            try:
+                hints.colorSchemeChanged.disconnect(self._on_system_color_scheme_changed)
+            except RuntimeError, TypeError:
+                pass
+        self._style_hints_connected = False
+
     def _disconnect_settings_registry(self, *_) -> None:
         if not getattr(self, "_registry_connected", False):
             return
@@ -2276,17 +2618,41 @@ class MainWindow(QMainWindow):
             pass
         self._registry_connected = False
 
+    def focus_active_settings_dialog(self) -> None:
+        """Raise and focus the active Preferences dialog if one is open."""
+        dlg = getattr(self, "_active_settings_dialog", None)
+        if dlg is not None and shiboken6.isValid(dlg) and dlg.isVisible():
+            dlg.raise_()
+            dlg.activateWindow()
+
     def open_settings_at_category(
         self,
         category: str,
         highlight_key: str | None = None,
+        parent_dialog: QWidget | None = None,
     ) -> None:
         """Open Preferences directly at a named SettingsRegistry category."""
+        active = getattr(self, "_active_settings_dialog", None)
+        if active is not None and shiboken6.isValid(active) and active.isVisible():
+            if hasattr(active, "select_category"):
+                active.select_category(category, highlight_key=highlight_key)
+            active.raise_()
+            active.activateWindow()
+            return
+
         from wrench.ui.dialogs.settings_dialog import SettingsDialog
 
-        dlg = SettingsDialog(main_window=self, parent=self)
-        dlg.select_category(category, highlight_key=highlight_key)
-        self._exec_dialog(dlg)
+        dlg = SettingsDialog(main_window=self, parent=parent_dialog or self)
+        if parent_dialog is not None:
+            dlg.setWindowModality(Qt.WindowModality.WindowModal)
+        self._active_settings_dialog = dlg
+        try:
+            dlg.select_category(category, highlight_key=highlight_key)
+            self._exec_dialog(dlg)
+        finally:
+            self._close_dialog_safely(dlg)
+            if self._active_settings_dialog is dlg:
+                self._active_settings_dialog = None
 
     def _sync_sparse_ui_visibility(self) -> None:
         repo_str = str(self._current_repo.path) if self._current_repo else None
@@ -2321,7 +2687,59 @@ class MainWindow(QMainWindow):
         self.sparse_status_btn.setToolTip(
             self.tr("Click to manage sparse-checkout cone directories")
         )
+        self._apply_status_bar_theme()
         self.sparse_status_btn.setVisible(True)
+
+    def _run_sparse_checkout_dialog(self, repo_path: str | Path) -> int:
+        dlg = SparseCheckoutDialog(
+            repo_path,
+            parent=self,
+            settings_registry=self._settings_registry,
+        )
+        self._sparse_dialog = dlg
+        watcher = getattr(self, "_watcher", None)
+        suspend_state = {"count": 0}
+
+        def _watcher_usable(w: Any) -> bool:
+            return w is not None and (not isinstance(w, QObject) or shiboken6.isValid(w))
+
+        def _suspend_watcher() -> None:
+            if _watcher_usable(watcher) and callable(getattr(watcher, "suspend", None)):
+                watcher.suspend()
+                suspend_state["count"] += 1
+
+        def _resume_watcher(_ok: bool = True) -> None:
+            if suspend_state["count"] > 0:
+                suspend_state["count"] -= 1
+                if _watcher_usable(watcher) and callable(getattr(watcher, "resume", None)):
+                    watcher.resume(grace_ms=150)
+
+        def _on_warning(msg: str) -> None:
+            clean = engine.redact_secrets(msg)
+            if self.statusBar():
+                self.statusBar().showMessage(clean, 8000)
+
+        dlg.apply_started.connect(_suspend_watcher)
+        dlg.apply_finished.connect(_resume_watcher)
+        dlg.apply_warning.connect(_on_warning)
+
+        try:
+            result = self._exec_dialog(dlg)
+            if result == QDialog.DialogCode.Accepted:
+                self._refresh_after_git_op()
+                if getattr(dlg, "last_warning", None) and self.statusBar():
+                    self.statusBar().showMessage(
+                        engine.redact_secrets(str(dlg.last_warning)),
+                        8000,
+                    )
+            return result
+        finally:
+            while suspend_state["count"] > 0:
+                suspend_state["count"] -= 1
+                if _watcher_usable(watcher) and callable(getattr(watcher, "resume", None)):
+                    watcher.resume(grace_ms=150)
+            if self._sparse_dialog is dlg:
+                self._sparse_dialog = None
 
     def _on_manage_sparse_checkout(self) -> None:
         repo_str = str(self._current_repo.path) if self._current_repo else None
@@ -2335,18 +2753,7 @@ class MainWindow(QMainWindow):
             )
             return
 
-        dlg = SparseCheckoutDialog(
-            self._current_repo.path,
-            parent=self,
-            settings_registry=self._settings_registry,
-        )
-        self._sparse_dialog = dlg
-        try:
-            if self._exec_dialog(dlg) == QDialog.DialogCode.Accepted:
-                self._refresh_after_git_op()
-        finally:
-            if self._sparse_dialog is dlg:
-                self._sparse_dialog = None
+        self._run_sparse_checkout_dialog(self._current_repo.path)
 
     @Slot(str, object)
     @Slot(str, object, object)
@@ -2361,7 +2768,10 @@ class MainWindow(QMainWindow):
                 and self._sparse_dialog is not None
                 and shiboken6.isValid(self._sparse_dialog)
             ):
-                self._sparse_dialog.reject()
+                if getattr(self._sparse_dialog, "_settings_open", False):
+                    self._sparse_dialog._pending_close_on_disable = True
+                else:
+                    self._sparse_dialog.reject()
         elif key == "maintenance.auto_commit_graph.enabled":
             repo_str = str(self._current_repo.path) if self._current_repo else None
             if not self._settings_registry.is_enabled(key, repo_str):
@@ -2378,18 +2788,22 @@ class MainWindow(QMainWindow):
             self.watcher_mode_label.setToolTip(
                 reason or self.tr("Switched to adaptive .git-only metadata watcher")
             )
+            self._apply_status_bar_theme()
             self.watcher_mode_label.setVisible(True)
         elif mode == "polling":
             self.watcher_mode_label.setText(self.tr("Watcher: polling"))
             self.watcher_mode_label.setToolTip(
                 reason or self.tr("Polling metadata fallback active")
             )
+            self._apply_status_bar_theme()
             self.watcher_mode_label.setVisible(True)
         else:
             self.watcher_mode_label.setVisible(False)
             self.watcher_mode_label.setToolTip("")
 
     def _maybe_write_commit_graph(self, repo_path: str | Path) -> None:
+        if not self._is_alive():
+            return
         repo_str = str(repo_path)
         if not self._settings_registry.is_enabled(
             "maintenance.auto_commit_graph.enabled", repo_str
@@ -2397,26 +2811,19 @@ class MainWindow(QMainWindow):
             return
         self._commit_graph_generation += 1
         gen_id = self._commit_graph_generation
-        signals = _CommitGraphSignals(None)
-        self._pending_maint_signals.add(signals)
-        signals.finished.connect(
-            self._on_commit_graph_finished,
-            Qt.ConnectionType.QueuedConnection,
-        )
+        dispatcher = _get_commit_graph_dispatcher()
         worker = _CommitGraphWorker(
             generation_id=gen_id,
             repo_path=Path(repo_str),
             settings_registry=self._settings_registry,
-            signals=signals,
+            window_ref=weakref.ref(self),
+            dispatcher=dispatcher,
         )
         QThreadPool.globalInstance().start(worker)
 
     @Slot(int, object)
     def _on_commit_graph_finished(self, generation_id: int, stats: Any) -> None:
-        sender_obj = self.sender()
-        if isinstance(sender_obj, _CommitGraphSignals):
-            self._pending_maint_signals.discard(sender_obj)
-        if not shiboken6.isValid(self) or generation_id != self._commit_graph_generation:
+        if not self._is_alive() or generation_id != self._commit_graph_generation:
             return
         if stats is not None and getattr(stats, "written", False):
             logger.debug(
@@ -2427,10 +2834,22 @@ class MainWindow(QMainWindow):
 
     def _on_open_preferences(self) -> None:
         """Opens the Preferences / Settings dialog."""
+        active = getattr(self, "_active_settings_dialog", None)
+        if active is not None and shiboken6.isValid(active) and active.isVisible():
+            active.raise_()
+            active.activateWindow()
+            return
+
         from wrench.ui.dialogs.settings_dialog import SettingsDialog
 
         dlg = SettingsDialog(main_window=self, parent=self)
-        self._exec_dialog(dlg)
+        self._active_settings_dialog = dlg
+        try:
+            self._exec_dialog(dlg)
+        finally:
+            self._close_dialog_safely(dlg)
+            if self._active_settings_dialog is dlg:
+                self._active_settings_dialog = None
 
     def _on_add_category_tab(self, tab_type: str) -> None:
         if tab_type == "changes":
@@ -2505,11 +2924,19 @@ class MainWindow(QMainWindow):
 
     def _on_manage_forge_accounts(self) -> None:
         dlg = AccountsDialog(self)
-        dlg.exec()
-        self._refresh_forge_tabs()
+        try:
+            dlg.exec()
+        finally:
+            self._close_dialog_safely(dlg)
+        if self._is_alive():
+            self._refresh_forge_tabs()
 
-    def _on_link_forge(self, repo_path: str = "") -> None:
-        target_path = repo_path or (str(self._current_repo.path) if self._current_repo else "")
+    @Slot(bool)
+    @Slot(str)
+    @Slot()
+    def _on_link_forge(self, repo_path: str | bool = "") -> None:
+        resolved_path = repo_path if isinstance(repo_path, str) else ""
+        target_path = resolved_path or (str(self._current_repo.path) if self._current_repo else "")
         if not target_path:
             QMessageBox.information(
                 self,
@@ -2519,7 +2946,10 @@ class MainWindow(QMainWindow):
             return
         dlg = LinkRepoDialog(target_path, self, conn=self._conn)
         dlg.links_changed.connect(self._refresh_forge_tabs)
-        dlg.exec()
+        try:
+            dlg.exec()
+        finally:
+            self._close_dialog_safely(dlg)
 
     def _refresh_forge_tabs(self) -> None:
         for i in range(self.tab_container.count()):
@@ -2697,7 +3127,10 @@ class MainWindow(QMainWindow):
 
     def _on_about(self) -> None:
         dlg = AboutDialog(parent=self)
-        dlg.exec()
+        try:
+            dlg.exec()
+        finally:
+            self._close_dialog_safely(dlg)
 
     def _on_report_bug(self) -> None:
         from PySide6.QtCore import QUrl

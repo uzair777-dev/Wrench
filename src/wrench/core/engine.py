@@ -248,6 +248,16 @@ class RepoHandle:
         else:
             self.pygit2_repo = pygit2_repo
             self.path = Path(path) if path is not None else Path(pygit2_repo.path).parent
+        self._generation: int = 0
+
+    def reload(self) -> None:
+        """Reopen pygit2.Repository so external config/ref/sparse changes take effect."""
+        try:
+            new_repo = pygit2.Repository(str(self.path))
+        except pygit2.GitError as exc:
+            raise WrenchRepoNotFoundError(str(exc)) from exc
+        self._generation += 1
+        self.pygit2_repo = new_repo
 
 
 # Import read_ops, write_ops, identity, reflog after all dataclasses are defined
@@ -437,6 +447,12 @@ def get_commit_file_stats(repo: RepoHandle, sha: str) -> list[FileStat]:
 
 def get_ref_labels(repo: RepoHandle) -> dict[str, list[RefLabel]]:
     return read_ops.get_ref_labels(repo)
+
+
+def get_repo_refs_signature(
+    repo: RepoHandle,
+) -> tuple[str, bool, bool, str, str, str] | None:
+    return read_ops.get_repo_refs_signature(repo)
 
 
 def blame(repo: RepoHandle, path: str) -> list[BlameLine]:
@@ -1568,6 +1584,16 @@ class GitEngine:
         return is_unborn_repo(repo_path)
 
     @staticmethod
+    def refresh_repo_handle(repo: RepoHandle | None) -> None:
+        refresh_repo_handle(repo)
+
+    @staticmethod
+    def get_repo_refs_signature(
+        repo: RepoHandle,
+    ) -> tuple[str, bool, bool, str, str, str] | None:
+        return get_repo_refs_signature(repo)
+
+    @staticmethod
     def is_sparse_checkout_enabled(repo_path: Path | str) -> bool:
         return is_sparse_checkout_enabled(repo_path)
 
@@ -1589,12 +1615,17 @@ class GitEngine:
         dirs: list[str],
         *,
         cone: bool = True,
+        warnings_out: list[str] | None = None,
     ) -> None:
-        set_sparse_directories(repo_path, dirs, cone=cone)
+        set_sparse_directories(repo_path, dirs, cone=cone, warnings_out=warnings_out)
 
     @staticmethod
-    def disable_sparse_checkout(repo_path: Path | str) -> None:
-        disable_sparse_checkout(repo_path)
+    def disable_sparse_checkout(
+        repo_path: Path | str,
+        *,
+        warnings_out: list[str] | None = None,
+    ) -> None:
+        disable_sparse_checkout(repo_path, warnings_out=warnings_out)
 
     @staticmethod
     def list_head_top_directories(repo_path: Path | str, max_depth: int = 2) -> list[str]:
@@ -1647,6 +1678,16 @@ def is_unborn_repo(repo_path: Path | str) -> bool:
         raise WrenchRepoNotFoundError(str(exc)) from exc
 
 
+def refresh_repo_handle(repo: RepoHandle | None) -> None:
+    """Safely reload a RepoHandle's underlying pygit2.Repository if present and valid."""
+    if repo is None or not hasattr(repo, "reload"):
+        return
+    try:
+        repo.reload()
+    except WrenchRepoNotFoundError as exc:
+        logger.debug("RepoHandle reload skipped for '%s': %s", getattr(repo, "path", "?"), exc)
+
+
 def is_sparse_checkout_enabled(repo_path: Path | str) -> bool:
     return sparse_checkout.is_sparse_checkout_enabled(repo_path)
 
@@ -1668,12 +1709,22 @@ def set_sparse_directories(
     dirs: list[str],
     *,
     cone: bool = True,
+    warnings_out: list[str] | None = None,
 ) -> None:
-    sparse_checkout.set_sparse_directories(repo_path, dirs, cone=cone)
+    sparse_checkout.set_sparse_directories(
+        repo_path,
+        dirs,
+        cone=cone,
+        warnings_out=warnings_out,
+    )
 
 
-def disable_sparse_checkout(repo_path: Path | str) -> None:
-    sparse_checkout.disable_sparse_checkout(repo_path)
+def disable_sparse_checkout(
+    repo_path: Path | str,
+    *,
+    warnings_out: list[str] | None = None,
+) -> None:
+    sparse_checkout.disable_sparse_checkout(repo_path, warnings_out=warnings_out)
 
 
 def list_head_top_directories(repo_path: Path | str, max_depth: int = 2) -> list[str]:

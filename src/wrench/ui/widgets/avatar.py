@@ -9,7 +9,8 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from PySide6.QtCore import QObject, Qt, Signal
+import shiboken6
+from PySide6.QtCore import QObject, Qt, Signal, Slot
 from PySide6.QtGui import QColor, QImage, QPainter, QPainterPath, QPixmap
 from PySide6.QtWidgets import QLabel, QWidget
 
@@ -297,6 +298,8 @@ class AvatarLoader(QObject):
         return fetch_avatar_bytes(url, headers=AVATAR_HEADERS, timeout=10.0)
 
     def _on_fetch_success(self, url: str, data: bytes) -> None:
+        if not shiboken6.isValid(self):
+            return
         self._in_flight.discard(url)
         sizes = self._pending_sizes.pop(url, {40})
         image = QImage()
@@ -317,10 +320,14 @@ class AvatarLoader(QObject):
         for s in sizes:
             pixmap = _make_circular_pixmap(image, s)
             self._mem_cache[(url, s)] = (pixmap, now)
-            self.avatar_ready.emit(url, s)
-        self.avatar_ready.emit(url, 0)
+            if shiboken6.isValid(self):
+                self.avatar_ready.emit(url, s)
+        if shiboken6.isValid(self):
+            self.avatar_ready.emit(url, 0)
 
     def _on_fetch_failed(self, url: str, exc: Exception) -> None:
+        if not shiboken6.isValid(self):
+            return
         self._in_flight.discard(url)
         self._pending_sizes.pop(url, None)
         self._negative_cache[url] = time.time()
@@ -332,7 +339,7 @@ _loader_instance: AvatarLoader | None = None
 
 def get_avatar_loader() -> AvatarLoader:
     global _loader_instance
-    if _loader_instance is None:
+    if _loader_instance is None or not shiboken6.isValid(_loader_instance):
         _loader_instance = AvatarLoader()
     return _loader_instance
 
@@ -353,10 +360,18 @@ class AvatarWidget(QLabel):
         self.setAlignment(Qt.AlignCenter)
 
         self._loader = get_avatar_loader()
+        self._avatar_loader_connected: bool = False
         self._loader.avatar_ready.connect(self._on_avatar_ready)
-        self.destroyed.connect(self._disconnect_avatar_loader)
+        self._avatar_loader_connected = True
+
+    def closeEvent(self, event) -> None:
+        self._disconnect_avatar_loader()
+        super().closeEvent(event)
 
     def _disconnect_avatar_loader(self, *_) -> None:
+        if not getattr(self, "_avatar_loader_connected", False):
+            return
+        self._avatar_loader_connected = False
         try:
             self._loader.avatar_ready.disconnect(self._on_avatar_ready)
         except RuntimeError, TypeError:
@@ -379,13 +394,10 @@ class AvatarWidget(QLabel):
         )
         self.setPixmap(pm)
 
-    def _on_avatar_ready(self, url: str, size: int) -> None:
-        try:
-            import shiboken6
-
-            if not shiboken6.isValid(self):
-                return
-        except Exception:
+    @Slot(str, int)
+    @Slot()
+    def _on_avatar_ready(self, url: str = "", size: int = 0) -> None:
+        if not shiboken6.isValid(self):
             return
         try:
             if url == self._url and (size == self._size or size == 0):

@@ -1,5 +1,6 @@
 """Dialog for submitting a pull request / merge request review."""
 
+import shiboken6
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
     QButtonGroup,
@@ -142,10 +143,14 @@ class SubmitReviewDialog(QDialog):
         )
 
     def _on_success(self, _=None) -> None:
+        if not shiboken6.isValid(self):
+            return
         self.review_submitted.emit()
         self.accept()
 
     def _on_failure(self, exc: Exception) -> None:
+        if not shiboken6.isValid(self):
+            return
         self.ok_btn.setEnabled(True)
         self.ok_btn.setText("Submit Review")
         self.error_label.setText(str(exc))

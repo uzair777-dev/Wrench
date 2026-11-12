@@ -1,5 +1,6 @@
 """Dialog for creating a new pull request / merge request."""
 
+import shiboken6
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QComboBox,
@@ -154,10 +155,14 @@ class CreatePRDialog(QDialog):
         )
 
     def _on_success(self, pr: PullRequest) -> None:
+        if not shiboken6.isValid(self):
+            return
         self.pr_created.emit(pr)
         self.accept()
 
     def _on_failure(self, exc: Exception) -> None:
+        if not shiboken6.isValid(self):
+            return
         self.ok_btn.setEnabled(True)
         self.ok_btn.setText("Create Pull Request")
         self.error_label.setText(str(exc))

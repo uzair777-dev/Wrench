@@ -4,6 +4,7 @@ import logging
 import threading
 from pathlib import Path
 
+import shiboken6
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import (
     QDialog,
@@ -35,6 +36,7 @@ class BusyDialog(QDialog):
         super().__init__(parent)
         self.repo_path = Path(repo_path)
         self.guard_result = guard_result
+        self._is_closed = False
         self.setWindowTitle("Repository Busy")
         self.setMinimumWidth(480)
         self.setModal(True)
@@ -98,6 +100,10 @@ class BusyDialog(QDialog):
         layout.addLayout(btn_bar)
 
     def _check_lock_status(self) -> None:
+        if not shiboken6.isValid(self) or self._is_closed:
+            if hasattr(self, "_poll_timer") and shiboken6.isValid(self._poll_timer):
+                self._poll_timer.stop()
+            return
         self._elapsed_seconds += 0.5
         res = acquire_repo_guard(self.repo_path, timeout=0.0)
         if res.status == "ready":
@@ -116,8 +122,22 @@ class BusyDialog(QDialog):
             self.force_unlocked.emit()
             self.accept()
 
+    def _stop_timers(self) -> None:
+        if hasattr(self, "_poll_timer") and shiboken6.isValid(self._poll_timer):
+            self._poll_timer.stop()
+
+    def hideEvent(self, event) -> None:
+        self._stop_timers()
+        super().hideEvent(event)
+
+    def done(self, result: int) -> None:
+        self._is_closed = True
+        self._stop_timers()
+        super().done(result)
+
     def closeEvent(self, event) -> None:
-        self._poll_timer.stop()
+        self._is_closed = True
+        self._stop_timers()
         super().closeEvent(event)
 
 
@@ -136,6 +156,7 @@ class BusyOperationDialog(QDialog):
         super().__init__(parent)
         self.cancel_event = cancel_event
         self.humor_enabled = humor_enabled
+        self._is_closed = False
         self.setWindowTitle(title)
         self.setMinimumWidth(440)
         self.setModal(True)
@@ -183,7 +204,16 @@ class BusyOperationDialog(QDialog):
 
         layout.addLayout(btn_bar)
 
+    def _stop_timers(self) -> None:
+        if hasattr(self, "_humor_timer") and shiboken6.isValid(self._humor_timer):
+            self._humor_timer.stop()
+        if hasattr(self, "_humor_start_timer") and shiboken6.isValid(self._humor_start_timer):
+            self._humor_start_timer.stop()
+
     def _start_humor_rotation(self) -> None:
+        if not shiboken6.isValid(self) or self._is_closed:
+            self._stop_timers()
+            return
         if not self.humor_enabled or self.progress_bar.maximum() != 0:
             return
         from wrench.ui.quotes import WAITING_LINES, random_quote
@@ -193,6 +223,9 @@ class BusyOperationDialog(QDialog):
         self._humor_timer.start()
 
     def _rotate_humor_line(self) -> None:
+        if not shiboken6.isValid(self) or self._is_closed:
+            self._stop_timers()
+            return
         if not self.humor_enabled or self.progress_bar.maximum() != 0:
             self.humor_label.setVisible(False)
             self._humor_timer.stop()
@@ -202,6 +235,8 @@ class BusyOperationDialog(QDialog):
         self.humor_label.setText(self.tr(random_quote(WAITING_LINES)))
 
     def set_progress(self, pct: int) -> None:
+        if not shiboken6.isValid(self) or self._is_closed:
+            return
         if pct <= 0:
             self.progress_bar.setRange(0, 0)
             if (
@@ -218,20 +253,30 @@ class BusyOperationDialog(QDialog):
             self._humor_start_timer.stop()
 
     def update_message(self, message: str) -> None:
+        if not shiboken6.isValid(self) or self._is_closed:
+            return
         self.status_lbl.setText(message)
 
     def _on_cancel(self) -> None:
-        self._humor_timer.stop()
-        self._humor_start_timer.stop()
+        self._stop_timers()
         self.humor_label.setVisible(False)
         if self.cancel_event:
             self.cancel_event.set()
         self.status_lbl.setText("Cancelling operation...")
         self.cancel_btn.setEnabled(False)
 
+    def hideEvent(self, event) -> None:
+        self._stop_timers()
+        super().hideEvent(event)
+
+    def done(self, result: int) -> None:
+        self._is_closed = True
+        self._stop_timers()
+        super().done(result)
+
     def closeEvent(self, event) -> None:
-        self._humor_timer.stop()
-        self._humor_start_timer.stop()
+        self._is_closed = True
+        self._stop_timers()
         if self.cancel_event:
             self.cancel_event.set()
         super().closeEvent(event)

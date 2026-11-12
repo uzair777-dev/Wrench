@@ -35,7 +35,8 @@ def db_conn():
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row
     run_migrations(conn)
-    return conn
+    yield conn
+    conn.close()
 
 
 @pytest.fixture

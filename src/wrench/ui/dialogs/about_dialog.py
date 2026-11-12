@@ -9,6 +9,7 @@ import importlib.metadata
 import logging
 from pathlib import Path
 
+import shiboken6
 from PySide6.QtCore import Qt, QTimer, QUrl
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
@@ -124,6 +125,10 @@ class AboutDialog(QDialog):
         layout.addLayout(btn_row)
 
     def _rotate_wisdom(self) -> None:
+        if not shiboken6.isValid(self) or not self.isVisible():
+            if hasattr(self, "_wisdom_timer") and shiboken6.isValid(self._wisdom_timer):
+                self._wisdom_timer.stop()
+            return
         quote_text = random_quote(ABOUT_WISDOM)
         if isinstance(quote_text, tuple):
             quote_text = quote_text[0]
@@ -164,6 +169,17 @@ class AboutDialog(QDialog):
 
         return "\n".join(sections)
 
+    def hideEvent(self, event) -> None:
+        if hasattr(self, "_wisdom_timer") and shiboken6.isValid(self._wisdom_timer):
+            self._wisdom_timer.stop()
+        super().hideEvent(event)
+
+    def done(self, result: int) -> None:
+        if hasattr(self, "_wisdom_timer") and shiboken6.isValid(self._wisdom_timer):
+            self._wisdom_timer.stop()
+        super().done(result)
+
     def closeEvent(self, event) -> None:
-        self._wisdom_timer.stop()
+        if hasattr(self, "_wisdom_timer") and shiboken6.isValid(self._wisdom_timer):
+            self._wisdom_timer.stop()
         super().closeEvent(event)

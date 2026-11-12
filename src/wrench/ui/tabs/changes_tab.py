@@ -17,12 +17,14 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import QByteArray, QEvent, QPoint, QSize, Qt, Signal
+import shiboken6
+from PySide6.QtCore import QByteArray, QEvent, QPoint, QSize, Qt, Signal, Slot
 from PySide6.QtGui import QIcon, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
     QComboBox,
+    QDialog,
     QFileDialog,
     QFrame,
     QGroupBox,
@@ -54,6 +56,8 @@ from wrench.ui.theme import (
     FORGE_LINK_STYLES,
     PRIMARY_BUTTON_STYLES,
     get_badge_colors,
+    get_banner_style,
+    get_icon_button_style,
     is_dark_theme,
 )
 from wrench.ui.widgets.avatar import get_avatar_loader
@@ -61,6 +65,8 @@ from wrench.ui.widgets.branch_switcher import BranchSwitcherWidget
 from wrench.ui.workers import run_in_background
 
 logger = logging.getLogger(__name__)
+
+_HIGH_FILE_COUNT_THRESHOLD = 500
 
 
 class FileListItemWidget(QWidget):
@@ -74,6 +80,7 @@ class FileListItemWidget(QWidget):
         change_type: str,
         checked: bool = True,
         parent: QWidget | None = None,
+        is_dark: bool | None = None,
     ):
         super().__init__(parent)
         self.path = path
@@ -97,7 +104,7 @@ class FileListItemWidget(QWidget):
         self.badge.setAlignment(Qt.AlignCenter)
         if len(change_type) >= 2:
             self.badge.setToolTip(self.tr("Partially Staged: changes in index and working tree"))
-        self._apply_badge_style(change_type)
+        self._apply_badge_style(change_type, is_dark=is_dark)
         layout.addWidget(self.badge)
 
         # Path label (truncated if long)
@@ -132,12 +139,17 @@ class FileListItemWidget(QWidget):
         """Re-applies the badge style based on the active theme."""
         self._apply_badge_style()
 
-    def _apply_badge_style(self, change_type: str | None = None) -> None:
+    def _apply_badge_style(
+        self,
+        change_type: str | None = None,
+        *,
+        is_dark: bool | None = None,
+    ) -> None:
         if change_type is not None:
             self._change_type = change_type
         ct = getattr(self, "_change_type", "M")
-        is_dark = is_dark_theme(self)
-        fg, bg = get_badge_colors(ct, is_dark=is_dark)
+        resolved_dark = is_dark_theme(self) if is_dark is None else bool(is_dark)
+        fg, bg = get_badge_colors(ct, is_dark=resolved_dark)
         self.badge.setStyleSheet(
             f"QLabel {{ color: {fg}; background-color: {bg}; font-weight: bold; font-size: 11px; "
             f"border-radius: 3px; padding: 2px 4px; }}"
@@ -180,6 +192,14 @@ class ChangedFilesList(QListWidget):
                 if isinstance(w, FileListItemWidget):
                     w.set_checked(not w.is_checked(), emit_signal=True)
                     return
+                if item.flags() & Qt.ItemFlag.ItemIsUserCheckable:
+                    next_state = (
+                        Qt.CheckState.Unchecked
+                        if item.checkState() == Qt.CheckState.Checked
+                        else Qt.CheckState.Checked
+                    )
+                    item.setCheckState(next_state)
+                    return
         super().keyPressEvent(event)
 
 
@@ -203,21 +223,32 @@ class ChangesTab(QWidget):
         self._commit_drafts: dict[str, tuple[str, str]] = {}  # repo_path -> (msg, desc)
         self._previous_untracked_msg: str = ""
         self._avatar_fetch_in_progress: set[int] = set()
+        self._populating_files: bool = False
+        self._avatar_loader_connected: bool = False
 
         self._init_ui()
         get_avatar_loader().avatar_ready.connect(self._on_avatar_ready)
-        self.destroyed.connect(self._disconnect_avatar_loader)
+        self._avatar_loader_connected = True
+
+    def closeEvent(self, event) -> None:
+        self._disconnect_avatar_loader()
+        if hasattr(self, "diff_view") and shiboken6.isValid(self.diff_view):
+            self.diff_view.close()
+        super().closeEvent(event)
 
     def _disconnect_avatar_loader(self, *_) -> None:
+        if not getattr(self, "_avatar_loader_connected", False):
+            return
+        self._avatar_loader_connected = False
         try:
             get_avatar_loader().avatar_ready.disconnect(self._on_avatar_ready)
         except RuntimeError, TypeError:
             pass
 
-    def _on_avatar_ready(self, *_) -> None:
+    @Slot(str, int)
+    @Slot()
+    def _on_avatar_ready(self, *_args: Any) -> None:
         try:
-            import shiboken6
-
             if not shiboken6.isValid(self):
                 return
             self._update_account_btn()
@@ -257,11 +288,6 @@ class ChangesTab(QWidget):
         self.forge_btn = QToolButton(self)
         self.forge_btn.setText("🌐")
         self.forge_btn.setToolTip(self.tr("Forge accounts and linked remotes"))
-        self.forge_btn.setStyleSheet(
-            "QToolButton { font-size: 13px; padding: 2px 5px; "
-            "border: 1px solid rgba(128,128,128,0.2); border-radius: 3px; } "
-            "QToolButton:hover { background-color: rgba(128,128,128,0.2); }"
-        )
         self.forge_btn.clicked.connect(self._show_forge_menu)
         repo_bar.addWidget(self.forge_btn)
 
@@ -325,11 +351,19 @@ class ChangesTab(QWidget):
         files_header.addStretch()
         left_layout.addLayout(files_header)
 
+        # Compact-mode notice banner above changed files list (shown only above threshold)
+        self.large_list_notice_label = QLabel("", self)
+        self.large_list_notice_label.setWordWrap(True)
+        self.large_list_notice_label.setVisible(False)
+        left_layout.addWidget(self.large_list_notice_label)
+
         # Unified changed files list
         self.files_list = ChangedFilesList(self)
+        self.files_list.setUniformItemSizes(True)
         self.files_list.setContextMenuPolicy(Qt.CustomContextMenu)
         self.files_list.customContextMenuRequested.connect(self._show_file_context_menu)
         self.files_list.itemClicked.connect(self._on_file_item_clicked)
+        self.files_list.itemChanged.connect(self._on_files_list_item_changed)
         left_layout.addWidget(self.files_list, 1)
 
         # Commit section
@@ -344,12 +378,10 @@ class ChangesTab(QWidget):
         self.account_btn.setText("👤")
         self.account_btn.setToolTip(self.tr("Forge Account: Local / Unlinked"))
         self.account_btn.setAccessibleName(self.tr("Forge account picker"))
-        self.account_btn.setStyleSheet(
-            "QToolButton { border: none; font-size: 14px; padding: 2px 4px; border-radius: 12px; } "
-            "QToolButton:hover { background-color: rgba(128, 128, 128, 0.2); }"
-        )
         self.account_btn.clicked.connect(self._show_account_menu)
         msg_row.addWidget(self.account_btn)
+        self._update_tool_buttons_theme()
+        self._update_large_list_notice_theme()
 
         self.commit_msg_input = QLineEdit(commit_group)
         self.commit_msg_input.setPlaceholderText(self.tr("Summary (required)"))
@@ -427,7 +459,7 @@ class ChangesTab(QWidget):
         self.splitter.addWidget(right_widget)
         self.splitter.setStretchFactor(0, 4)
         self.splitter.setStretchFactor(1, 6)
-        self.splitter.splitterMoved.connect(lambda *_: self.state_changed.emit())
+        self.splitter.splitterMoved.connect(self.state_changed)
 
         # Setup shortcut: Ctrl+Enter to commit
         commit_shortcut = QShortcut(QKeySequence("Ctrl+Return"), self)
@@ -576,7 +608,7 @@ class ChangesTab(QWidget):
 
         try:
             self._current_status = engine.get_status(self._repo)
-            self.branch_switcher.refresh()
+            self.branch_switcher.refresh(self._current_status)
             self._update_conflict_banner()
             self._populate_files_list()
             self._update_commit_button()
@@ -673,6 +705,26 @@ class ChangesTab(QWidget):
         self.forge_link_banner.setStyleSheet(f"QFrame {{ {styles['frame']} }}")
         self.forge_link_label.setStyleSheet(styles["label"])
 
+    def _update_tool_buttons_theme(self) -> None:
+        """Updates forge and account icon buttons using active Catppuccin theme tokens."""
+        is_dark = is_dark_theme(self)
+        if hasattr(self, "forge_btn"):
+            self.forge_btn.setStyleSheet(get_icon_button_style(is_dark, rounded=False))
+        if hasattr(self, "account_btn"):
+            self.account_btn.setStyleSheet(get_icon_button_style(is_dark, rounded=True))
+
+    def _update_large_list_notice_theme(self) -> None:
+        """Updates compact-mode notice banner using theme banner tokens."""
+        if not hasattr(self, "large_list_notice_label"):
+            return
+        is_dark = is_dark_theme(self)
+        style = get_banner_style("info", is_dark)
+        self.large_list_notice_label.setStyleSheet(
+            f"QLabel {{ background-color: {style['bg']}; color: {style['fg']}; "
+            f"border: 1px solid {style['border']}; border-radius: 4px; "
+            f"padding: 3px 6px; font-size: 11px; }}"
+        )
+
     def _handle_forge_link_clicked(self) -> None:
         if callable(self._on_forge_link_cb):
             self._on_forge_link_cb()
@@ -723,6 +775,8 @@ class ChangesTab(QWidget):
         self._update_commit_btn_theme()
         self._update_conflict_banner_theme()
         self._update_forge_link_banner_theme()
+        self._update_tool_buttons_theme()
+        self._update_large_list_notice_theme()
         if hasattr(self, "branch_switcher"):
             self.branch_switcher._update_display()
         if hasattr(self, "files_list"):
@@ -786,8 +840,12 @@ class ChangesTab(QWidget):
 
         if target_path:
             dialog = MergeDialog(self._repo, target_path, mode=mode, parent=self)
-            if dialog.exec():
-                self.refresh()
+            try:
+                if dialog.exec():
+                    self.refresh()
+            finally:
+                if isinstance(dialog, QDialog) and shiboken6.isValid(dialog):
+                    dialog.close()
             return
 
         conflicts: list[str] = []
@@ -812,21 +870,75 @@ class ChangesTab(QWidget):
 
         for p in conflicts:
             dialog = MergeDialog(self._repo, p, mode=mode, parent=self)
-            if not dialog.exec():
-                break
+            try:
+                if not dialog.exec():
+                    break
+            finally:
+                if isinstance(dialog, QDialog) and shiboken6.isValid(dialog):
+                    dialog.close()
         self.refresh()
+
+    def _item_path(self, item: QListWidgetItem | None) -> str | None:
+        if item is None:
+            return None
+        w = self.files_list.itemWidget(item)
+        if isinstance(w, FileListItemWidget):
+            return w.path
+        data = item.data(Qt.UserRole)
+        return str(data) if data else None
+
+    def _is_item_checked(self, item: QListWidgetItem | None) -> bool:
+        if item is None:
+            return False
+        w = self.files_list.itemWidget(item)
+        if isinstance(w, FileListItemWidget):
+            return w.is_checked()
+        if item.flags() & Qt.ItemFlag.ItemIsUserCheckable:
+            return item.checkState() == Qt.CheckState.Checked
+        return False
+
+    def _set_item_checked(
+        self,
+        item: QListWidgetItem | None,
+        checked: bool,
+        *,
+        emit_signal: bool = False,
+    ) -> None:
+        if item is None:
+            return
+        w = self.files_list.itemWidget(item)
+        if isinstance(w, FileListItemWidget):
+            w.set_checked(checked, emit_signal=emit_signal)
+            return
+        if item.flags() & Qt.ItemFlag.ItemIsUserCheckable:
+            target_state = Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked
+            if not emit_signal:
+                was_blocked = self.files_list.blockSignals(True)
+                try:
+                    item.setCheckState(target_state)
+                finally:
+                    self.files_list.blockSignals(was_blocked)
+            else:
+                item.setCheckState(target_state)
+
+    def _on_files_list_item_changed(self, item: QListWidgetItem) -> None:
+        if self._populating_files:
+            return
+        if self.files_list.itemWidget(item) is not None:
+            return
+        self._on_item_checked_changed()
 
     def _populate_files_list(self) -> None:
         if not self._current_status:
             return
 
         # Keep existing checked state map: path -> checked
-        checked_map = {}
+        checked_map: dict[str, bool] = {}
         for i in range(self.files_list.count()):
             item = self.files_list.item(i)
-            w = self.files_list.itemWidget(item)
-            if isinstance(w, FileListItemWidget):
-                checked_map[w.path] = w.is_checked()
+            path = self._item_path(item)
+            if path is not None:
+                checked_map[path] = self._is_item_checked(item)
 
         self.files_list.clear()
 
@@ -866,23 +978,53 @@ class ChangesTab(QWidget):
         )
 
         if total_files == 0:
+            self.large_list_notice_label.setVisible(False)
             self._show_clean_state()
             return
 
         self.clean_state_widget.setVisible(False)
         self.diff_view.setVisible(True)
 
-        for path, code in sorted(items, key=lambda x: x[0]):
-            # Default to checked if newly detected, else respect previous checkbox state
-            is_chk = checked_map.get(path, True)
-            widget = FileListItemWidget(path, code, checked=is_chk)
-            widget.checked_changed.connect(self._on_item_checked_changed)
+        use_compact = total_files > _HIGH_FILE_COUNT_THRESHOLD
+        if use_compact:
+            self.large_list_notice_label.setText(
+                self.tr(f"Compact list active ({total_files:,} files) for responsive scrolling.")
+            )
+            self.large_list_notice_label.setVisible(True)
+        else:
+            self.large_list_notice_label.setVisible(False)
 
-            item = QListWidgetItem(self.files_list)
-            item.setSizeHint(widget.sizeHint())
-            item.setData(Qt.UserRole, path)
-            self.files_list.addItem(item)
-            self.files_list.setItemWidget(item, widget)
+        is_dark = is_dark_theme(self)
+        self._populating_files = True
+        self.files_list.setUpdatesEnabled(False)
+        try:
+            for path, code in sorted(items, key=lambda x: x[0]):
+                # Default to checked if newly detected, else respect previous checkbox state
+                is_chk = checked_map.get(path, True)
+                if not use_compact:
+                    widget = FileListItemWidget(path, code, checked=is_chk, is_dark=is_dark)
+                    widget.checked_changed.connect(self._on_item_checked_changed)
+
+                    item = QListWidgetItem(self.files_list)
+                    item.setSizeHint(widget.sizeHint())
+                    item.setData(Qt.UserRole, path)
+                    self.files_list.addItem(item)
+                    self.files_list.setItemWidget(item, widget)
+                else:
+                    item = QListWidgetItem(f"[{code}] {path}")
+                    item.setData(Qt.UserRole, path)
+                    item.setToolTip(f"{code}: {path}")
+                    item.setFlags(
+                        item.flags()
+                        | Qt.ItemFlag.ItemIsUserCheckable
+                        | Qt.ItemFlag.ItemIsEnabled
+                        | Qt.ItemFlag.ItemIsSelectable
+                    )
+                    item.setCheckState(Qt.CheckState.Checked if is_chk else Qt.CheckState.Unchecked)
+                    self.files_list.addItem(item)
+        finally:
+            self._populating_files = False
+            self.files_list.setUpdatesEnabled(True)
 
         self._update_select_all_state()
 
@@ -909,6 +1051,7 @@ class ChangesTab(QWidget):
 
     def _show_zero_repos_state(self) -> None:
         self.files_list.clear()
+        self.large_list_notice_label.setVisible(False)
         self.files_count_label.setText(self.tr("No repository open"))
         self._show_clean_state()
         self.clean_title.setText(self.tr("No repository open"))
@@ -942,11 +1085,7 @@ class ChangesTab(QWidget):
             return
 
         checked_count = sum(
-            1
-            for i in range(total)
-            if (w := self.files_list.itemWidget(self.files_list.item(i)))
-            and isinstance(w, FileListItemWidget)
-            and w.is_checked()
+            1 for i in range(total) if self._is_item_checked(self.files_list.item(i))
         )
 
         self.select_all_cb.blockSignals(True)
@@ -961,10 +1100,7 @@ class ChangesTab(QWidget):
     def _on_select_all_toggled(self, state: int) -> None:
         target_checked = state == Qt.Checked or state == 2 or self.select_all_cb.isChecked()
         for i in range(self.files_list.count()):
-            item = self.files_list.item(i)
-            w = self.files_list.itemWidget(item)
-            if isinstance(w, FileListItemWidget):
-                w.set_checked(target_checked, emit_signal=False)
+            self._set_item_checked(self.files_list.item(i), target_checked, emit_signal=False)
         self._update_select_all_state()
         self._update_commit_button()
         self.state_changed.emit()
@@ -1014,9 +1150,7 @@ class ChangesTab(QWidget):
         checked_count = sum(
             1
             for i in range(self.files_list.count())
-            if (w := self.files_list.itemWidget(self.files_list.item(i)))
-            and isinstance(w, FileListItemWidget)
-            and w.is_checked()
+            if self._is_item_checked(self.files_list.item(i))
         )
 
         branch_name = self._current_status.branch_name if self._current_status else "main"
@@ -1066,8 +1200,12 @@ class ChangesTab(QWidget):
         guard = acquire_repo_guard(self._repo.path, timeout=1.5)
         if guard.status == "busy":
             busy_dlg = BusyDialog(self._repo.path, guard, parent=self)
-            if busy_dlg.exec() != BusyDialog.Accepted:
-                return
+            try:
+                if busy_dlg.exec() != BusyDialog.Accepted:
+                    return
+            finally:
+                if isinstance(busy_dlg, QDialog) and shiboken6.isValid(busy_dlg):
+                    busy_dlg.close()
 
         try:
             staged_paths = (
@@ -1077,31 +1215,31 @@ class ChangesTab(QWidget):
                 self._current_status.partially_staged_paths if self._current_status else set()
             )
 
-            # Collect checked and unchecked items
-            checked_widgets: list[FileListItemWidget] = []
-            unchecked_widgets: list[FileListItemWidget] = []
+            # Collect checked and unchecked item paths (supports widget & compact modes)
+            checked_paths: list[str] = []
+            unchecked_paths: list[str] = []
             for i in range(self.files_list.count()):
-                w = self.files_list.itemWidget(self.files_list.item(i))
-                if isinstance(w, FileListItemWidget):
-                    if w.is_checked():
-                        checked_widgets.append(w)
-                    else:
-                        unchecked_widgets.append(w)
+                item = self.files_list.item(i)
+                path = self._item_path(item)
+                if path is None:
+                    continue
+                if self._is_item_checked(item):
+                    checked_paths.append(path)
+                else:
+                    unchecked_paths.append(path)
 
             # Unstage deselected files
-            for w in unchecked_widgets:
-                if w.path in staged_paths:
-                    engine.unstage_file(self._repo, w.path)
+            for p in unchecked_paths:
+                if p in staged_paths:
+                    engine.unstage_file(self._repo, p)
 
             # Stage newly selected files that were not already staged
-            for w in checked_widgets:
-                if w.path not in staged_paths:
-                    engine.stage_file(self._repo, w.path)
+            for p in checked_paths:
+                if p not in staged_paths:
+                    engine.stage_file(self._repo, p)
 
             # Resolve partially staged checked files
-            partially_staged_checked = [
-                w.path for w in checked_widgets if w.path in partially_staged_paths
-            ]
+            partially_staged_checked = [p for p in checked_paths if p in partially_staged_paths]
             if partially_staged_checked:
                 from wrench.storage.settings_registry import get_settings_registry
 
@@ -1195,7 +1333,11 @@ class ChangesTab(QWidget):
                 self.refresh()
 
             recovery_dlg.action_completed.connect(_on_recovery_done)
-            recovery_dlg.exec()
+            try:
+                recovery_dlg.exec()
+            finally:
+                if isinstance(recovery_dlg, QDialog) and shiboken6.isValid(recovery_dlg):
+                    recovery_dlg.close()
 
     def _show_file_context_menu(self, pos: QPoint) -> None:
         item = self.files_list.itemAt(pos)
@@ -1378,6 +1520,8 @@ class ChangesTab(QWidget):
                 adapter.close()
 
         def _on_done(fetched_avatar_url: str | None) -> None:
+            if not shiboken6.isValid(self):
+                return
             self._avatar_fetch_in_progress.discard(acc.id)
             if fetched_avatar_url:
                 try:
@@ -1460,9 +1604,10 @@ class ChangesTab(QWidget):
         """Exports current active repo's UI state (selected file, checked files, commit drafts)."""
         checked_paths: list[str] = []
         for i in range(self.files_list.count()):
-            w = self.files_list.itemWidget(self.files_list.item(i))
-            if isinstance(w, FileListItemWidget) and w.is_checked():
-                checked_paths.append(w.path)
+            item = self.files_list.item(i)
+            path = self._item_path(item)
+            if path is not None and self._is_item_checked(item):
+                checked_paths.append(path)
 
         return {
             "selected_file": self._selected_file,
@@ -1499,9 +1644,9 @@ class ChangesTab(QWidget):
         if checked_files:
             for i in range(self.files_list.count()):
                 item = self.files_list.item(i)
-                w = self.files_list.itemWidget(item)
-                if isinstance(w, FileListItemWidget):
-                    w.set_checked(w.path in checked_files)
+                path = self._item_path(item)
+                if path is not None:
+                    self._set_item_checked(item, path in checked_files, emit_signal=False)
             self._update_select_all_state()
             self._update_commit_button()
 

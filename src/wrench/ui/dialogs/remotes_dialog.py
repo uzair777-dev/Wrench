@@ -7,9 +7,11 @@ git remotes for the active repository.
 from __future__ import annotations
 
 import logging
+import weakref
 from typing import TYPE_CHECKING, Any
 
-from PySide6.QtCore import Signal
+import shiboken6
+from PySide6.QtCore import QCoreApplication, QObject, Qt, Signal, Slot
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QDialog,
@@ -96,9 +98,39 @@ class AddRemoteDialog(QDialog):
     @classmethod
     def get_remote_data(cls, parent: QWidget | None = None) -> tuple[str, str] | None:
         dlg = cls(parent)
-        if dlg.exec() == QDialog.DialogCode.Accepted:
-            return dlg.name_edit.text().strip(), dlg.url_edit.text().strip()
-        return None
+        try:
+            if dlg.exec() == QDialog.DialogCode.Accepted:
+                return dlg.name_edit.text().strip(), dlg.url_edit.text().strip()
+            return None
+        finally:
+            if isinstance(dlg, QDialog) and shiboken6.isValid(dlg):
+                dlg.close()
+
+
+class _ProbeDispatcher(QObject):
+    """Main-thread dispatcher for async remote probe completions."""
+
+    finished = Signal(object)  # weakref.ref[RemotesDialog]
+
+    def __init__(self, parent: QObject | None = None) -> None:
+        super().__init__(parent)
+        self.finished.connect(self._on_finished, Qt.ConnectionType.QueuedConnection)
+
+    @Slot(object)
+    def _on_finished(self, dlg_ref: Any) -> None:
+        dlg = dlg_ref() if callable(dlg_ref) else None
+        if dlg is not None and shiboken6.isValid(dlg):
+            dlg.probe_finished.emit()
+
+
+_probe_dispatcher: _ProbeDispatcher | None = None
+
+
+def _get_probe_dispatcher() -> _ProbeDispatcher:
+    global _probe_dispatcher
+    if _probe_dispatcher is None or not shiboken6.isValid(_probe_dispatcher):
+        _probe_dispatcher = _ProbeDispatcher(parent=QCoreApplication.instance())
+    return _probe_dispatcher
 
 
 class RemotesDialog(QDialog):
@@ -327,13 +359,17 @@ class RemotesDialog(QDialog):
     def _start_probe_async(self) -> None:
         self.refresh_btn.setEnabled(False)
         self.refresh_btn.setText("Probing...")
+        dispatcher = _get_probe_dispatcher()
+        dlg_ref = weakref.ref(self)
         engine.probe_remotes_async(
             self._repo,
             db_conn=self._db_conn,
-            on_complete=self.probe_finished.emit,
+            on_complete=lambda: dispatcher.finished.emit(dlg_ref),
         )
 
     def _on_probe_finished(self) -> None:
+        if not shiboken6.isValid(self):
+            return
         self.refresh_btn.setEnabled(True)
         self.refresh_btn.setText("Refresh Status")
         self._refresh_table()

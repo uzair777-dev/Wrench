@@ -373,16 +373,17 @@ def test_pr_table_model_author_avatar_decoration():
     from wrench.forge.models import PullRequest
     from wrench.ui.tabs.pr_list_tab import PRTableModel
 
-    model = PRTableModel()
-    pr = PullRequest(
-        "1", "T", "D", "b1", "b2", "open", "url", "alice", "date", "https://ex.com/a.png"
-    )
-    model.set_prs([pr])
+    with patch("wrench.ui.widgets.avatar.run_in_background"):
+        model = PRTableModel()
+        pr = PullRequest(
+            "1", "T", "D", "b1", "b2", "open", "url", "alice", "date", "https://ex.com/a.png"
+        )
+        model.set_prs([pr])
 
-    idx = model.index(0, 3)  # Author column
-    icon = model.data(idx, Qt.DecorationRole)
-    assert isinstance(icon, QPixmap)
-    assert icon.width() == 24
+        idx = model.index(0, 3)  # Author column
+        icon = model.data(idx, Qt.DecorationRole)
+        assert isinstance(icon, QPixmap)
+        assert icon.width() == 24
 
 
 def test_issue_table_model_author_avatar_decoration():
@@ -392,14 +393,15 @@ def test_issue_table_model_author_avatar_decoration():
     from wrench.forge.models import Issue
     from wrench.ui.tabs.issue_list_tab import IssueTableModel
 
-    model = IssueTableModel()
-    issue = Issue("1", "T", "D", "open", "url", "alice", "date", "https://ex.com/a.png")
-    model.set_issues([issue])
+    with patch("wrench.ui.widgets.avatar.run_in_background"):
+        model = IssueTableModel()
+        issue = Issue("1", "T", "D", "open", "url", "alice", "date", "https://ex.com/a.png")
+        model.set_issues([issue])
 
-    idx = model.index(0, 2)  # Author column
-    icon = model.data(idx, Qt.DecorationRole)
-    assert isinstance(icon, QPixmap)
-    assert icon.width() == 24
+        idx = model.index(0, 2)  # Author column
+        icon = model.data(idx, Qt.DecorationRole)
+        assert isinstance(icon, QPixmap)
+        assert icon.width() == 24
 
 
 def test_pr_table_model_fallback_avatar_resolution():
@@ -409,14 +411,15 @@ def test_pr_table_model_fallback_avatar_resolution():
     from wrench.forge.models import PullRequest
     from wrench.ui.tabs.pr_list_tab import PRTableModel
 
-    model = PRTableModel()
-    pr = PullRequest("1", "T", "D", "b1", "b2", "open", "url", "octocat", "date", None)
-    model.set_prs([pr])
+    with patch("wrench.ui.widgets.avatar.run_in_background"):
+        model = PRTableModel()
+        pr = PullRequest("1", "T", "D", "b1", "b2", "open", "url", "octocat", "date", None)
+        model.set_prs([pr])
 
-    idx = model.index(0, 3)
-    icon = model.data(idx, Qt.DecorationRole)
-    assert isinstance(icon, QPixmap)
-    assert icon.width() == 24
+        idx = model.index(0, 3)
+        icon = model.data(idx, Qt.DecorationRole)
+        assert isinstance(icon, QPixmap)
+        assert icon.width() == 24
 
 
 def test_issue_table_model_fallback_avatar_resolution():
@@ -426,14 +429,15 @@ def test_issue_table_model_fallback_avatar_resolution():
     from wrench.forge.models import Issue
     from wrench.ui.tabs.issue_list_tab import IssueTableModel
 
-    model = IssueTableModel()
-    issue = Issue("1", "T", "D", "open", "url", "octocat", "date", None)
-    model.set_issues([issue])
+    with patch("wrench.ui.widgets.avatar.run_in_background"):
+        model = IssueTableModel()
+        issue = Issue("1", "T", "D", "open", "url", "octocat", "date", None)
+        model.set_issues([issue])
 
-    idx = model.index(0, 2)
-    icon = model.data(idx, Qt.DecorationRole)
-    assert isinstance(icon, QPixmap)
-    assert icon.width() == 24
+        idx = model.index(0, 2)
+        icon = model.data(idx, Qt.DecorationRole)
+        assert isinstance(icon, QPixmap)
+        assert icon.width() == 24
 
 
 def test_pr_list_tab_avatar_ready_after_deletion(repo_fixture):

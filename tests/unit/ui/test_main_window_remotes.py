@@ -391,12 +391,14 @@ class TestMainWindowRemotes:
 
     def test_repo_changed_triggers_async_probe(self, test_db, repo_with_remote):
         win = MainWindow(conn=test_db)
-        with (
-            patch("wrench.ui.main_window.RepoWatcher"),
-            patch("wrench.core.engine.probe_remotes_async") as mock_probe,
-        ):
-            win._on_repo_changed(str(repo_with_remote.path))
-            assert mock_probe.called
-            assert mock_probe.call_args[0][0].path == repo_with_remote.path
-
-        win.close()
+        try:
+            with (
+                patch("wrench.ui.main_window.RepoWatcher"),
+                patch("wrench.core.engine.probe_remotes_async") as mock_probe,
+                patch.object(win, "_maybe_auto_fetch"),
+            ):
+                win._on_repo_changed(str(repo_with_remote.path))
+                assert mock_probe.called
+                assert mock_probe.call_args[0][0].path == repo_with_remote.path
+        finally:
+            win.close()

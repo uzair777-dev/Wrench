@@ -444,7 +444,163 @@ PRIMARY_BUTTON_STYLES = {
         "font-weight: bold; font-size: 12px; padding: 5px 12px; "
         "border: 1px solid rgba(76, 79, 105, 0.2); border-radius: 4px; }"
     ),
-    "dark": "",
+    "dark": (
+        "QPushButton { background-color: #89b4fa; color: #11111b; font-weight: bold; "
+        "font-size: 12px; padding: 5px 12px; border: none; border-radius: 4px; } "
+        "QPushButton:hover { background-color: #74c7ec; color: #11111b; } "
+        "QPushButton:pressed { background-color: #b4befe; color: #11111b; } "
+        "QPushButton:disabled { background-color: #313244; color: #a6adc8; "
+        "font-weight: bold; font-size: 12px; padding: 5px 12px; "
+        "border: 1px solid #45475a; border-radius: 4px; }"
+    ),
+}
+
+SECONDARY_BUTTON_STYLES = {
+    "light": {
+        "bg": "#e6e9ef",
+        "fg": "#4c4f69",
+        "hover": "#dce0e8",
+        "pressed": "#ccd0da",
+        "border": "#bcc0cc",
+        "disabled_bg": "#eff1f5",
+        "disabled_fg": "#5c5f77",
+    },
+    "dark": {
+        "bg": "#313244",
+        "fg": "#cdd6f4",
+        "hover": "#3e4054",
+        "pressed": "#45475a",
+        "border": "#45475a",
+        "disabled_bg": "#1e1e2e",
+        "disabled_fg": "#a6adc8",
+    },
+}
+
+
+def get_secondary_button_style(is_dark: bool, *, compact: bool = False) -> str:
+    """Return theme-aware QSS for secondary QPushButton controls."""
+    c = SECONDARY_BUTTON_STYLES["dark" if is_dark else "light"]
+    pad = "3px 8px" if compact else "5px 12px"
+    return (
+        f"QPushButton {{ background-color: {c['bg']}; color: {c['fg']}; "
+        f"border: 1px solid {c['border']}; border-radius: 4px; padding: {pad}; }} "
+        f"QPushButton:hover {{ background-color: {c['hover']}; }} "
+        f"QPushButton:pressed {{ background-color: {c['pressed']}; }} "
+        f"QPushButton:disabled {{ background-color: {c['disabled_bg']}; "
+        f"color: {c['disabled_fg']}; border: 1px solid {c['border']}; }}"
+    )
+
+
+ICON_BUTTON_STYLES = {
+    "light": {
+        "bg": "#e6e9ef",
+        "fg": "#4c4f69",
+        "hover": "#dce0e8",
+        "pressed": "#ccd0da",
+        "border": "#bcc0cc",
+        "disabled_fg": "#5c5f77",
+    },
+    "dark": {
+        "bg": "#313244",
+        "fg": "#cdd6f4",
+        "hover": "#3e4054",
+        "pressed": "#45475a",
+        "border": "#45475a",
+        "disabled_fg": "#a6adc8",
+    },
+}
+
+
+def get_icon_button_style(is_dark: bool, *, rounded: bool = False) -> str:
+    """Return theme-aware QSS for icon / tool buttons (QToolButton / QPushButton)."""
+    c = ICON_BUTTON_STYLES["dark" if is_dark else "light"]
+    radius = "14px" if rounded else "4px"
+    return (
+        f"QToolButton, QPushButton {{ background-color: {c['bg']}; color: {c['fg']}; "
+        f"border: 1px solid {c['border']}; border-radius: {radius}; padding: 2px 6px; }} "
+        f"QToolButton:hover, QPushButton:hover {{ background-color: {c['hover']}; }} "
+        f"QToolButton:pressed, QPushButton:pressed {{ background-color: {c['pressed']}; }} "
+        f"QToolButton:disabled, QPushButton:disabled {{ color: {c['disabled_fg']}; }}"
+    )
+
+
+STATUS_PILL_STYLES = {
+    "light": {
+        "sparse_active": {"bg": "#dcfce7", "border": "#22c55e", "fg": "#15803d"},
+        "sparse_inactive": {"bg": "#e6e9ef", "border": "#bcc0cc", "fg": "#4c4f69"},
+        "watcher": {"bg": "#e0e7ff", "border": "#93c5fd", "fg": "#1e40af"},
+        "info": {"bg": "#dbeafe", "border": "#93c5fd", "fg": "#1e40af"},
+    },
+    "dark": {
+        "sparse_active": {"bg": "#1e3827", "border": "#a6e3a1", "fg": "#a6e3a1"},
+        "sparse_inactive": {"bg": "#252638", "border": "#45475a", "fg": "#cdd6f4"},
+        "watcher": {"bg": "#1e2942", "border": "#45475a", "fg": "#89b4fa"},
+        "info": {"bg": "#1e2942", "border": "#89b4fa", "fg": "#89b4fa"},
+    },
+}
+
+
+def get_status_pill_style(kind: str, is_dark: bool) -> dict[str, str]:
+    """Return {'bg', 'border', 'fg'} token dict for status bar indicator pills."""
+    mode = "dark" if is_dark else "light"
+    return STATUS_PILL_STYLES[mode].get(kind, STATUS_PILL_STYLES[mode]["info"])
+
+
+TREE_WIDGET_STYLES = {
+    "light": {
+        "bg": "#ffffff",
+        "fg": "#4c4f69",
+        "alt_bg": "#f7f8fa",
+        "border": "#ccd0da",
+        "header_bg": "#e6e9ef",
+        "header_fg": "#4c4f69",
+        "selected_bg": "#1e66f5",
+        "selected_fg": "#ffffff",
+    },
+    "dark": {
+        "bg": "#11111b",
+        "fg": "#cdd6f4",
+        "alt_bg": "#181825",
+        "border": "#45475a",
+        "header_bg": "#1e1e2e",
+        "header_fg": "#cdd6f4",
+        "selected_bg": "#89b4fa",
+        "selected_fg": "#11111b",
+    },
+}
+
+
+def get_tree_widget_qss(is_dark: bool) -> str:
+    """Return Catppuccin QSS for QTreeWidget / QTreeView panels."""
+    t = TREE_WIDGET_STYLES["dark" if is_dark else "light"]
+    return (
+        f"QTreeWidget {{ background-color: {t['bg']}; alternate-background-color: {t['alt_bg']}; "
+        f"color: {t['fg']}; border: 1px solid {t['border']}; border-radius: 4px; }} "
+        f"QTreeWidget::item:selected {{ background-color: {t['selected_bg']}; "
+        f"color: {t['selected_fg']}; }} "
+        f"QHeaderView::section {{ background-color: {t['header_bg']}; color: {t['header_fg']}; "
+        f"border: none; border-bottom: 1px solid {t['border']}; padding: 4px 6px; }}"
+    )
+
+
+SETTINGS_BADGE_STYLES = {
+    "light": {"bg": "#e0e7ff", "border": "#93c5fd", "fg": "#1e40af"},
+    "dark": {"bg": "#1e2942", "border": "#45475a", "fg": "#89b4fa"},
+}
+
+
+def get_settings_badge_qss(is_dark: bool) -> str:
+    """Return theme-aware QSS for settings scope badge pills."""
+    b = SETTINGS_BADGE_STYLES["dark" if is_dark else "light"]
+    return (
+        f"QLabel {{ font-size: 11px; color: {b['fg']}; background-color: {b['bg']}; "
+        f"border: 1px solid {b['border']}; padding: 2px 6px; border-radius: 4px; }}"
+    )
+
+
+TOAST_TEXT_COLOR = {
+    "light": "#216e39",
+    "dark": "#a6e3a1",
 }
 
 FORGE_LINK_STYLES = {

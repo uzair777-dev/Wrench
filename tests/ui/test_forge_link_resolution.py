@@ -67,19 +67,22 @@ class TestMaybeOfferForgeLink:
         _create_git_repo(repo_dir, "https://github.com/myorg/myrepo.git")
         repo_id = repo_registry.add_repo(db_conn, str(repo_dir), "single_account_repo")
 
-        win = MainWindow(conn=db_conn)
-        win._maybe_offer_forge_link(str(repo_dir))
+        with patch.object(MainWindow, "_trigger_account_avatar_fetch"):
+            win = MainWindow(conn=db_conn)
+            try:
+                win._maybe_offer_forge_link(str(repo_dir))
 
-        # Banner should NOT be visible
-        assert win.changes_tab.forge_link_banner.isHidden()
+                # Banner should NOT be visible
+                assert win.changes_tab.forge_link_banner.isHidden()
 
-        # Remote should be auto-linked
-        link = forge_accounts.get_link_for_remote(db_conn, repo_id, "origin")
-        assert link is not None
-        assert link.forge_account_id == acc_id
-        assert link.owner_slug == "myorg"
-        assert link.repo_slug == "myrepo"
-        win.close()
+                # Remote should be auto-linked
+                link = forge_accounts.get_link_for_remote(db_conn, repo_id, "origin")
+                assert link is not None
+                assert link.forge_account_id == acc_id
+                assert link.owner_slug == "myorg"
+                assert link.repo_slug == "myrepo"
+            finally:
+                win.close()
 
     def test_multiple_candidates_shows_banner(self, db_conn, tmp_path):
         """With >=2 matching accounts, shows non-modal banner in ChangesTab."""
@@ -164,25 +167,27 @@ class TestMaybeOfferForgeLink:
         _create_git_repo(repo_dir, "git@github.com:myorg/myrepo.git")
         repo_id = repo_registry.add_repo(db_conn, str(repo_dir), "ssh_repo")
 
-        win = MainWindow(conn=db_conn)
+        with patch.object(MainWindow, "_trigger_account_avatar_fetch"):
+            win = MainWindow(conn=db_conn)
+            try:
+                # 1. Verify it auto-linked on open
+                link = forge_accounts.get_link_for_remote(db_conn, repo_id, "origin")
+                assert link is not None
+                assert link.forge_account_id == acc_id
+                assert link.owner_slug == "myorg"
+                assert link.repo_slug == "myrepo"
 
-        # 1. Verify it auto-linked on open
-        link = forge_accounts.get_link_for_remote(db_conn, repo_id, "origin")
-        assert link is not None
-        assert link.forge_account_id == acc_id
-        assert link.owner_slug == "myorg"
-        assert link.repo_slug == "myrepo"
+                # 2. Reset link and verify _update_account_btn notification
+                db_conn.execute("DELETE FROM repo_forge_links WHERE repo_id = ?", (repo_id,))
+                db_conn.commit()
 
-        # 2. Reset link and verify _update_account_btn notification
-        db_conn.execute("DELETE FROM repo_forge_links WHERE repo_id = ?", (repo_id,))
-        db_conn.commit()
+                with patch.object(win.changes_tab, "_update_account_btn") as mock_update_btn:
+                    win._maybe_offer_forge_link(str(repo_dir))
+                    mock_update_btn.assert_called_once()
 
-        with patch.object(win.changes_tab, "_update_account_btn") as mock_update_btn:
-            win._maybe_offer_forge_link(str(repo_dir))
-            mock_update_btn.assert_called_once()
-
-        assert win.changes_tab.forge_link_banner.isHidden()
-        win.close()
+                assert win.changes_tab.forge_link_banner.isHidden()
+            finally:
+                win.close()
 
     def test_ssh_remote_multiple_candidates_shows_banner(self, db_conn, tmp_path):
         """With >=2 matching accounts, SSH remotes show the non-modal banner."""

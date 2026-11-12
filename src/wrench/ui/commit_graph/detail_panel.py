@@ -36,6 +36,8 @@ class CommitDetailPanel(QWidget):
         self._file_stats: list[FileStat] = []
         self._conn = None
         self._refreshing_theme: bool = False
+        self._cached_remote_urls: list[str] | None = None
+        self._remote_urls_cached_for: int | None = None
 
         self._init_ui()
 
@@ -105,6 +107,13 @@ class CommitDetailPanel(QWidget):
         self.splitter.setStretchFactor(1, 2)
         main_layout.addWidget(self.splitter)
 
+    def closeEvent(self, event) -> None:
+        if hasattr(self, "avatar_widget"):
+            self.avatar_widget.close()
+        if hasattr(self, "diff_widget"):
+            self.diff_widget.close()
+        super().closeEvent(event)
+
     def changeEvent(self, event: QEvent) -> None:
         super().changeEvent(event)
         if getattr(self, "_refreshing_theme", False):
@@ -172,6 +181,8 @@ class CommitDetailPanel(QWidget):
 
     def set_repo(self, repo: RepoHandle | None):
         self._repo = repo
+        self._cached_remote_urls = None
+        self._remote_urls_cached_for = None
         self.diff_widget.set_repo(repo)
 
     def set_commit(self, commit: Commit | None):
@@ -201,14 +212,18 @@ class CommitDetailPanel(QWidget):
         try:
             remote_urls = None
             if self._repo:
-                try:
-                    remote_urls = [
-                        r.url
-                        for r in engine.list_remotes(self._repo, db_conn=conn)
-                        if hasattr(r, "url") and isinstance(r.url, str)
-                    ]
-                except Exception:
-                    remote_urls = None
+                repo_ident = id(self._repo)
+                if self._remote_urls_cached_for != repo_ident:
+                    try:
+                        self._cached_remote_urls = [
+                            r.url
+                            for r in engine.list_remotes(self._repo, db_conn=conn)
+                            if hasattr(r, "url") and isinstance(r.url, str)
+                        ]
+                    except Exception:
+                        self._cached_remote_urls = None
+                    self._remote_urls_cached_for = repo_ident
+                remote_urls = self._cached_remote_urls
 
             url = resolve_author_avatar_url(
                 commit.author_name,

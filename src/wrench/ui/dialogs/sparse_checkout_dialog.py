@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import logging
+import weakref
 from pathlib import Path
 from typing import Any
 
 import shiboken6
 from PySide6.QtCore import (
+    QCoreApplication,
     QEvent,
     QObject,
     QRunnable,
@@ -37,6 +39,10 @@ from wrench.ui.theme import (
     PRIMARY_BUTTON_STYLES,
     SECONDARY_TEXT,
     get_banner_style,
+    get_icon_button_style,
+    get_secondary_button_style,
+    get_status_pill_style,
+    get_tree_widget_qss,
     is_dark_theme,
 )
 from wrench.ui.widgets.cli_preview_bar import CliCommandPreviewBar
@@ -48,13 +54,74 @@ _ROLE_LOADED = Qt.ItemDataRole.UserRole + 1
 _PLACEHOLDER_MARKER = "__wrench_placeholder__"
 
 
-class _SparseDialogSignals(QObject):
-    """Queued signal bridge from background QThreadPool tasks to SparseCheckoutDialog."""
+class _SparseDialogDispatcher(QObject):
+    """Application-lifetime queued dispatcher routing sparse-checkout worker callbacks."""
 
-    expand_ready = Signal(int, str, object)  # (generation_id, parent_rel_path, entries)
-    expand_failed = Signal(int, str, str)  # (generation_id, parent_rel_path, err_msg)
-    apply_succeeded = Signal(int, bool)  # (generation_id, disabled)
-    apply_failed = Signal(int, str)  # (generation_id, err_msg)
+    expand_ready = Signal(object, int, str, object)  # (dlg_ref, gen_id, parent_rel_path, entries)
+    expand_failed = Signal(object, int, str, str)  # (dlg_ref, gen_id, parent_rel_path, err_msg)
+    apply_succeeded = Signal(object, int, bool, object)  # (dlg_ref, gen_id, disabled, warnings)
+    apply_failed = Signal(object, int, str)  # (dlg_ref, gen_id, err_msg)
+
+    def __init__(self, parent: QObject | None = None) -> None:
+        super().__init__(parent)
+        self.expand_ready.connect(self._deliver_expand_ready, Qt.ConnectionType.QueuedConnection)
+        self.expand_failed.connect(self._deliver_expand_failed, Qt.ConnectionType.QueuedConnection)
+        self.apply_succeeded.connect(
+            self._deliver_apply_succeeded, Qt.ConnectionType.QueuedConnection
+        )
+        self.apply_failed.connect(self._deliver_apply_failed, Qt.ConnectionType.QueuedConnection)
+
+    @Slot(object, int, str, object)
+    def _deliver_expand_ready(
+        self,
+        dlg_ref: Any,
+        generation_id: int,
+        parent_rel_path: str,
+        entries: Any,
+    ) -> None:
+        dlg = dlg_ref() if callable(dlg_ref) else None
+        if dlg is not None and shiboken6.isValid(dlg):
+            dlg._on_expand_ready(generation_id, parent_rel_path, entries)
+
+    @Slot(object, int, str, str)
+    def _deliver_expand_failed(
+        self,
+        dlg_ref: Any,
+        generation_id: int,
+        parent_rel_path: str,
+        err_msg: str,
+    ) -> None:
+        dlg = dlg_ref() if callable(dlg_ref) else None
+        if dlg is not None and shiboken6.isValid(dlg):
+            dlg._on_expand_failed(generation_id, parent_rel_path, err_msg)
+
+    @Slot(object, int, bool, object)
+    def _deliver_apply_succeeded(
+        self,
+        dlg_ref: Any,
+        generation_id: int,
+        disabled: bool,
+        warnings: Any,
+    ) -> None:
+        dlg = dlg_ref() if callable(dlg_ref) else None
+        if dlg is not None and shiboken6.isValid(dlg):
+            dlg._on_apply_succeeded(generation_id, disabled, warnings)
+
+    @Slot(object, int, str)
+    def _deliver_apply_failed(self, dlg_ref: Any, generation_id: int, err_msg: str) -> None:
+        dlg = dlg_ref() if callable(dlg_ref) else None
+        if dlg is not None and shiboken6.isValid(dlg):
+            dlg._on_apply_failed(generation_id, err_msg)
+
+
+_sparse_dialog_dispatcher: _SparseDialogDispatcher | None = None
+
+
+def _get_sparse_dispatcher() -> _SparseDialogDispatcher:
+    global _sparse_dialog_dispatcher
+    if _sparse_dialog_dispatcher is None or not shiboken6.isValid(_sparse_dialog_dispatcher):
+        _sparse_dialog_dispatcher = _SparseDialogDispatcher(parent=QCoreApplication.instance())
+    return _sparse_dialog_dispatcher
 
 
 class _TreeExpandWorker(QRunnable):
@@ -66,29 +133,39 @@ class _TreeExpandWorker(QRunnable):
         generation_id: int,
         repo_path: Path,
         parent_rel_path: str,
-        signals: _SparseDialogSignals,
+        dialog_ref: weakref.ref[SparseCheckoutDialog],
+        dispatcher: _SparseDialogDispatcher,
     ) -> None:
         super().__init__()
         self._generation_id = generation_id
         self._repo_path = repo_path
         self._parent_rel_path = parent_rel_path
-        self._signals = signals
+        self._dialog_ref = dialog_ref
+        self._dispatcher = dispatcher
         self.setAutoDelete(True)
 
     def run(self) -> None:
+        if self._dialog_ref() is None:
+            return
         try:
             entries = engine.list_tree_subdirectories(
                 self._repo_path,
                 parent_rel_path=self._parent_rel_path,
             )
-            if shiboken6.isValid(self._signals):
-                self._signals.expand_ready.emit(self._generation_id, self._parent_rel_path, entries)
+            if self._dialog_ref() is not None and shiboken6.isValid(self._dispatcher):
+                self._dispatcher.expand_ready.emit(
+                    self._dialog_ref,
+                    self._generation_id,
+                    self._parent_rel_path,
+                    entries,
+                )
         except Exception as exc:
             logger.exception(
                 "Failed loading subdirectories for '%s': %s", self._parent_rel_path, exc
             )
-            if shiboken6.isValid(self._signals):
-                self._signals.expand_failed.emit(
+            if self._dialog_ref() is not None and shiboken6.isValid(self._dispatcher):
+                self._dispatcher.expand_failed.emit(
+                    self._dialog_ref,
                     self._generation_id,
                     self._parent_rel_path,
                     engine.redact_secrets(str(exc)),
@@ -105,29 +182,43 @@ class _ApplySparseWorker(QRunnable):
         repo_path: Path,
         directories: list[str],
         disable: bool,
-        signals: _SparseDialogSignals,
+        dialog_ref: weakref.ref[SparseCheckoutDialog],
+        dispatcher: _SparseDialogDispatcher,
     ) -> None:
         super().__init__()
         self._generation_id = generation_id
         self._repo_path = repo_path
         self._directories = directories
         self._disable = disable
-        self._signals = signals
+        self._dialog_ref = dialog_ref
+        self._dispatcher = dispatcher
         self.setAutoDelete(True)
 
     def run(self) -> None:
+        warnings: list[str] = []
         try:
             if self._disable:
-                engine.disable_sparse_checkout(self._repo_path)
+                engine.disable_sparse_checkout(self._repo_path, warnings_out=warnings)
             else:
-                engine.set_sparse_directories(self._repo_path, self._directories, cone=True)
-            if shiboken6.isValid(self._signals):
-                self._signals.apply_succeeded.emit(self._generation_id, self._disable)
+                engine.set_sparse_directories(
+                    self._repo_path,
+                    self._directories,
+                    cone=True,
+                    warnings_out=warnings,
+                )
+            if self._dialog_ref() is not None and shiboken6.isValid(self._dispatcher):
+                self._dispatcher.apply_succeeded.emit(
+                    self._dialog_ref,
+                    self._generation_id,
+                    self._disable,
+                    warnings,
+                )
         except Exception as exc:
             logger.warning("Sparse-checkout operation failed: %s", exc)
-            if shiboken6.isValid(self._signals):
+            if self._dialog_ref() is not None and shiboken6.isValid(self._dispatcher):
                 stderr = getattr(exc, "stderr", None) or str(exc)
-                self._signals.apply_failed.emit(
+                self._dispatcher.apply_failed.emit(
+                    self._dialog_ref,
                     self._generation_id,
                     engine.redact_secrets(str(stderr)),
                 )
@@ -138,6 +229,9 @@ class SparseCheckoutDialog(QDialog):
 
     sparse_checkout_changed = Signal()
     apply_failed = Signal(str)
+    apply_started = Signal()
+    apply_finished = Signal(bool)
+    apply_warning = Signal(str)
 
     def __init__(
         self,
@@ -158,7 +252,9 @@ class SparseCheckoutDialog(QDialog):
         self._is_unborn: bool = False
         self._populating_tree: bool = False
         self._applying_theme: bool = False
-        self._pending_worker_signals: set[_SparseDialogSignals] = set()
+        self._settings_open: bool = False
+        self._pending_close_on_disable: bool = False
+        self.last_warning: str | None = None
         self._selected_dirs: set[str] = set()
         self._item_by_path: dict[str, QTreeWidgetItem] = {}
         self._state = SparseCheckoutState(
@@ -176,7 +272,6 @@ class SparseCheckoutDialog(QDialog):
         self._apply_theme()
         self._ensure_registry_connection()
         self._load_initial_state()
-        self.destroyed.connect(self._disconnect_registry)
 
     def _init_ui(self) -> None:
         root = QVBoxLayout(self)
@@ -206,6 +301,43 @@ class SparseCheckoutDialog(QDialog):
         header.addWidget(self.settings_btn)
 
         root.addLayout(header)
+
+        # Inline non-modal Preferences-active banner
+        self.settings_open_banner = QFrame(self)
+        self.settings_open_banner.setFrameShape(QFrame.Shape.StyledPanel)
+        self.settings_open_banner.setVisible(False)
+        settings_banner_layout = QHBoxLayout(self.settings_open_banner)
+        settings_banner_layout.setContentsMargins(8, 6, 8, 6)
+        settings_banner_layout.setSpacing(8)
+        self.settings_open_label = QLabel(
+            self.tr("Preferences is currently open — close Preferences to continue here."),
+            self.settings_open_banner,
+        )
+        self.settings_open_label.setWordWrap(True)
+        settings_banner_layout.addWidget(self.settings_open_label, 1)
+        self.focus_settings_btn = QPushButton(
+            self.tr("Focus Preferences"), self.settings_open_banner
+        )
+        self.focus_settings_btn.clicked.connect(self._on_focus_settings_clicked)
+        settings_banner_layout.addWidget(self.focus_settings_btn)
+        root.addWidget(self.settings_open_banner)
+
+        # Inline --no-cone migration notice banner
+        self.nocone_banner = QFrame(self)
+        self.nocone_banner.setFrameShape(QFrame.Shape.StyledPanel)
+        self.nocone_banner.setVisible(False)
+        nocone_layout = QHBoxLayout(self.nocone_banner)
+        nocone_layout.setContentsMargins(8, 6, 8, 6)
+        self.nocone_label = QLabel(
+            self.tr(
+                "Repository currently uses pattern-based (--no-cone) sparse-checkout. "
+                "Applying changes here converts rules to --cone directory mode."
+            ),
+            self.nocone_banner,
+        )
+        self.nocone_label.setWordWrap(True)
+        nocone_layout.addWidget(self.nocone_label)
+        root.addWidget(self.nocone_banner)
 
         # Inline non-modal error banner (lock contention / command failure)
         self.error_banner = QFrame(self)
@@ -294,6 +426,7 @@ class SparseCheckoutDialog(QDialog):
         self._applying_theme = True
         try:
             is_dark = is_dark_theme(self)
+            mode = "dark" if is_dark else "light"
             err_style = get_banner_style("error", is_dark)
             self.error_banner.setStyleSheet(
                 f"QFrame {{ background-color: {err_style['bg']}; "
@@ -305,23 +438,40 @@ class SparseCheckoutDialog(QDialog):
             )
 
             warn_style = get_banner_style("warning", is_dark)
-            self.unborn_banner.setStyleSheet(
-                f"QFrame {{ background-color: {warn_style['bg']}; "
-                f"border: 1px solid {warn_style['border']}; border-radius: 4px; }}"
+            for banner, lbl in (
+                (self.unborn_banner, self.unborn_label),
+                (self.nocone_banner, self.nocone_label),
+            ):
+                banner.setStyleSheet(
+                    f"QFrame {{ background-color: {warn_style['bg']}; "
+                    f"border: 1px solid {warn_style['border']}; border-radius: 4px; }}"
+                )
+                lbl.setStyleSheet(
+                    f"color: {warn_style['fg']}; font-weight: bold; "
+                    "border: none; background: transparent;"
+                )
+
+            info_style = get_status_pill_style("info", is_dark)
+            self.settings_open_banner.setStyleSheet(
+                f"QFrame {{ background-color: {info_style['bg']}; "
+                f"border: 1px solid {info_style['border']}; border-radius: 4px; }}"
             )
-            self.unborn_label.setStyleSheet(
-                f"color: {warn_style['fg']}; font-weight: bold; "
+            self.settings_open_label.setStyleSheet(
+                f"color: {info_style['fg']}; font-weight: bold; "
                 "border: none; background: transparent;"
             )
+            self.focus_settings_btn.setStyleSheet(get_secondary_button_style(is_dark, compact=True))
 
-            muted = SECONDARY_TEXT["dark" if is_dark else "light"]
+            muted = SECONDARY_TEXT[mode]
             self.selection_summary_label.setStyleSheet(f"color: {muted}; font-size: 12px;")
             self.busy_label.setStyleSheet(f"color: {muted}; font-size: 12px;")
 
-            if not is_dark:
-                self.apply_btn.setStyleSheet(PRIMARY_BUTTON_STYLES["light"])
-            else:
-                self.apply_btn.setStyleSheet("")
+            self.apply_btn.setStyleSheet(PRIMARY_BUTTON_STYLES[mode])
+            self.disable_btn.setStyleSheet(get_secondary_button_style(is_dark))
+            self.cancel_btn.setStyleSheet(get_secondary_button_style(is_dark))
+            self.retry_btn.setStyleSheet(get_secondary_button_style(is_dark, compact=True))
+            self.settings_btn.setStyleSheet(get_icon_button_style(is_dark))
+            self.dir_tree.setStyleSheet(get_tree_widget_qss(is_dark))
 
             self._refresh_status_pill()
         finally:
@@ -330,13 +480,13 @@ class SparseCheckoutDialog(QDialog):
     def _refresh_status_pill(self) -> None:
         is_dark = is_dark_theme(self)
         if self._state.enabled:
-            style = get_banner_style("success", is_dark)
+            style = get_status_pill_style("sparse_active", is_dark)
             n = len(self._state.directories)
             text = self.tr(f"Active: {n} dir{'s' if n != 1 else ''}")
             if self._state.partial_filter:
                 text += f" ({self._state.partial_filter})"
         else:
-            style = get_banner_style("info", is_dark)
+            style = get_status_pill_style("sparse_inactive", is_dark)
             text = self.tr("Disabled")
         self.status_pill.setText(text)
         self.status_pill.setStyleSheet(
@@ -354,8 +504,19 @@ class SparseCheckoutDialog(QDialog):
         ):
             self._apply_theme()
 
-    def closeEvent(self, event) -> None:
+    def _cleanup_connections(self) -> None:
+        self._tree_generation += 1
+        self._apply_generation += 1
         self._disconnect_registry()
+        if hasattr(self, "preview_bar") and shiboken6.isValid(self.preview_bar):
+            self.preview_bar._cleanup()
+
+    def done(self, result: int) -> None:
+        self._cleanup_connections()
+        super().done(result)
+
+    def closeEvent(self, event) -> None:
+        self._cleanup_connections()
         super().closeEvent(event)
 
     def _ensure_registry_connection(self) -> None:
@@ -379,14 +540,18 @@ class SparseCheckoutDialog(QDialog):
             pass
         self._connected_registry = None
 
+    @Slot(str, object)
     @Slot(str, object, object)
-    def _on_setting_changed(self, key: str, _value: Any, _repo_path: Any) -> None:
+    def _on_setting_changed(self, key: str, _value: Any, _repo_path: Any = None) -> None:
         if not shiboken6.isValid(self):
             return
         if key == "monorepo.sparse_checkout_ui.enabled":
             reg = self._registry or peek_settings_registry()
             if reg is not None and not reg.is_enabled(key, str(self._repo_path)):
-                self.reject()
+                if self._settings_open:
+                    self._pending_close_on_disable = True
+                else:
+                    self.reject()
 
     def _load_initial_state(self) -> None:
         self._tree_generation += 1
@@ -402,6 +567,9 @@ class SparseCheckoutDialog(QDialog):
         self._refresh_status_pill()
         self.disable_btn.setEnabled(self._state.enabled and not self._is_unborn)
         self.unborn_banner.setVisible(self._is_unborn)
+        self.nocone_banner.setVisible(
+            bool(self._state.enabled and not self._state.cone_mode and not self._is_unborn)
+        )
         self.apply_btn.setEnabled(not self._is_unborn)
         self.dir_tree.setEnabled(not self._is_unborn)
 
@@ -465,16 +633,13 @@ class SparseCheckoutDialog(QDialog):
         item.setData(0, _ROLE_LOADED, True)
         gen_id = self._tree_generation
 
-        signals = _SparseDialogSignals(None)
-        self._pending_worker_signals.add(signals)
-        signals.expand_ready.connect(self._on_expand_ready, Qt.ConnectionType.QueuedConnection)
-        signals.expand_failed.connect(self._on_expand_failed, Qt.ConnectionType.QueuedConnection)
-
+        dispatcher = _get_sparse_dispatcher()
         worker = _TreeExpandWorker(
             generation_id=gen_id,
             repo_path=self._repo_path,
             parent_rel_path=str(rel_path),
-            signals=signals,
+            dialog_ref=weakref.ref(self),
+            dispatcher=dispatcher,
         )
         QThreadPool.globalInstance().start(worker)
 
@@ -485,9 +650,6 @@ class SparseCheckoutDialog(QDialog):
         parent_rel_path: str,
         entries: list[TreeDirectoryEntry],
     ) -> None:
-        sender_obj = self.sender()
-        if isinstance(sender_obj, _SparseDialogSignals):
-            self._pending_worker_signals.discard(sender_obj)
         if not shiboken6.isValid(self) or generation_id != self._tree_generation:
             return
         parent_item = self._item_by_path.get(parent_rel_path)
@@ -512,9 +674,6 @@ class SparseCheckoutDialog(QDialog):
         parent_rel_path: str,
         err_msg: str,
     ) -> None:
-        sender_obj = self.sender()
-        if isinstance(sender_obj, _SparseDialogSignals):
-            self._pending_worker_signals.discard(sender_obj)
         if not shiboken6.isValid(self) or generation_id != self._tree_generation:
             return
         parent_item = self._item_by_path.get(parent_rel_path)
@@ -615,6 +774,8 @@ class SparseCheckoutDialog(QDialog):
     def _start_apply_worker(self, *, directories: list[str], disable: bool) -> None:
         self._apply_generation += 1
         gen_id = self._apply_generation
+        self.last_warning = None
+        self.apply_started.emit()
         self._set_busy(
             True,
             (
@@ -624,42 +785,43 @@ class SparseCheckoutDialog(QDialog):
             ),
         )
 
-        signals = _SparseDialogSignals(None)
-        self._pending_worker_signals.add(signals)
-        signals.apply_succeeded.connect(
-            self._on_apply_succeeded,
-            Qt.ConnectionType.QueuedConnection,
-        )
-        signals.apply_failed.connect(self._on_apply_failed, Qt.ConnectionType.QueuedConnection)
-
+        dispatcher = _get_sparse_dispatcher()
         worker = _ApplySparseWorker(
             generation_id=gen_id,
             repo_path=self._repo_path,
             directories=directories,
             disable=disable,
-            signals=signals,
+            dialog_ref=weakref.ref(self),
+            dispatcher=dispatcher,
         )
         QThreadPool.globalInstance().start(worker)
 
-    @Slot(int, bool)
-    def _on_apply_succeeded(self, generation_id: int, _disabled: bool) -> None:
-        sender_obj = self.sender()
-        if isinstance(sender_obj, _SparseDialogSignals):
-            self._pending_worker_signals.discard(sender_obj)
+    @Slot(int, bool, object)
+    def _on_apply_succeeded(
+        self,
+        generation_id: int,
+        _disabled: bool,
+        warnings: object = None,
+    ) -> None:
         if not shiboken6.isValid(self) or generation_id != self._apply_generation:
             return
+        if isinstance(warnings, (list, tuple)):
+            cleaned = [engine.redact_secrets(str(w).strip()) for w in warnings if str(w).strip()]
+            if cleaned:
+                joined = "\n".join(cleaned)
+                self.last_warning = joined
+                self.apply_warning.emit(joined)
         self._set_busy(False)
+        self.apply_finished.emit(True)
         self.sparse_checkout_changed.emit()
         self.accept()
 
     @Slot(int, str)
     def _on_apply_failed(self, generation_id: int, err_msg: str) -> None:
-        sender_obj = self.sender()
-        if isinstance(sender_obj, _SparseDialogSignals):
-            self._pending_worker_signals.discard(sender_obj)
         if not shiboken6.isValid(self) or generation_id != self._apply_generation:
             return
         self._set_busy(False)
+        self.apply_finished.emit(False)
         self._update_summary_and_preview()
 
         lower = err_msg.lower()
@@ -677,11 +839,37 @@ class SparseCheckoutDialog(QDialog):
         self._show_error(display_msg, retryable=is_locked)
         self.apply_failed.emit(display_msg)
 
+    def _on_focus_settings_clicked(self) -> None:
+        p = self.parent()
+        while p is not None:
+            focuser = getattr(p, "focus_active_settings_dialog", None)
+            if callable(focuser):
+                focuser()
+                return
+            p = p.parent()
+
     def _on_open_settings_clicked(self) -> None:
         p = self.parent()
         while p is not None:
             opener = getattr(p, "open_settings_at_category", None)
             if callable(opener):
-                opener("Worktrees & Submodules", "monorepo.sparse_checkout_ui.enabled")
+                self._settings_open = True
+                self.settings_open_banner.setVisible(True)
+                try:
+                    try:
+                        opener(
+                            "Worktrees & Submodules",
+                            "monorepo.sparse_checkout_ui.enabled",
+                            parent_dialog=self,
+                        )
+                    except TypeError:
+                        opener("Worktrees & Submodules", "monorepo.sparse_checkout_ui.enabled")
+                finally:
+                    self._settings_open = False
+                    if shiboken6.isValid(self):
+                        self.settings_open_banner.setVisible(False)
+                        if self._pending_close_on_disable:
+                            self._pending_close_on_disable = False
+                            self.reject()
                 return
             p = p.parent()

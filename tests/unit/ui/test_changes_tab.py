@@ -3,6 +3,8 @@
 import sqlite3
 
 import pytest
+from PySide6.QtCore import QEvent, Qt
+from PySide6.QtGui import QKeyEvent
 from PySide6.QtWidgets import QApplication
 
 from wrench.core import engine
@@ -33,36 +35,42 @@ class TestChangesTabConflicts:
     def test_conflict_banner_visible_on_merge_conflict(self, conflict_repo, db_conn):
         repo_registry.add_repo(db_conn, str(conflict_repo.path))
         tab = ChangesTab(db_conn)
-        tab.show()
-        tab._open_repo_by_path(str(conflict_repo.path))
+        try:
+            tab.show()
+            tab._open_repo_by_path(str(conflict_repo.path))
 
-        # Initially clean, banner hidden
-        assert tab.conflict_banner.isHidden() is True
+            # Initially clean, banner hidden
+            assert tab.conflict_banner.isHidden() is True
 
-        # Trigger merge conflict
-        res = engine.merge(conflict_repo, "feature")
-        assert res.status == "conflict"
+            # Trigger merge conflict
+            res = engine.merge(conflict_repo, "feature")
+            assert res.status == "conflict"
 
-        tab.refresh()
-        assert tab.conflict_banner.isHidden() is False
-        assert "Merge conflict" in tab.conflict_label.text()
-        assert tab.conflict_btn.isVisible() is True
+            tab.refresh()
+            assert tab.conflict_banner.isHidden() is False
+            assert "Merge conflict" in tab.conflict_label.text()
+            assert tab.conflict_btn.isVisible() is True
+        finally:
+            tab.close()
 
     def test_merge_msg_prefill(self, conflict_repo, db_conn):
         repo_registry.add_repo(db_conn, str(conflict_repo.path))
         tab = ChangesTab(db_conn)
-        tab.show()
-        tab._open_repo_by_path(str(conflict_repo.path))
+        try:
+            tab.show()
+            tab._open_repo_by_path(str(conflict_repo.path))
 
-        engine.merge(conflict_repo, "feature")
+            engine.merge(conflict_repo, "feature")
 
-        # Create MERGE_MSG in .git
-        merge_msg_path = conflict_repo.path / ".git" / "MERGE_MSG"
-        merge_msg_path.write_text("Merge branch 'feature'\n\nConflicts:\n\tshared.txt\n")
+            # Create MERGE_MSG in .git
+            merge_msg_path = conflict_repo.path / ".git" / "MERGE_MSG"
+            merge_msg_path.write_text("Merge branch 'feature'\n\nConflicts:\n\tshared.txt\n")
 
-        tab.refresh()
-        assert tab.commit_msg_input.text() == "Merge branch 'feature'"
-        assert "Conflicts:" in tab.commit_desc_input.toPlainText()
+            tab.refresh()
+            assert tab.commit_msg_input.text() == "Merge branch 'feature'"
+            assert "Conflicts:" in tab.commit_desc_input.toPlainText()
+        finally:
+            tab.close()
 
 
 class TestChangesTabSelectAll:
@@ -73,47 +81,50 @@ class TestChangesTabSelectAll:
 
         repo_registry.add_repo(db_conn, str(simple_repo.path))
         tab = ChangesTab(db_conn)
-        tab.show()
-        tab._open_repo_by_path(str(simple_repo.path))
+        try:
+            tab.show()
+            tab._open_repo_by_path(str(simple_repo.path))
 
-        # Add 3 uncommitted files
-        (simple_repo.path / "file1.txt").write_text("1")
-        (simple_repo.path / "file2.txt").write_text("2")
-        (simple_repo.path / "file3.txt").write_text("3")
+            # Add 3 uncommitted files
+            (simple_repo.path / "file1.txt").write_text("1")
+            (simple_repo.path / "file2.txt").write_text("2")
+            (simple_repo.path / "file3.txt").write_text("3")
 
-        tab.refresh()
-        assert tab.files_list.count() == 3
-        # By default all are checked
-        assert tab.select_all_cb.checkState() == Qt.Checked
+            tab.refresh()
+            assert tab.files_list.count() == 3
+            # By default all are checked
+            assert tab.select_all_cb.checkState() == Qt.Checked
 
-        # Uncheck 1 item
-        w0 = tab.files_list.itemWidget(tab.files_list.item(0))
-        assert isinstance(w0, FileListItemWidget)
-        w0.checkbox.setChecked(False)
+            # Uncheck 1 item
+            w0 = tab.files_list.itemWidget(tab.files_list.item(0))
+            assert isinstance(w0, FileListItemWidget)
+            w0.checkbox.setChecked(False)
 
-        # Tri-state should be PartiallyChecked
-        assert tab.select_all_cb.checkState() == Qt.PartiallyChecked
+            # Tri-state should be PartiallyChecked
+            assert tab.select_all_cb.checkState() == Qt.PartiallyChecked
 
-        # Clicking select_all_cb while PartiallyChecked should check all
-        tab.select_all_cb.click()
-        assert tab.select_all_cb.checkState() == Qt.Checked
-        for i in range(3):
-            wi = tab.files_list.itemWidget(tab.files_list.item(i))
-            assert wi.is_checked() is True
+            # Clicking select_all_cb while PartiallyChecked should check all
+            tab.select_all_cb.click()
+            assert tab.select_all_cb.checkState() == Qt.Checked
+            for i in range(3):
+                wi = tab.files_list.itemWidget(tab.files_list.item(i))
+                assert wi.is_checked() is True
 
-        # Clicking select_all_cb while Checked should uncheck all
-        tab.select_all_cb.click()
-        assert tab.select_all_cb.checkState() == Qt.Unchecked
-        for i in range(3):
-            wi = tab.files_list.itemWidget(tab.files_list.item(i))
-            assert wi.is_checked() is False
+            # Clicking select_all_cb while Checked should uncheck all
+            tab.select_all_cb.click()
+            assert tab.select_all_cb.checkState() == Qt.Unchecked
+            for i in range(3):
+                wi = tab.files_list.itemWidget(tab.files_list.item(i))
+                assert wi.is_checked() is False
 
-        # Clicking select_all_cb while Unchecked should check all
-        tab.select_all_cb.click()
-        assert tab.select_all_cb.checkState() == Qt.Checked
-        for i in range(3):
-            wi = tab.files_list.itemWidget(tab.files_list.item(i))
-            assert wi.is_checked() is True
+            # Clicking select_all_cb while Unchecked should check all
+            tab.select_all_cb.click()
+            assert tab.select_all_cb.checkState() == Qt.Checked
+            for i in range(3):
+                wi = tab.files_list.itemWidget(tab.files_list.item(i))
+                assert wi.is_checked() is True
+        finally:
+            tab.close()
 
 
 class TestChangesTabCommit:
@@ -122,32 +133,38 @@ class TestChangesTabCommit:
     ):
         repo_registry.add_repo(db_conn, str(simple_repo.path))
         tab = ChangesTab(db_conn)
-        tab.show()
-        tab._open_repo_by_path(str(simple_repo.path))
+        try:
+            tab.show()
+            tab._open_repo_by_path(str(simple_repo.path))
 
-        tab.commit_msg_input.setText("Test message")
-        # Force enable commit_btn to simulate stale UI state
-        tab.commit_btn.setEnabled(True)
+            tab.commit_msg_input.setText("Test message")
+            # Force enable commit_btn to simulate stale UI state
+            tab.commit_btn.setEnabled(True)
 
-        info_called = []
-        monkeypatch.setattr(
-            "PySide6.QtWidgets.QMessageBox.information",
-            lambda *args, **kwargs: info_called.append(True),
-        )
+            info_called = []
+            monkeypatch.setattr(
+                "PySide6.QtWidgets.QMessageBox.information",
+                lambda *args, **kwargs: info_called.append(True),
+            )
 
-        tab._on_commit_clicked()
-        assert len(info_called) == 1
-        assert tab.commit_msg_input.text() == ""
+            tab._on_commit_clicked()
+            assert len(info_called) == 1
+            assert tab.commit_msg_input.text() == ""
+        finally:
+            tab.close()
 
 
 def test_changes_tab_account_btn_updates_with_linked_account(db_conn):
     from wrench.ui.tabs.changes_tab import ChangesTab
 
     tab = ChangesTab(db_conn)
-    assert hasattr(tab, "_update_account_btn")
-    tab._update_account_btn()
-    # Unlinked initially with no repo
-    assert tab.account_btn.text() == "👤"
+    try:
+        assert hasattr(tab, "_update_account_btn")
+        tab._update_account_btn()
+        # Unlinked initially with no repo
+        assert tab.account_btn.text() == "👤"
+    finally:
+        tab.close()
 
 
 def test_changes_tab_account_btn_unlinked_identity_avatar(simple_repo, db_conn):
@@ -156,13 +173,16 @@ def test_changes_tab_account_btn_unlinked_identity_avatar(simple_repo, db_conn):
 
     repo_registry.add_repo(db_conn, str(simple_repo.path))
     tab = ChangesTab(db_conn)
-    tab._open_repo_by_path(str(simple_repo.path))
+    try:
+        tab._open_repo_by_path(str(simple_repo.path))
 
-    # Committer identity is resolved from simple_repo git config
-    assert tab.account_btn.text() == ""
-    assert not tab.account_btn.icon().isNull()
-    assert "Committer:" in tab.account_btn.toolTip()
-    assert "Local / Unlinked" in tab.account_btn.toolTip()
+        # Committer identity is resolved from simple_repo git config
+        assert tab.account_btn.text() == ""
+        assert not tab.account_btn.icon().isNull()
+        assert "Committer:" in tab.account_btn.toolTip()
+        assert "Local / Unlinked" in tab.account_btn.toolTip()
+    finally:
+        tab.close()
 
 
 def test_changes_tab_account_menu_actions(simple_repo, db_conn):
@@ -171,25 +191,31 @@ def test_changes_tab_account_menu_actions(simple_repo, db_conn):
 
     repo_registry.add_repo(db_conn, str(simple_repo.path))
     tab = ChangesTab(db_conn)
-    tab._open_repo_by_path(str(simple_repo.path))
+    menu = None
+    try:
+        tab._open_repo_by_path(str(simple_repo.path))
 
-    link_requested = []
-    accounts_requested = []
-    tab.link_repo_requested.connect(lambda p: link_requested.append(p))
-    tab.forge_accounts_requested.connect(lambda: accounts_requested.append(True))
+        link_requested = []
+        accounts_requested = []
+        tab.link_repo_requested.connect(lambda p: link_requested.append(p))
+        tab.forge_accounts_requested.connect(lambda: accounts_requested.append(True))
 
-    menu = tab._build_account_menu()
-    actions = [a.text() for a in menu.actions() if not a.isSeparator()]
-    assert any("Committer:" in a for a in actions)
-    assert any("Link Repository" in a for a in actions)
-    assert any("Manage Forge Accounts" in a for a in actions)
+        menu = tab._build_account_menu()
+        actions = [a.text() for a in menu.actions() if not a.isSeparator()]
+        assert any("Committer:" in a for a in actions)
+        assert any("Link Repository" in a for a in actions)
+        assert any("Manage Forge Accounts" in a for a in actions)
 
-    # Trigger manage action
-    for a in menu.actions():
-        if "Manage Forge Accounts" in a.text():
-            a.trigger()
-            break
-    assert len(accounts_requested) == 1
+        # Trigger manage action
+        for a in menu.actions():
+            if "Manage Forge Accounts" in a.text():
+                a.trigger()
+                break
+        assert len(accounts_requested) == 1
+    finally:
+        if menu is not None:
+            menu.close()
+        tab.close()
 
 
 def test_changes_tab_avatar_ready_after_deletion(db_conn):
@@ -204,3 +230,73 @@ def test_changes_tab_avatar_ready_after_deletion(db_conn):
 
     # Emitting avatar_ready when ChangesTab is deleted must not raise RuntimeError
     loader.avatar_ready.emit("https://example.com/avatar.png", 32)
+
+
+def test_changes_tab_over_500_files_compact_mode_selection_space_and_commit(
+    simple_repo, db_conn, app
+):
+    total_created = 505
+    for idx in range(total_created):
+        (simple_repo.path / f"bulk_{idx:04d}.txt").write_text(f"payload {idx}\n", encoding="utf-8")
+
+    repo_registry.add_repo(db_conn, str(simple_repo.path))
+    tab = ChangesTab(db_conn)
+    try:
+        tab.show()
+        tab._open_repo_by_path(str(simple_repo.path))
+        app.processEvents()
+
+        assert tab.large_list_notice_label.isHidden() is False
+        assert "Compact list active" in tab.large_list_notice_label.text()
+        assert tab.files_list.count() == total_created
+        assert all(
+            tab.files_list.itemWidget(tab.files_list.item(i)) is None for i in range(total_created)
+        )
+        assert tab.select_all_cb.checkState() == Qt.Checked
+
+        # Uncheck all via Select All -> commit_btn disabled even with commit message
+        tab.commit_msg_input.setText("compact commit")
+        tab.select_all_cb.click()
+        app.processEvents()
+        assert tab.select_all_cb.checkState() == Qt.Unchecked
+        assert tab.commit_btn.isEnabled() is False
+
+        # Select row 0 and toggle with Space key -> row 0 checked, PartiallyChecked, commit enabled
+        tab.files_list.setCurrentRow(0)
+        space_evt = QKeyEvent(
+            QEvent.Type.KeyPress, Qt.Key.Key_Space, Qt.KeyboardModifier.NoModifier
+        )
+        tab.files_list.keyPressEvent(space_evt)
+        app.processEvents()
+
+        first_item = tab.files_list.item(0)
+        checked_path = first_item.data(Qt.UserRole)
+        assert first_item.checkState() == Qt.CheckState.Checked
+        assert tab.select_all_cb.checkState() == Qt.PartiallyChecked
+        assert tab.commit_btn.isEnabled() is True
+
+        # State snapshot + restore round-trip
+        saved_state = tab.get_current_repo_state()
+        assert len(saved_state["checked_files"]) == 1
+        tab.select_all_cb.click()  # Partial -> All Checked
+        app.processEvents()
+        assert tab.select_all_cb.checkState() == Qt.Checked
+        tab.restore_repo_state(saved_state)
+        app.processEvents()
+        assert tab.select_all_cb.checkState() == Qt.PartiallyChecked
+        assert (
+            sum(1 for i in range(total_created) if tab._is_item_checked(tab.files_list.item(i)))
+            == 1
+        )
+
+        # Commit ONLY that 1 checked file -> leaves remaining 504 untracked
+        tab._on_commit_clicked()
+        app.processEvents()
+
+        latest = engine.get_log(simple_repo, limit=1)[0]
+        assert latest.message == "compact commit"
+        assert tab.files_list.count() == total_created - 1
+        assert tab.large_list_notice_label.isHidden() is False
+        assert (simple_repo.path / checked_path).exists()
+    finally:
+        tab.close()

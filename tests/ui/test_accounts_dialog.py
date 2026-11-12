@@ -77,19 +77,22 @@ class TestAccountsDialog:
             patch("wrench.credentials.get_backend", return_value=mock_backend),
         ):
             dlg = AccountsDialog()
-            assert dlg.table.rowCount() == 1
-            assert dlg.table.item(0, 0).text() == "Github"
-            assert dlg.table.item(0, 3).text() == "My GitHub"
+            try:
+                assert dlg.table.rowCount() == 1
+                assert dlg.table.item(0, 0).text() == "Github"
+                assert dlg.table.item(0, 3).text() == "My GitHub"
 
-            # Test delete account
-            dlg.table.selectRow(0)
-            with patch.object(QMessageBox, "question", return_value=QMessageBox.Yes):
-                dlg._delete_account()
+                # Test delete account
+                dlg.table.selectRow(0)
+                with patch.object(QMessageBox, "question", return_value=QMessageBox.Yes):
+                    dlg._delete_account()
 
-            assert dlg.table.rowCount() == 0
-            records = forge_accounts.list_accounts(db_conn)
-            assert len(records) == 0
-            mock_backend.delete_secret.assert_called_once_with(f"wrench:forge:{acc_id}")
+                assert dlg.table.rowCount() == 0
+                records = forge_accounts.list_accounts(db_conn)
+                assert len(records) == 0
+                mock_backend.delete_secret.assert_called_once_with(f"wrench:forge:{acc_id}")
+            finally:
+                dlg.close()
 
     def test_add_account_dialog_success(self, db_conn):
         db_path = db_file_path(db_conn)
@@ -108,17 +111,20 @@ class TestAccountsDialog:
             ),
         ):
             dlg = AddAccountDialog()
-            dlg.url_edit.setText("https://github.com")
-            dlg.label_edit.setText("Bob Account")
-            dlg.token_edit.setText("ghp_validtoken")
-            dlg.insecure_cb.setChecked(False)
+            try:
+                dlg.url_edit.setText("https://github.com")
+                dlg.label_edit.setText("Bob Account")
+                dlg.token_edit.setText("ghp_validtoken")
+                dlg.insecure_cb.setChecked(False)
 
-            dlg._validate_and_save()
+                dlg._validate_and_save()
 
-            records = forge_accounts.list_accounts(db_conn)
-            assert len(records) == 1
-            assert records[0].label == "Bob Account"
-            assert records[0].username == "bob"
+                records = forge_accounts.list_accounts(db_conn)
+                assert len(records) == 1
+                assert records[0].label == "Bob Account"
+                assert records[0].username == "bob"
+            finally:
+                dlg.close()
 
     def test_add_account_dialog_failure(self, db_conn):
         db_path = db_file_path(db_conn)
@@ -135,11 +141,14 @@ class TestAccountsDialog:
             ),
         ):
             dlg = AddAccountDialog()
-            dlg.token_edit.setText("invalid_token")
-            dlg._validate_and_save()
+            try:
+                dlg.token_edit.setText("invalid_token")
+                dlg._validate_and_save()
 
-            assert "Validation failed: Invalid Token" in dlg.status_label.text()
-            assert dlg.save_btn.isEnabled()
+                assert "Validation failed: Invalid Token" in dlg.status_label.text()
+                assert dlg.save_btn.isEnabled()
+            finally:
+                dlg.close()
 
     def test_edit_account_dialog(self, db_conn):
         db_path = db_file_path(db_conn)
@@ -161,13 +170,16 @@ class TestAccountsDialog:
             patch("wrench.credentials.get_backend", return_value=mock_backend),
         ):
             dlg = EditAccountDialog(record)
-            dlg.label_edit.setText("Updated GitLab")
-            dlg.username_edit.setText("charlie_new")
-            dlg._save_changes()
+            try:
+                dlg.label_edit.setText("Updated GitLab")
+                dlg.username_edit.setText("charlie_new")
+                dlg._save_changes()
 
-            updated = forge_accounts.get_account_full(db_conn, acc_id)
-            assert updated.label == "Updated GitLab"
-            assert updated.username == "charlie_new"
+                updated = forge_accounts.get_account_full(db_conn, acc_id)
+                assert updated.label == "Updated GitLab"
+                assert updated.username == "charlie_new"
+            finally:
+                dlg.close()
 
 
 class TestLinkRepoDialog:
@@ -206,37 +218,42 @@ class TestLinkRepoDialog:
                 token="tok_gl",
             )
 
-        with patch(
-            "wrench.storage.db.get_connection", side_effect=lambda: sqlite3.connect(db_path)
+        with (
+            patch("wrench.storage.db.get_connection", side_effect=lambda: sqlite3.connect(db_path)),
+            patch("wrench.ui.dialogs.link_dialog.run_in_background"),
+            patch("wrench.ui.widgets.avatar.run_in_background"),
         ):
             dlg = LinkRepoDialog(str(repo_path))
-            assert dlg.table.rowCount() == 2
+            try:
+                assert dlg.table.rowCount() == 2
 
-            # Run auto-match by host
-            dlg._auto_match_remotes()
+                # Run auto-match by host
+                dlg._auto_match_remotes()
 
-            row_map = {dlg._row_data[r][0]: r for r in dlg._row_data}
-            assert dlg._combos[row_map["origin"]].currentData() == acc_gh
-            assert dlg._combos[row_map["gitlab"]].currentData() == acc_gl
+                row_map = {dlg._row_data[r][0]: r for r in dlg._row_data}
+                assert dlg._combos[row_map["origin"]].currentData() == acc_gh
+                assert dlg._combos[row_map["gitlab"]].currentData() == acc_gl
 
-            # Save links
-            dlg._save_links()
+                # Save links
+                dlg._save_links()
 
-            # Verify links in DB
-            links = forge_accounts.list_links_for_repo(db_conn, repo_id)
-            assert len(links) == 2
-            link_map = {lnk.remote_name: lnk for lnk in links}
-            assert link_map["origin"].forge_account_id == acc_gh
-            assert link_map["origin"].owner_slug == "alice"
-            assert link_map["origin"].repo_slug == "coolproject"
+                # Verify links in DB
+                links = forge_accounts.list_links_for_repo(db_conn, repo_id)
+                assert len(links) == 2
+                link_map = {lnk.remote_name: lnk for lnk in links}
+                assert link_map["origin"].forge_account_id == acc_gh
+                assert link_map["origin"].owner_slug == "alice"
+                assert link_map["origin"].repo_slug == "coolproject"
 
-            assert link_map["gitlab"].forge_account_id == acc_gl
-            assert link_map["gitlab"].owner_slug == "alice"
-            assert link_map["gitlab"].repo_slug == "coolproject"
+                assert link_map["gitlab"].forge_account_id == acc_gl
+                assert link_map["gitlab"].owner_slug == "alice"
+                assert link_map["gitlab"].repo_slug == "coolproject"
 
-            # Verify git config credential.useHttpPath was set to true
-            handle = RepoHandle(pygit2_repo, str(repo_path))
-            assert handle.pygit2_repo.config["credential.useHttpPath"] == "true"
+                # Verify git config credential.useHttpPath was set to true
+                handle = RepoHandle(pygit2_repo, str(repo_path))
+                assert handle.pygit2_repo.config["credential.useHttpPath"] == "true"
+            finally:
+                dlg.close()
 
     def test_link_repo_shared_connection_not_closed(self, tmp_path: Path, db_conn):
         repo_path = tmp_path / "shared_conn_repo"
@@ -260,22 +277,28 @@ class TestLinkRepoDialog:
                 token="tok_gh",
             )
 
-        # Pass shared db_conn to LinkRepoDialog (as MainWindow does)
-        dlg = LinkRepoDialog(str(repo_path), conn=db_conn)
+        with (
+            patch("wrench.ui.dialogs.link_dialog.run_in_background"),
+            patch("wrench.ui.widgets.avatar.run_in_background"),
+        ):
+            # Pass shared db_conn to LinkRepoDialog (as MainWindow does)
+            dlg = LinkRepoDialog(str(repo_path), conn=db_conn)
+            try:
+                # Verify db_conn was NOT closed during reload_data() in __init__
+                assert db_conn.execute("SELECT 1").fetchone()[0] == 1
 
-        # Verify db_conn was NOT closed during reload_data() in __init__
-        assert db_conn.execute("SELECT 1").fetchone()[0] == 1
+                dlg._auto_match_remotes()
+                dlg._save_links()
 
-        dlg._auto_match_remotes()
-        dlg._save_links()
+                # Verify db_conn is STILL NOT closed after _save_links()
+                assert db_conn.execute("SELECT 1").fetchone()[0] == 1
 
-        # Verify db_conn is STILL NOT closed after _save_links()
-        assert db_conn.execute("SELECT 1").fetchone()[0] == 1
-
-        # Verify links were written successfully
-        links = forge_accounts.list_links_for_repo(db_conn, repo_id)
-        assert len(links) == 1
-        assert links[0].forge_account_id == acc_gh
+                # Verify links were written successfully
+                links = forge_accounts.list_links_for_repo(db_conn, repo_id)
+                assert len(links) == 1
+                assert links[0].forge_account_id == acc_gh
+            finally:
+                dlg.close()
 
     def test_link_repo_auto_aligns_identity(self, tmp_path: Path, db_conn):
         db_path = db_file_path(db_conn)
@@ -311,21 +334,25 @@ class TestLinkRepoDialog:
                 "wrench.ui.dialogs.link_dialog.run_in_background",
                 side_effect=_sync_run_in_background,
             ),
+            patch("wrench.ui.widgets.avatar.run_in_background"),
             patch(
                 "wrench.forge.adapters.github.GitHubAdapter.get_primary_email",
                 return_value="alice@example.com",
             ),
         ):
             dlg = LinkRepoDialog(str(repo_path))
-            dlg._auto_match_remotes()
-            dlg._save_links()
+            try:
+                dlg._auto_match_remotes()
+                dlg._save_links()
 
-            # Verify local identity was aligned
-            from wrench.core.identity import check_identity
+                # Verify local identity was aligned
+                from wrench.core.identity import check_identity
 
-            name, email = check_identity(str(repo_path))
-            assert name == "alice"
-            assert email == "alice@example.com"
+                name, email = check_identity(str(repo_path))
+                assert name == "alice"
+                assert email == "alice@example.com"
+            finally:
+                dlg.close()
 
 
 class TestAssistedFlowUI:
@@ -333,90 +360,120 @@ class TestAssistedFlowUI:
 
     def test_add_dialog_shows_method_chooser_first(self):
         dlg = AddAccountDialog()
-        assert dlg._stack.currentIndex() == 0
-        buttons = dlg._chooser_page.findChildren(QPushButton)
-        btn_texts = [b.text() for b in buttons]
-        assert any("Assisted" in t for t in btn_texts)
-        assert any("Manual" in t for t in btn_texts)
+        try:
+            assert dlg._stack.currentIndex() == 0
+            buttons = dlg._chooser_page.findChildren(QPushButton)
+            btn_texts = [b.text() for b in buttons]
+            assert any("Assisted" in t for t in btn_texts)
+            assert any("Manual" in t for t in btn_texts)
+        finally:
+            dlg.close()
 
     def test_assisted_button_goes_to_device_flow_page(self):
         dlg = AddAccountDialog()
-        dlg.assisted_btn.click()
-        assert dlg._stack.currentIndex() == 1
+        try:
+            dlg.assisted_btn.click()
+            assert dlg._stack.currentIndex() == 1
+        finally:
+            dlg.close()
 
     def test_manual_button_goes_to_manual_form_page(self):
         dlg = AddAccountDialog()
-        dlg.manual_btn.click()
-        assert dlg._stack.currentIndex() == 2
+        try:
+            dlg.manual_btn.click()
+            assert dlg._stack.currentIndex() == 2
+        finally:
+            dlg.close()
 
     def test_back_button_returns_to_chooser(self):
         dlg = AddAccountDialog()
-        # From assisted page
-        dlg.assisted_btn.click()
-        assert dlg._stack.currentIndex() == 1
-        dlg.assisted_back_btn.click()
-        assert dlg._stack.currentIndex() == 0
+        try:
+            # From assisted page
+            dlg.assisted_btn.click()
+            assert dlg._stack.currentIndex() == 1
+            dlg.assisted_back_btn.click()
+            assert dlg._stack.currentIndex() == 0
 
-        # From manual page
-        dlg.manual_btn.click()
-        assert dlg._stack.currentIndex() == 2
-        dlg.manual_back_btn.click()
-        assert dlg._stack.currentIndex() == 0
+            # From manual page
+            dlg.manual_btn.click()
+            assert dlg._stack.currentIndex() == 2
+            dlg.manual_back_btn.click()
+            assert dlg._stack.currentIndex() == 0
+        finally:
+            dlg.close()
 
     def test_enterprise_radio_reveals_instance_url(self):
         dlg = AddAccountDialog()
-        dlg.show()
-        dlg.assisted_btn.click()
-        dlg.enterprise_radio.setChecked(True)
-        assert not dlg.assisted_url_edit.isHidden()
-        assert dlg.assisted_url_container.isVisible()
+        try:
+            dlg.show()
+            dlg.assisted_btn.click()
+            dlg.enterprise_radio.setChecked(True)
+            assert not dlg.assisted_url_edit.isHidden()
+            assert dlg.assisted_url_container.isVisible()
+        finally:
+            dlg.close()
 
     def test_personal_radio_hides_instance_url(self):
         dlg = AddAccountDialog()
-        dlg.show()
-        dlg.assisted_btn.click()
-        dlg.enterprise_radio.setChecked(True)
-        assert not dlg.assisted_url_edit.isHidden()
-        dlg.personal_radio.setChecked(True)
-        assert dlg.assisted_url_edit.isHidden()
-        assert not dlg.assisted_url_container.isVisible()
+        try:
+            dlg.show()
+            dlg.assisted_btn.click()
+            dlg.enterprise_radio.setChecked(True)
+            assert not dlg.assisted_url_edit.isHidden()
+            dlg.personal_radio.setChecked(True)
+            assert dlg.assisted_url_edit.isHidden()
+            assert not dlg.assisted_url_container.isVisible()
+        finally:
+            dlg.close()
 
     def test_scope_chooser_defaults_to_full(self):
         dlg = AddAccountDialog()
-        dlg.assisted_btn.click()
-        assert dlg.full_scope_radio.isChecked()
-        assert not dlg.public_scope_radio.isChecked()
+        try:
+            dlg.assisted_btn.click()
+            assert dlg.full_scope_radio.isChecked()
+            assert not dlg.public_scope_radio.isChecked()
+        finally:
+            dlg.close()
 
     def test_manual_form_has_info_buttons(self):
         dlg = AddAccountDialog()
-        dlg.manual_btn.click()
-        info_buttons = dlg._manual_page.findChildren(InfoButton)
-        assert len(info_buttons) >= 5
+        try:
+            dlg.manual_btn.click()
+            info_buttons = dlg._manual_page.findChildren(InfoButton)
+            assert len(info_buttons) >= 5
+        finally:
+            dlg.close()
 
     def test_info_button_toggles_popover(self):
         dlg = AddAccountDialog()
-        dlg.show()
-        dlg.manual_btn.click()
-        info_buttons = dlg._manual_page.findChildren(InfoButton)
-        assert len(info_buttons) > 0
-        btn = info_buttons[0]
+        try:
+            dlg.show()
+            dlg.manual_btn.click()
+            info_buttons = dlg._manual_page.findChildren(InfoButton)
+            assert len(info_buttons) > 0
+            btn = info_buttons[0]
 
-        # First click opens popover
-        btn.click()
-        assert btn._popover is not None
-        assert btn._popover.isVisible()
+            # First click opens popover
+            btn.click()
+            assert btn._popover is not None
+            assert btn._popover.isVisible()
 
-        # Second click closes popover
-        btn.click()
-        assert not btn._popover.isVisible()
+            # Second click closes popover
+            btn.click()
+            assert not btn._popover.isVisible()
+        finally:
+            dlg.close()
 
     def test_tooltip_updates_on_provider_change(self):
         dlg = AddAccountDialog()
-        dlg.manual_btn.click()
-        idx = dlg.provider_combo.findData("gitlab")
-        assert idx >= 0
-        dlg.provider_combo.setCurrentIndex(idx)
-        assert "gitlab" in dlg.token_info_btn._tooltip_html.lower()
+        try:
+            dlg.manual_btn.click()
+            idx = dlg.provider_combo.findData("gitlab")
+            assert idx >= 0
+            dlg.provider_combo.setCurrentIndex(idx)
+            assert "gitlab" in dlg.token_info_btn._tooltip_html.lower()
+        finally:
+            dlg.close()
 
     def test_assisted_flow_connect_and_success(self, db_conn):
         db_path = db_file_path(db_conn)
@@ -450,14 +507,17 @@ class TestAssistedFlowUI:
             ),
         ):
             dlg = AddAccountDialog()
-            dlg.assisted_btn.click()
-            dlg.assisted_connect_btn.click()
+            try:
+                dlg.assisted_btn.click()
+                dlg.assisted_connect_btn.click()
 
-            records = forge_accounts.list_accounts(db_conn)
-            assert len(records) == 1
-            assert records[0].provider == "github"
-            assert records[0].username == "octocat"
-            assert "GitHub" in records[0].label
+                records = forge_accounts.list_accounts(db_conn)
+                assert len(records) == 1
+                assert records[0].provider == "github"
+                assert records[0].username == "octocat"
+                assert "GitHub" in records[0].label
+            finally:
+                dlg.close()
 
     def test_assisted_flow_error_denied(self):
         with (
@@ -471,13 +531,16 @@ class TestAssistedFlowUI:
             ),
         ):
             dlg = AddAccountDialog()
-            dlg.show()
-            dlg.assisted_btn.click()
-            dlg.assisted_connect_btn.click()
+            try:
+                dlg.show()
+                dlg.assisted_btn.click()
+                dlg.assisted_connect_btn.click()
 
-            assert "denied" in dlg.waiting_status_label.text().lower()
-            assert dlg.assisted_try_again_btn.isVisible()
-            assert dlg.assisted_manual_fallback_btn.isVisible()
+                assert "denied" in dlg.waiting_status_label.text().lower()
+                assert dlg.assisted_try_again_btn.isVisible()
+                assert dlg.assisted_manual_fallback_btn.isVisible()
+            finally:
+                dlg.close()
 
     def test_assisted_flow_requests_workflow_scope(self, db_conn):
         db_path = db_file_path(db_conn)
@@ -511,13 +574,16 @@ class TestAssistedFlowUI:
             ),
         ):
             dlg = AddAccountDialog()
-            dlg.assisted_btn.click()
-            dlg.assisted_connect_btn.click()
+            try:
+                dlg.assisted_btn.click()
+                dlg.assisted_connect_btn.click()
 
-            mock_req.assert_called_once()
-            _, kwargs = mock_req.call_args
-            assert "workflow" in kwargs["scope"]
-            assert "repo" in kwargs["scope"]
+                mock_req.assert_called_once()
+                _, kwargs = mock_req.call_args
+                assert "workflow" in kwargs["scope"]
+                assert "repo" in kwargs["scope"]
+            finally:
+                dlg.close()
 
     def test_assisted_flow_reauth_updates_existing_account(self, db_conn):
         db_path = db_file_path(db_conn)
@@ -562,18 +628,21 @@ class TestAssistedFlowUI:
             ),
         ):
             dlg = AddAccountDialog(initial_page=1)
-            dlg.assisted_connect_btn.click()
+            try:
+                dlg.assisted_connect_btn.click()
 
-            # Verify no duplicate account was inserted
-            records = forge_accounts.list_accounts(db_conn)
-            assert len(records) == 1
-            assert records[0].id == acc_id
-            # Verify secret store was updated with new token
-            mock_backend.store_secret.assert_called_with(
-                f"wrench:forge:{acc_id}",
-                "new_token_with_workflow",
-                label=f"Wrench: {records[0].label}",
-            )
+                # Verify no duplicate account was inserted
+                records = forge_accounts.list_accounts(db_conn)
+                assert len(records) == 1
+                assert records[0].id == acc_id
+                # Verify secret store was updated with new token
+                mock_backend.store_secret.assert_called_with(
+                    f"wrench:forge:{acc_id}",
+                    "new_token_with_workflow",
+                    label=f"Wrench: {records[0].label}",
+                )
+            finally:
+                dlg.close()
 
     def test_reauth_button_presence(self, db_conn):
         db_path = db_file_path(db_conn)
@@ -595,10 +664,13 @@ class TestAssistedFlowUI:
             patch("wrench.credentials.get_backend", return_value=mock_backend),
         ):
             dlg = AccountsDialog()
-            assert hasattr(dlg, "reauth_btn")
-
             edit_dlg = EditAccountDialog(records[0])
-            assert hasattr(edit_dlg, "reauth_btn")
+            try:
+                assert hasattr(dlg, "reauth_btn")
+                assert hasattr(edit_dlg, "reauth_btn")
+            finally:
+                edit_dlg.close()
+                dlg.close()
 
     def test_reauth_account_flow_no_attribute_error(self, db_conn):
         """Verify _reauth_account and _reauth_github instantiate
@@ -620,24 +692,31 @@ class TestAssistedFlowUI:
 
         # Test AddAccountDialog directly for cloud_radio alias
         add_dlg = AddAccountDialog(initial_page=1, reauth_account_id=acc_id)
-        assert hasattr(add_dlg, "cloud_radio")
-        assert hasattr(add_dlg, "personal_radio")
-        assert add_dlg.cloud_radio is add_dlg.personal_radio
-        assert add_dlg.windowTitle() == "Re-authenticate GitHub Account"
+        try:
+            assert hasattr(add_dlg, "cloud_radio")
+            assert hasattr(add_dlg, "personal_radio")
+            assert add_dlg.cloud_radio is add_dlg.personal_radio
+            assert add_dlg.windowTitle() == "Re-authenticate GitHub Account"
+        finally:
+            add_dlg.close()
 
         with (
             patch("wrench.storage.db.get_connection", side_effect=lambda: sqlite3.connect(db_path)),
             patch("wrench.credentials.get_backend", return_value=mock_backend),
             patch.object(AddAccountDialog, "exec", return_value=1),
         ):
-            # Test AccountsDialog._reauth_account
             acc_dlg = AccountsDialog()
-            acc_dlg.table.selectRow(0)
-            acc_dlg._reauth_account()
-
-            # Test EditAccountDialog._reauth_github
             edit_dlg = EditAccountDialog(records[0])
-            edit_dlg._reauth_github()
+            try:
+                # Test AccountsDialog._reauth_account
+                acc_dlg.table.selectRow(0)
+                acc_dlg._reauth_account()
+
+                # Test EditAccountDialog._reauth_github
+                edit_dlg._reauth_github()
+            finally:
+                edit_dlg.close()
+                acc_dlg.close()
 
 
 class TestAdvancedScopes:
@@ -646,55 +725,73 @@ class TestAdvancedScopes:
     def test_advanced_scopes_exist_on_assisted_page(self, db_conn):
         """Verify the advanced scope widgets are present."""
         dlg = AddAccountDialog(initial_page=1)
-        assert hasattr(dlg, "advanced_scopes_btn"), "Missing advanced_scopes_btn toggle"
-        assert hasattr(dlg, "scope_workflow_cb"), "Missing workflow checkbox"
-        assert hasattr(dlg, "scope_user_email_cb"), "Missing user:email checkbox"
-        assert hasattr(dlg, "scope_read_org_cb"), "Missing read:org checkbox"
+        try:
+            assert hasattr(dlg, "advanced_scopes_btn"), "Missing advanced_scopes_btn toggle"
+            assert hasattr(dlg, "scope_workflow_cb"), "Missing workflow checkbox"
+            assert hasattr(dlg, "scope_user_email_cb"), "Missing user:email checkbox"
+            assert hasattr(dlg, "scope_read_org_cb"), "Missing read:org checkbox"
+        finally:
+            dlg.close()
 
     def test_full_scope_preset_checks_all(self, db_conn):
         """Full Access preset should check all optional scopes."""
         dlg = AddAccountDialog(initial_page=1)
-        assert dlg.full_scope_radio.isChecked()
-        assert dlg.scope_workflow_cb.isChecked()
-        assert dlg.scope_user_email_cb.isChecked()
-        assert dlg.scope_read_org_cb.isChecked()
+        try:
+            assert dlg.full_scope_radio.isChecked()
+            assert dlg.scope_workflow_cb.isChecked()
+            assert dlg.scope_user_email_cb.isChecked()
+            assert dlg.scope_read_org_cb.isChecked()
+        finally:
+            dlg.close()
 
     def test_public_scope_preset_unchecks_workflow_and_org(self, db_conn):
         """Public Only preset should uncheck workflow and read:org."""
         dlg = AddAccountDialog(initial_page=1)
-        dlg.public_scope_radio.setChecked(True)
-        assert not dlg.scope_workflow_cb.isChecked()
-        assert not dlg.scope_read_org_cb.isChecked()
-        # user:email should still be checked
-        assert dlg.scope_user_email_cb.isChecked()
+        try:
+            dlg.public_scope_radio.setChecked(True)
+            assert not dlg.scope_workflow_cb.isChecked()
+            assert not dlg.scope_read_org_cb.isChecked()
+            # user:email should still be checked
+            assert dlg.scope_user_email_cb.isChecked()
+        finally:
+            dlg.close()
 
     def test_get_selected_scopes_public(self, db_conn):
         """Public scope string should contain public_repo and user:email."""
         dlg = AddAccountDialog(initial_page=1)
-        dlg.public_scope_radio.setChecked(True)
-        scopes = dlg._get_selected_scopes()
-        assert "public_repo" in scopes
-        assert "user:email" in scopes
-        assert "workflow" not in scopes
-        assert "read:org" not in scopes
+        try:
+            dlg.public_scope_radio.setChecked(True)
+            scopes = dlg._get_selected_scopes()
+            assert "public_repo" in scopes
+            assert "user:email" in scopes
+            assert "workflow" not in scopes
+            assert "read:org" not in scopes
+        finally:
+            dlg.close()
 
     def test_get_selected_scopes_full(self, db_conn):
         """Full scope string should contain repo, workflow, user:email, read:org."""
         dlg = AddAccountDialog(initial_page=1)
-        scopes = dlg._get_selected_scopes()
-        assert "repo" in scopes
-        assert "workflow" in scopes
-        assert "user:email" in scopes
-        assert "read:org" in scopes
+        try:
+            scopes = dlg._get_selected_scopes()
+            assert "repo" in scopes
+            assert "workflow" in scopes
+            assert "user:email" in scopes
+            assert "read:org" in scopes
+        finally:
+            dlg.close()
 
     def test_custom_scope_override(self, db_conn):
         """User can manually toggle workflow on even with Public preset."""
         dlg = AddAccountDialog(initial_page=1)
-        dlg.public_scope_radio.setChecked(True)
-        dlg.scope_workflow_cb.setChecked(True)
-        scopes = dlg._get_selected_scopes()
-        assert "workflow" in scopes
-        assert "public_repo" in scopes
+        try:
+            dlg.public_scope_radio.setChecked(True)
+            dlg.scope_workflow_cb.setChecked(True)
+            scopes = dlg._get_selected_scopes()
+            assert "workflow" in scopes
+            assert "public_repo" in scopes
+        finally:
+            dlg.close()
 
 
 class TestAccountsDialogThemeLegibility:
@@ -702,29 +799,31 @@ class TestAccountsDialogThemeLegibility:
 
     def test_chooser_and_assisted_text_colors(self, db_conn):
         dlg = AddAccountDialog(initial_page=0)
+        try:
+            # Chooser page subtitle
+            chooser_page = dlg._stack.widget(0)
+            labels = chooser_page.findChildren(QLabel)
+            subtitle = next((lbl for lbl in labels if "How would you like" in lbl.text()), None)
+            assert subtitle is not None
+            assert "palette(placeholder-text)" in subtitle.styleSheet()
+            assert "palette(mid)" not in subtitle.styleSheet()
 
-        # Chooser page subtitle
-        chooser_page = dlg._stack.widget(0)
-        labels = chooser_page.findChildren(QLabel)
-        subtitle = next((lbl for lbl in labels if "How would you like" in lbl.text()), None)
-        assert subtitle is not None
-        assert "palette(placeholder-text)" in subtitle.styleSheet()
-        assert "palette(mid)" not in subtitle.styleSheet()
+            # Assisted page elements
+            dlg._stack.setCurrentIndex(1)
+            assert "palette(placeholder-text)" in dlg.advanced_scopes_btn.styleSheet()
+            assert "palette(mid)" not in dlg.advanced_scopes_btn.styleSheet()
+            assert "palette(placeholder-text)" in dlg.countdown_label.styleSheet()
+            assert "palette(mid)" not in dlg.countdown_label.styleSheet()
 
-        # Assisted page elements
-        dlg._stack.setCurrentIndex(1)
-        assert "palette(placeholder-text)" in dlg.advanced_scopes_btn.styleSheet()
-        assert "palette(mid)" not in dlg.advanced_scopes_btn.styleSheet()
-        assert "palette(placeholder-text)" in dlg.countdown_label.styleSheet()
-        assert "palette(mid)" not in dlg.countdown_label.styleSheet()
-
-        # Ensure no QLabel on assisted page has color: palette(mid)
-        assisted_page = dlg._stack.widget(1)
-        for lbl in assisted_page.findChildren(QLabel):
-            sheet = lbl.styleSheet()
-            assert (
-                "color: palette(mid)" not in sheet
-            ), f"Found unreadable color: palette(mid) on {lbl.text()}"
+            # Ensure no QLabel on assisted page has color: palette(mid)
+            assisted_page = dlg._stack.widget(1)
+            for lbl in assisted_page.findChildren(QLabel):
+                sheet = lbl.styleSheet()
+                assert (
+                    "color: palette(mid)" not in sheet
+                ), f"Found unreadable color: palette(mid) on {lbl.text()}"
+        finally:
+            dlg.close()
 
 
 class TestAccountsDialogAvatarSupport:
@@ -735,23 +834,27 @@ class TestAccountsDialogAvatarSupport:
         mock_backend = MagicMock()
         monkeypatch.setattr("wrench.credentials.get_backend", lambda: mock_backend)
         monkeypatch.setattr("wrench.storage.db.get_connection", lambda: sqlite3.connect(db_path))
+        monkeypatch.setattr("wrench.ui.widgets.avatar.run_in_background", lambda *a, **kw: None)
 
         dlg = AddAccountDialog(initial_page=2)
-        dlg._on_validation_success(
-            provider="github",
-            instance_url="https://github.com",
-            label="Avatar User",
-            username="avataruser",
-            token="ghp_dummy",
-            ca_bundle=None,
-            insecure=False,
-            avatar_url="https://avatars.githubusercontent.com/u/12345?v=4",
-        )
+        try:
+            dlg._on_validation_success(
+                provider="github",
+                instance_url="https://github.com",
+                label="Avatar User",
+                username="avataruser",
+                token="ghp_dummy",
+                ca_bundle=None,
+                insecure=False,
+                avatar_url="https://avatars.githubusercontent.com/u/12345?v=4",
+            )
 
-        accs = forge_accounts.list_accounts(db_conn)
-        assert len(accs) == 1
-        stored_avatar = settings.get_setting(db_conn, f"account.{accs[0].id}.avatar_url")
-        assert stored_avatar == "https://avatars.githubusercontent.com/u/12345?v=4"
+            accs = forge_accounts.list_accounts(db_conn)
+            assert len(accs) == 1
+            stored_avatar = settings.get_setting(db_conn, f"account.{accs[0].id}.avatar_url")
+            assert stored_avatar == "https://avatars.githubusercontent.com/u/12345?v=4"
+        finally:
+            dlg.close()
 
     def test_accounts_dialog_displays_avatar_icon(self, db_conn, monkeypatch):
         from wrench.storage import settings
@@ -760,6 +863,7 @@ class TestAccountsDialogAvatarSupport:
         mock_backend = MagicMock()
         monkeypatch.setattr("wrench.credentials.get_backend", lambda: mock_backend)
         monkeypatch.setattr("wrench.storage.db.get_connection", lambda: sqlite3.connect(db_path))
+        monkeypatch.setattr("wrench.ui.widgets.avatar.run_in_background", lambda *a, **kw: None)
 
         acc_id = forge_accounts.add_account(
             db_conn,
@@ -776,8 +880,11 @@ class TestAccountsDialogAvatarSupport:
         )
 
         dialog = AccountsDialog()
-        dialog.reload_accounts()
+        try:
+            dialog.reload_accounts()
 
-        item = dialog.table.item(0, 2)  # Username column
-        assert item is not None
-        assert not item.icon().isNull()
+            item = dialog.table.item(0, 2)  # Username column
+            assert item is not None
+            assert not item.icon().isNull()
+        finally:
+            dialog.close()

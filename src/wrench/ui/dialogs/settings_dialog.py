@@ -16,7 +16,8 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from PySide6.QtCore import Qt, QTimer
+import shiboken6
+from PySide6.QtCore import QEvent, Qt, QTimer, Slot
 from PySide6.QtGui import QColor, QKeySequence, QPainter, QShortcut
 from PySide6.QtWidgets import (
     QButtonGroup,
@@ -54,6 +55,9 @@ from wrench.ui.theme import (
     COMMIT_STAT_COLORS,
     FORGE_BADGE_COLORS,
     GRAPH_LANES,
+    SECONDARY_TEXT,
+    TOAST_TEXT_COLOR,
+    get_settings_badge_qss,
     is_dark_theme,
 )
 
@@ -694,10 +698,13 @@ class SettingsDialog(QDialog):
                 del frame
 
         self.v1_compat = bool(v1_compat)
+        self._applying_theme: bool = False
+        self._connected_registry: SettingsRegistry | None = None
         if self.v1_compat:
             self._init_v1_ui()
         else:
             self._init_v2_ui()
+        self._apply_theme()
 
     # -------------------------------------------------------------------------
     # v1 Compatibility Mode (Preserved for legacy Phase 4.3 test_settings_dialog.py)
@@ -835,7 +842,6 @@ class SettingsDialog(QDialog):
 
         # Bottom status bar / auto-save toast
         self.toast_label = QLabel(self)
-        self.toast_label.setStyleSheet("color: green; font-weight: bold; padding: 2px;")
         root_layout.addWidget(self.toast_label)
 
         # Keyboard shortcuts
@@ -850,6 +856,34 @@ class SettingsDialog(QDialog):
 
         # Connect registry signal
         self.registry.setting_changed.connect(self._on_external_setting_changed)
+        self._connected_registry = self.registry
+
+    def _apply_theme(self) -> None:
+        if getattr(self, "_applying_theme", False):
+            return
+        self._applying_theme = True
+        try:
+            is_dark = is_dark_theme(self)
+            mode = "dark" if is_dark else "light"
+            if hasattr(self, "toast_label"):
+                toast_fg = TOAST_TEXT_COLOR[mode]
+                self.toast_label.setStyleSheet(
+                    f"color: {toast_fg}; font-weight: bold; padding: 2px;"
+                )
+            for page in getattr(self, "_category_pages", {}).values():
+                if hasattr(page, "apply_theme"):
+                    page.apply_theme()
+        finally:
+            self._applying_theme = False
+
+    def changeEvent(self, event: QEvent) -> None:
+        super().changeEvent(event)
+        if event.type() in (
+            QEvent.Type.PaletteChange,
+            QEvent.Type.ApplicationPaletteChange,
+            QEvent.Type.ThemeChange,
+        ):
+            self._apply_theme()
 
     def _get_or_create_category_page(self, category: str) -> CategorySettingsPage:
         """OPT-1: Lazily instantiate category page on demand."""
@@ -917,7 +951,11 @@ class SettingsDialog(QDialog):
     def _on_setting_modified(self, key: str, val: Any) -> None:
         self._show_toast(self.tr("Saved '%s' → %s") % (key, str(val)))
 
-    def _on_external_setting_changed(self, key: str, val: Any, repo_path: Any) -> None:
+    @Slot(str, object)
+    @Slot(str, object, object)
+    def _on_external_setting_changed(self, key: str, val: Any, repo_path: Any = None) -> None:
+        if not shiboken6.isValid(self):
+            return
         for page in self._category_pages.values():
             page.reload_all()
 
@@ -998,6 +1036,31 @@ class SettingsDialog(QDialog):
         # For v2, instantiate all 13 category pages in order
         return [self._get_or_create_category_page(cat) for cat in self.categories]
 
+    def _cleanup_connections(self) -> None:
+        reg = getattr(self, "_connected_registry", None)
+        if reg is not None:
+            try:
+                reg.setting_changed.disconnect(self._on_external_setting_changed)
+            except RuntimeError, TypeError:
+                pass
+            self._connected_registry = None
+        for page in getattr(self, "_category_pages", {}).values():
+            if not shiboken6.isValid(page):
+                continue
+            for row in getattr(page, "row_widgets", []):
+                if shiboken6.isValid(row) and hasattr(row, "_debounce_timer"):
+                    if row._debounce_timer.isActive():
+                        row._debounce_timer.stop()
+                        row._flush_debounced_save()
+
+    def done(self, result: int) -> None:
+        self._cleanup_connections()
+        super().done(result)
+
+    def closeEvent(self, event) -> None:
+        self._cleanup_connections()
+        super().closeEvent(event)
+
     def showEvent(self, event) -> None:
         super().showEvent(event)
         if self.v1_compat:
@@ -1055,13 +1118,9 @@ class SettingRowWidget(QFrame):
         header_layout.addWidget(self.lbl_title)
 
         self.lbl_key = QLabel(f"({self.spec.key})", self)
-        self.lbl_key.setStyleSheet("color: gray; font-size: 11px;")
         header_layout.addWidget(self.lbl_key)
 
         self.lbl_override = QLabel(self.tr("Repo Override"), self)
-        self.lbl_override.setStyleSheet(
-            "border: 1px solid gray; border-radius: 4px; padding: 1px 6px; font-size: 10px;"
-        )
         self.lbl_override.setVisible(False)
         header_layout.addWidget(self.lbl_override)
         header_layout.addStretch()
@@ -1126,6 +1185,22 @@ class SettingRowWidget(QFrame):
         ctrl_layout.addWidget(self.btn_reset)
 
         layout.addLayout(ctrl_layout)
+        self._apply_theme()
+
+    def _apply_theme(self) -> None:
+        is_dark = is_dark_theme(self)
+        muted = SECONDARY_TEXT["dark" if is_dark else "light"]
+        self.lbl_key.setStyleSheet(f"color: {muted}; font-size: 11px;")
+        self.lbl_override.setStyleSheet(get_settings_badge_qss(is_dark))
+
+    def changeEvent(self, event: QEvent) -> None:
+        super().changeEvent(event)
+        if event.type() in (
+            QEvent.Type.PaletteChange,
+            QEvent.Type.ApplicationPaletteChange,
+            QEvent.Type.ThemeChange,
+        ):
+            self._apply_theme()
 
     def set_repo_path(self, repo_path: str | None) -> None:
         self.repo_path = repo_path
@@ -1200,7 +1275,10 @@ class SettingRowWidget(QFrame):
             self.edit_control.setText(path)
             self._save_val(path)
 
+    @Slot()
     def _flush_debounced_save(self) -> None:
+        if not shiboken6.isValid(self):
+            return
         if self._pending_val is not None:
             val = self._pending_val
             self._pending_val = None
@@ -1306,6 +1384,10 @@ class CategorySettingsPage(QWidget):
         for row in self.row_widgets:
             row.reload_value()
         self.update_dependencies()
+
+    def apply_theme(self) -> None:
+        for row in self.row_widgets:
+            row._apply_theme()
 
     def update_dependencies(self) -> None:
         for row in self.row_widgets:

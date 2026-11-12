@@ -5,8 +5,15 @@ from wrench.ui.theme import (
     CI_STATUS_CONFIG,
     FORGE_BADGE_COLORS,
     GRAPH_LANES,
+    ICON_BUTTON_STYLES,
     MERGE_MODE_COLORS,
+    PRIMARY_BUTTON_STYLES,
+    SECONDARY_BUTTON_STYLES,
     SECONDARY_TEXT,
+    SETTINGS_BADGE_STYLES,
+    STATUS_PILL_STYLES,
+    TOAST_TEXT_COLOR,
+    TREE_WIDGET_STYLES,
     create_pastel_dark_palette,
     create_pastel_light_palette,
 )
@@ -165,3 +172,44 @@ def test_avatar_bg_tokens_contrast():
             # WCAG large/decorative text ratio >= 3.0:1
             ratio = contrast_ratio(bg_hex, text_hex)
             assert ratio >= 3.0, f"Contrast {ratio:.2f}:1 too low for avatar {bg_hex} in {mode}"
+
+
+def test_remediated_button_pill_tree_badge_and_toast_contrast():
+    """Verify WCAG >= 4.5:1 on newly added theme tokens across Light and Dark palettes."""
+    light_win = create_pastel_light_palette().window().color().name()
+    dark_win = create_pastel_dark_palette().window().color().name()
+
+    # PRIMARY_BUTTON_STYLES populated cleanly in both themes
+    assert "#1e66f5" in PRIMARY_BUTTON_STYLES["light"]
+    assert "#89b4fa" in PRIMARY_BUTTON_STYLES["dark"]
+    assert contrast_ratio("#ffffff", "#1e66f5") >= 4.5
+    assert contrast_ratio("#11111b", "#89b4fa") >= 4.5
+
+    # SECONDARY_BUTTON_STYLES & ICON_BUTTON_STYLES
+    for mode in ("light", "dark"):
+        sec = SECONDARY_BUTTON_STYLES[mode]
+        assert contrast_ratio(sec["fg"], sec["bg"]) >= 4.5
+        assert contrast_ratio(sec["fg"], sec["hover"]) >= 4.5
+        ico = ICON_BUTTON_STYLES[mode]
+        assert contrast_ratio(ico["fg"], ico["bg"]) >= 4.5
+        assert contrast_ratio(ico["fg"], ico["hover"]) >= 4.5
+
+        # STATUS_PILL_STYLES
+        for pill_kind, pair in STATUS_PILL_STYLES[mode].items():
+            ratio = contrast_ratio(pair["fg"], pair["bg"])
+            assert ratio >= 4.5, f"Status pill {mode}/{pill_kind} contrast {ratio:.2f} < 4.5"
+
+        # TREE_WIDGET_STYLES
+        tree = TREE_WIDGET_STYLES[mode]
+        assert contrast_ratio(tree["fg"], tree["bg"]) >= 4.5
+        assert contrast_ratio(tree["fg"], tree["alt_bg"]) >= 4.5
+        assert contrast_ratio(tree["header_fg"], tree["header_bg"]) >= 4.5
+        assert contrast_ratio(tree["selected_fg"], tree["selected_bg"]) >= 4.5
+
+        # SETTINGS_BADGE_STYLES
+        badge = SETTINGS_BADGE_STYLES[mode]
+        assert contrast_ratio(badge["fg"], badge["bg"]) >= 4.5
+
+    # TOAST_TEXT_COLOR against window background
+    assert contrast_ratio(TOAST_TEXT_COLOR["light"], light_win) >= 4.5
+    assert contrast_ratio(TOAST_TEXT_COLOR["dark"], dark_win) >= 4.5

@@ -47,6 +47,7 @@ class TestTabContainer:
         container.remove_tab(1)
         assert container.count() == 1
         assert container.current_index() == 0
+        container.close()
 
     def test_pin_and_unpin_tab(self, qapp):
         container = TabContainer(orientation=Qt.Vertical)
@@ -75,6 +76,7 @@ class TestTabContainer:
         # Now closing succeeds
         container.remove_tab(1)
         assert container.count() == 1
+        container.close()
 
     def test_close_other_and_right_tabs(self, qapp):
         container = TabContainer(orientation=Qt.Vertical)
@@ -103,6 +105,7 @@ class TestTabContainer:
         container.close_other_tabs(2)
         assert container.count() == 1
         assert container.tab_metadata(0).label == "Tab 5"
+        container.close()
 
     def test_deduplication_rule(self, qapp):
         container = TabContainer(orientation=Qt.Vertical)
@@ -129,6 +132,7 @@ class TestTabContainer:
         )
         assert container.count() == 2
         assert idx3 == 1
+        container.close()
 
     def test_orientation_toggle(self, qapp):
         container = TabContainer(orientation=Qt.Vertical)
@@ -136,6 +140,7 @@ class TestTabContainer:
 
         container.set_orientation(Qt.Horizontal)
         assert container.orientation() == Qt.Horizontal
+        container.close()
 
     def test_move_tab_and_focus_retention(self, qapp):
         container = TabContainer(orientation=Qt.Vertical)
@@ -161,6 +166,7 @@ class TestTabContainer:
         # Tab A should still be the active tab (now at index 1)
         assert container.current_index() == 1
         assert container.current_widget() == w1
+        container.close()
 
     def test_reorder_with_pinned_tabs(self, qapp):
         container = TabContainer(orientation=Qt.Vertical)
@@ -177,6 +183,7 @@ class TestTabContainer:
         assert container.tab_metadata(0).label == "Pinned 2"
         assert container.tab_metadata(1).label == "Pinned 1"
         assert container.tab_metadata(2).label == "Unpinned 1"
+        container.close()
 
 
 class TestBranchSwitcherWidget:
@@ -186,6 +193,7 @@ class TestBranchSwitcherWidget:
 
         assert "main" in widget.btn.text() or "master" in widget.btn.text()
         assert widget.btn.isEnabled()
+        widget.close()
 
 
 class TestChangesTab:
@@ -202,6 +210,7 @@ class TestChangesTab:
         tab.load_repos()
 
         assert tab.repo_combo.count() == 2
+        tab.close()
 
     def test_commit_button_enabling(self, simple_repo, db_conn, qapp):
         tab = ChangesTab(db_conn)
@@ -220,6 +229,7 @@ class TestChangesTab:
         # Type message
         tab.commit_msg_input.setText("Initial work")
         assert tab.commit_btn.isEnabled()
+        tab.close()
 
 
 class TestHistoryTab:
@@ -230,6 +240,7 @@ class TestHistoryTab:
         assert tab.search_input is not None
         assert tab.graph_placeholder is not None
         assert not tab.empty_state_widget.isVisible()
+        tab.close()
 
 
 class TestMainWindow:
@@ -244,6 +255,7 @@ class TestMainWindow:
         assert window.tab_container.count() >= 2
         assert window.menuBar() is not None
         assert window.statusBar() is not None
+        window.close()
 
     def test_session_state_persistence_and_restore(self, db_conn, simple_repo, monkeypatch, qapp):
         from PySide6.QtWidgets import QMessageBox

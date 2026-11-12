@@ -47,6 +47,7 @@ def test_is_dark_theme():
 
     widget.setPalette(create_pastel_dark_palette())
     assert is_dark_theme(widget) is True
+    widget.close()
 
 
 def test_badge_colors():
@@ -125,6 +126,7 @@ def test_diff_widget_theme_switching():
     event = QEvent(QEvent.PaletteChange)
     widget.changeEvent(event)
     assert "#dcefd8" in widget.editor.toHtml()
+    widget.close()
 
 
 def test_repo_combo_stylesheet_and_file_item_badge():
@@ -134,12 +136,14 @@ def test_repo_combo_stylesheet_and_file_item_badge():
 
     tab = ChangesTab(conn=conn)
 
-    # 1. Dark mode: untouched native button and original dark combo stylesheet
+    # 1. Dark mode: Catppuccin Mocha Sapphire primary button and dark combo stylesheet
     tab.setPalette(create_pastel_dark_palette())
     tab.refresh_theme()
     assert "color: palette(window-text);" in tab.repo_combo.styleSheet()
     assert "QComboBox QAbstractItemView" in tab.repo_combo.styleSheet()
-    assert tab.commit_btn.styleSheet() == ""  # Untouched native Qt button
+    assert "#89b4fa" in tab.commit_btn.styleSheet()
+    assert "#11111b" in tab.commit_btn.styleSheet()
+    assert "#a6adc8" in tab.commit_btn.styleSheet()
 
     # 2. Light mode: readable text on combo via palette role and sapphire commit button
     tab.setPalette(create_pastel_light_palette())
@@ -161,6 +165,9 @@ def test_repo_combo_stylesheet_and_file_item_badge():
     item_widget.refresh_theme()
     assert "#89b4fa" in item_widget.badge.styleSheet()
     assert "#1e2942" in item_widget.badge.styleSheet()
+    item_widget.close()
+    tab.close()
+    conn.close()
 
 
 def test_main_window_theme_menu_and_persistence():
@@ -185,6 +192,9 @@ def test_main_window_theme_menu_and_persistence():
     win2 = MainWindow(conn=conn)
     assert win2._current_theme_mode == "dark"
     assert win2.act_theme_dark.isChecked() is True
+    win2.close()
+    win1.close()
+    conn.close()
 
 
 def test_tab_button_and_container_theme_refresh():
@@ -209,6 +219,8 @@ def test_tab_button_and_container_theme_refresh():
     win._set_theme("light")
     assert "color: palette(window-text)" in active_btn.styleSheet()
     assert "color: palette(placeholder-text)" in inactive_btn.styleSheet()
+    win.close()
+    conn.close()
 
 
 def test_changes_tab_palette_propagation():
@@ -229,3 +241,5 @@ def test_changes_tab_palette_propagation():
     assert is_dark_theme(win.changes_tab) is False
     assert win.changes_tab.files_list.palette().base().color().name().lower() == "#ffffff"
     assert win.changes_tab.commit_desc_input.palette().base().color().name().lower() == "#ffffff"
+    win.close()
+    conn.close()

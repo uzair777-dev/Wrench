@@ -2,6 +2,7 @@
 
 import logging
 
+import shiboken6
 from PySide6.QtCore import QUrl
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
@@ -182,6 +183,8 @@ class IssueDetailTab(QWidget):
         )
 
     def _on_issue_loaded(self, issue: Issue) -> None:
+        if not shiboken6.isValid(self):
+            return
         self._issue = issue
         avatar_url = issue.author_avatar_url
         if not avatar_url and issue.author:
@@ -196,6 +199,8 @@ class IssueDetailTab(QWidget):
         self.desc_viewer.setPlainText(issue.description or "No description provided.")
 
     def _on_issue_failed(self, exc: Exception) -> None:
+        if not shiboken6.isValid(self):
+            return
         self.title_label.setText(f"Error loading Issue #{self.issue_id}: {exc}")
         logger.warning("Failed to load issue %s: %s", self.issue_id, exc)
 
@@ -204,7 +209,12 @@ class IssueDetailTab(QWidget):
             QDesktopServices.openUrl(QUrl(self._issue.url))
 
     def closeEvent(self, event) -> None:
+        if hasattr(self, "avatar_widget") and shiboken6.isValid(self.avatar_widget):
+            self.avatar_widget.close()
         if self._adapter:
-            self._adapter.close()
+            try:
+                self._adapter.close()
+            except Exception as e:
+                logger.debug("Failed closing adapter in issue detail tab closeEvent: %s", e)
             self._adapter = None
         super().closeEvent(event)

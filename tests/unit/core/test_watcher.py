@@ -1,6 +1,7 @@
 """Unit tests for watcher package (inotify_watcher and polling_fallback)."""
 
 import errno
+import os
 import sqlite3
 import subprocess
 import time
@@ -178,3 +179,110 @@ class TestRepoWatcher:
         fb._check_changes()
         fb.stop()
         assert len(hits) == 1
+
+    def test_watchdog_event_coalescing_and_suspend_resume(self, tmp_path, qapp):
+        repo_dir = tmp_path / "coalesce-repo"
+        repo_dir.mkdir()
+        (repo_dir / ".git").mkdir()
+
+        watcher = RepoWatcher(repo_dir, debounce_ms=60)
+        hits: list[bool] = []
+        watcher.status_changed.connect(lambda: hits.append(True))
+
+        # 500 rapid bursts coalesce into 1 pending event -> 1 debounce emission
+        for _ in range(500):
+            watcher._on_watchdog_event()
+        assert watcher._event_pending is True
+
+        start = time.time()
+        while time.time() - start < 0.25:
+            QCoreApplication.processEvents()
+            time.sleep(0.01)
+        assert len(hits) == 1
+        assert watcher._event_pending is False
+
+        # suspend() -> 500 events -> resume(grace_ms=0) yields zero emissions
+        hits.clear()
+        watcher.suspend()
+        for _ in range(500):
+            watcher._on_watchdog_event()
+        assert watcher._event_pending is False
+
+        start = time.time()
+        while time.time() - start < 0.15:
+            QCoreApplication.processEvents()
+            time.sleep(0.01)
+        assert len(hits) == 0
+
+        # Extra resume() clamps _suppress_depth strictly at 0
+        watcher.resume(grace_ms=0)
+        watcher.resume(grace_ms=0)
+        assert watcher._suppress_depth == 0
+
+        # Events emit again after resume
+        watcher._on_watchdog_event()
+        start = time.time()
+        while not hits and time.time() - start < 0.5:
+            QCoreApplication.processEvents()
+            time.sleep(0.01)
+        assert len(hits) == 1
+        watcher.stop()
+
+    def test_tier2_handler_and_polling_detect_config_and_worktree_updates(self, tmp_path, qapp):
+        git_dir = tmp_path / "repo" / ".git"
+        (git_dir / "info").mkdir(parents=True)
+        cfg = git_dir / "config"
+        cfg_wt = git_dir / "config.worktree"
+        sparse_f = git_dir / "info" / "sparse-checkout"
+        cfg.write_text("[core]\n", encoding="utf-8")
+        cfg_wt.write_text("[core]\n\tsparseCheckout = true\n", encoding="utf-8")
+        sparse_f.write_text("/*\n!/*/\n", encoding="utf-8")
+
+        handler = inotify_mod._GitDirMetadataHandler(lambda: None, git_dir)
+        assert handler._is_relevant(str(cfg)) is True
+        assert handler._is_relevant(str(cfg_wt)) is True
+        assert handler._is_relevant(str(sparse_f)) is True
+        assert handler._is_relevant(str(git_dir / "index.lock")) is False
+        assert handler._is_relevant(str(git_dir / "config.lock")) is False
+
+        sig_obj = _DummySignalObj()
+        hits: list[bool] = []
+        sig_obj.changed.connect(lambda: hits.append(True))
+
+        fb = PollingFallback(tmp_path / "repo", sig_obj.changed, interval_ms=50, git_dir=git_dir)
+        fb._check_changes()
+        assert len(hits) == 0
+
+        # Bump config.worktree mtime -> detected cleanly
+        t1 = cfg_wt.stat().st_mtime + 5.0
+        cfg_wt.write_text("[core]\n\tsparseCheckout = false\n", encoding="utf-8")
+        os.utime(cfg_wt, (t1, t1))
+        fb._check_changes()
+        assert len(hits) == 1
+
+        # Bump config mtime -> detected cleanly
+        t2 = cfg.stat().st_mtime + 5.0
+        cfg.write_text("[core]\n[extensions]\n\tworktreeConfig = true\n", encoding="utf-8")
+        os.utime(cfg, (t2, t2))
+        fb._check_changes()
+        fb.stop()
+        assert len(hits) == 2
+
+    def test_explicit_debounce_overrides_registry_while_default_tracks_registry(
+        self, tmp_path, qapp
+    ):
+        repo_dir = tmp_path / "debounce-repo"
+        repo_dir.mkdir()
+        (repo_dir / ".git").mkdir()
+
+        reg = _make_registry()
+        reg.set("watcher.debounce_ms", 420)
+
+        default_watcher = RepoWatcher(repo_dir, settings_registry=reg)
+        explicit_watcher = RepoWatcher(repo_dir, debounce_ms=60, settings_registry=reg)
+        try:
+            assert default_watcher._debounce_timer.interval() == 420
+            assert explicit_watcher._debounce_timer.interval() == 60
+        finally:
+            default_watcher.stop()
+            explicit_watcher.stop()

@@ -27,7 +27,7 @@ from PySide6.QtWidgets import (
 )
 
 from wrench.core import engine
-from wrench.core.engine import RepoHandle
+from wrench.core.engine import RepoHandle, RepoStatus
 from wrench.ui.theme import ACCENT_COLORS, is_dark_theme
 
 logger = logging.getLogger(__name__)
@@ -159,7 +159,7 @@ class BranchSwitcherWidget(QWidget):
         self._repo = repo
         self.refresh()
 
-    def refresh(self) -> None:
+    def refresh(self, status: RepoStatus | None = None) -> None:
         if not self._repo:
             self._current_branch = None
             self._is_detached = False
@@ -169,11 +169,13 @@ class BranchSwitcherWidget(QWidget):
             return
 
         try:
-            status = engine.get_status(self._repo)
-            self._current_branch = status.branch_name
-            self._is_detached = status.is_detached_head
-            self._detached_sha = status.head_sha[:7] if status.head_sha else "unknown"
-            self._is_unborn = not status.head_sha
+            resolved_status = status if status is not None else engine.get_status(self._repo)
+            self._current_branch = resolved_status.branch_name
+            self._is_detached = resolved_status.is_detached_head
+            self._detached_sha = (
+                resolved_status.head_sha[:7] if resolved_status.head_sha else "unknown"
+            )
+            self._is_unborn = not resolved_status.head_sha
         except Exception as e:
             logger.error("Failed to refresh branch status: %s", e)
             self._current_branch = None

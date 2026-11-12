@@ -8,6 +8,7 @@ import hashlib
 import logging
 import os
 import re
+import stat
 import subprocess
 import threading
 from collections import OrderedDict
@@ -73,18 +74,20 @@ def _git_read_env() -> dict[str, str]:
 
 
 def _is_sparse_checkout_active(r: pygit2.Repository, repo_path: Path) -> bool:
-    """Return True if core.sparseCheckout is active with an existing sparse-checkout file."""
-    try:
-        if not bool(r.config.get_bool("core.sparsecheckout")):
-            return False
-    except (KeyError, pygit2.GitError, ValueError) as exc:
-        logger.debug("Sparse checkout config check fell back to False: %s", exc)
-        return False
+    """Return True if an active sparse-checkout file and core.sparseCheckout config exist."""
     try:
         git_dir = resolve_git_dir(repo_path)
-        return (git_dir / "info" / "sparse-checkout").is_file()
+        if not (git_dir / "info" / "sparse-checkout").is_file():
+            return False
     except Exception as exc:
         logger.debug("Unable to resolve git dir for sparse status check: %s", exc)
+        return False
+
+    try:
+        fresh_r = pygit2.Repository(str(repo_path))
+        return bool(fresh_r.config.get_bool("core.sparsecheckout"))
+    except (KeyError, pygit2.GitError, ValueError, OSError) as exc:
+        logger.debug("Sparse checkout config check fell back to False: %s", exc)
         return False
 
 
@@ -94,7 +97,7 @@ def _git_status_sparse(
     """Query git status honoring sparse-checkout skip-worktree bits via NUL-delimited CLI."""
     try:
         res = subprocess.run(
-            ["git", "status", "--porcelain=v1", "-z", "-unormal"],
+            ["git", "--no-optional-locks", "status", "--porcelain=v1", "-z", "-unormal"],
             cwd=repo_path,
             capture_output=True,
             text=False,
@@ -549,6 +552,112 @@ def _parse_git_unified_diff(
     )
 
 
+_MAX_IN_MEMORY_BLOB_BYTES = 16 * 1024 * 1024
+_REGULAR_BLOB_MODES = frozenset(
+    {
+        pygit2.GIT_FILEMODE_BLOB,
+        pygit2.GIT_FILEMODE_BLOB_EXECUTABLE,
+    }
+)
+
+
+class _FallbackDiffNeeded(Exception):
+    """Internal control-flow signal when a single-file diff must delegate to git CLI."""
+
+
+def _validate_repo_rel_path(repo_path: Path, rel_path: str) -> Path | None:
+    """Validate repo-relative path against traversal or symlink-parent escape (SEC-1/SEC-2)."""
+    if not isinstance(rel_path, str) or not rel_path:
+        return None
+    if "\0" in rel_path or any(ord(ch) < 32 or ord(ch) == 127 for ch in rel_path):
+        return None
+
+    norm = rel_path.replace("\\", "/")
+    if norm.startswith("/") or Path(rel_path).is_absolute():
+        return None
+
+    parts = norm.split("/")
+    if any(seg in ("", ".", "..") for seg in parts):
+        return None
+
+    try:
+        repo_root = repo_path.resolve()
+        candidate = repo_root / Path(*parts)
+        if not candidate.parent.resolve().is_relative_to(repo_root):
+            return None
+    except OSError:
+        return None
+    return candidate
+
+
+def _repo_uses_diff_filters(r: pygit2.Repository, repo_path: Path) -> bool:
+    if (repo_path / ".gitattributes").is_file():
+        return True
+    try:
+        if (resolve_git_dir(repo_path) / "info" / "attributes").is_file():
+            return True
+    except Exception as exc:
+        logger.debug("Skipping gitattributes check for '%s': %s", repo_path, exc)
+    try:
+        autocrlf = str(r.config["core.autocrlf"]).strip().lower()
+        if autocrlf in ("true", "input"):
+            return True
+    except (KeyError, pygit2.GitError):
+        return False
+    return False
+
+
+def _is_filemode_enabled(r: pygit2.Repository) -> bool:
+    try:
+        return bool(r.config.get_bool("core.filemode"))
+    except (KeyError, pygit2.GitError, ValueError):
+        return True
+
+
+def _lookup_tree_entry(
+    r: pygit2.Repository,
+    root_tree: pygit2.Tree,
+    rel_path: str,
+):
+    cur = root_tree
+    parts = rel_path.split("/")
+    for idx, seg in enumerate(parts):
+        if seg not in cur:
+            return None
+        entry = cur[seg]
+        if idx < len(parts) - 1:
+            if entry.type != pygit2.GIT_OBJECT_TREE:
+                return None
+            if not r.odb.exists(entry.id):
+                raise _FallbackDiffNeeded()
+            obj = r[entry.id]
+            if not isinstance(obj, pygit2.Tree):
+                return None
+            cur = obj
+        else:
+            return entry
+    return None
+
+
+def _lookup_index_entry(r: pygit2.Repository, rel_path: str):
+    try:
+        conflicts = r.index.conflicts
+        if conflicts is not None and rel_path in conflicts:
+            raise _FallbackDiffNeeded()
+    except _FallbackDiffNeeded:
+        raise
+    except (KeyError, ValueError, pygit2.GitError):
+        pass
+
+    try:
+        if rel_path in r.index:
+            return r.index[rel_path]
+    except (KeyError, ValueError, pygit2.GitError) as exc:
+        logger.debug("Index entry lookup fallback for '%s': %s", rel_path, exc)
+        raise _FallbackDiffNeeded() from exc
+    return None
+
+
 def _run_git_diff_fallback(
     repo_path: Path,
     args: list[str],
@@ -556,11 +665,12 @@ def _run_git_diff_fallback(
     *,
     max_lines: int | None = None,
     max_bytes: int | None = None,
+    allow_diff_exit: bool = False,
 ) -> Diff:
     """Fallback diff via git CLI (shell=False) when partial-clone objects are missing locally."""
     try:
         res = subprocess.run(
-            ["git", *args],
+            ["git", "--no-optional-locks", *args],
             cwd=repo_path,
             capture_output=True,
             text=True,
@@ -573,7 +683,8 @@ def _run_git_diff_fallback(
         logger.debug("git diff fallback failed for '%s': %s", target_path, exc)
         return Diff(path=target_path, is_binary=False, hunks=[])
 
-    if res.returncode != 0 or not res.stdout:
+    ok_codes = (0, 1) if allow_diff_exit else (0,)
+    if res.returncode not in ok_codes or not res.stdout:
         return Diff(path=target_path, is_binary=False, hunks=[])
 
     return _parse_git_unified_diff(
@@ -644,36 +755,181 @@ def get_diff(
     max_lines: int | None = None,
     max_bytes: int | None = None,
 ) -> Diff:
-    """Get the diff for a single file in working tree / index."""
+    """Get the diff for a single file in working tree / index in O(1) without repo-wide scan."""
+    target_file = _validate_repo_rel_path(repo.path, path)
+    if target_file is None:
+        return Diff(path=path, is_binary=False, hunks=[])
+
     r = repo.pygit2_repo
     try:
         r.index.read()
     except Exception as e:
-        logger.debug("Failed reading index in get_status: %s", e)
+        logger.debug("Failed reading index in get_diff: %s", e)
 
     try:
+        if _repo_uses_diff_filters(r, repo.path):
+            raise _FallbackDiffNeeded()
+
         if staged:
             if r.head_is_unborn:
-                diff = r.index.diff_to_tree()
+                head_entry = None
             else:
                 head_tree = r.head.peel(pygit2.Tree)
-                diff = r.index.diff_to_tree(head_tree)
-        else:
-            diff = r.diff(flags=pygit2.GIT_DIFF_INCLUDE_UNTRACKED)
+                head_entry = _lookup_tree_entry(r, head_tree, path)
 
-        for idx, delta in enumerate(diff.deltas):
-            if delta.new_file.path == path or delta.old_file.path == path:
-                return _patch_to_diff(
-                    diff[idx],
-                    path,
-                    max_lines=max_lines,
-                    max_bytes=max_bytes,
+            index_entry = _lookup_index_entry(r, path)
+            if head_entry is None and index_entry is None:
+                return Diff(path=path, is_binary=False, hunks=[])
+            if (
+                head_entry is not None
+                and index_entry is not None
+                and head_entry.id == index_entry.id
+                and head_entry.filemode == index_entry.mode
+            ):
+                return Diff(path=path, is_binary=False, hunks=[])
+
+            if head_entry is not None and head_entry.filemode not in _REGULAR_BLOB_MODES:
+                raise _FallbackDiffNeeded()
+            if index_entry is not None and index_entry.mode not in _REGULAR_BLOB_MODES:
+                raise _FallbackDiffNeeded()
+            if (
+                head_entry is not None
+                and index_entry is not None
+                and head_entry.filemode != index_entry.mode
+            ):
+                raise _FallbackDiffNeeded()
+
+            old_blob = None
+            if head_entry is not None:
+                if not r.odb.exists(head_entry.id):
+                    raise _FallbackDiffNeeded()
+                obj = r[head_entry.id]
+                if not isinstance(obj, pygit2.Blob) or obj.size > _MAX_IN_MEMORY_BLOB_BYTES:
+                    raise _FallbackDiffNeeded()
+                old_blob = obj
+
+            new_blob = None
+            if index_entry is not None:
+                if not r.odb.exists(index_entry.id):
+                    raise _FallbackDiffNeeded()
+                obj = r[index_entry.id]
+                if not isinstance(obj, pygit2.Blob) or obj.size > _MAX_IN_MEMORY_BLOB_BYTES:
+                    raise _FallbackDiffNeeded()
+                new_blob = obj
+
+            patch = pygit2.Patch.create_from(
+                old_blob,
+                new_blob,
+                old_as_path=path,
+                new_as_path=path,
+            )
+            return _patch_to_diff(patch, path, max_lines=max_lines, max_bytes=max_bytes)
+
+        # Unstaged diff (index vs workdir) for a single validated path
+        if _is_sparse_checkout_active(r, repo.path):
+            raise _FallbackDiffNeeded()
+
+        index_entry = _lookup_index_entry(r, path)
+        try:
+            st = os.lstat(target_file)
+        except FileNotFoundError:
+            st = None
+        except OSError as exc:
+            raise _FallbackDiffNeeded() from exc
+
+        if index_entry is None and st is None:
+            return Diff(path=path, is_binary=False, hunks=[])
+
+        if st is not None:
+            if stat.S_ISLNK(st.st_mode):
+                if index_entry is not None:
+                    raise _FallbackDiffNeeded()
+                link_bytes = os.readlink(target_file).encode("utf-8", errors="replace")
+                if len(link_bytes) > _MAX_IN_MEMORY_BLOB_BYTES:
+                    raise _FallbackDiffNeeded()
+                patch = pygit2.Patch.create_from(
+                    None,
+                    link_bytes,
+                    old_as_path=path,
+                    new_as_path=path,
                 )
+                return _patch_to_diff(patch, path, max_lines=max_lines, max_bytes=max_bytes)
 
-        return Diff(path=path, is_binary=False, hunks=[])
-    except (KeyError, pygit2.GitError) as exc:
-        logger.debug("pygit2 get_diff fallback for '%s': %s", path, exc)
-        git_args = ["diff", "--cached", "--", path] if staged else ["diff", "--", path]
+            if stat.S_ISDIR(st.st_mode):
+                if index_entry is not None and index_entry.mode == pygit2.GIT_FILEMODE_COMMIT:
+                    raise _FallbackDiffNeeded()
+                return Diff(path=path, is_binary=False, hunks=[])
+
+            if not stat.S_ISREG(st.st_mode):
+                raise _FallbackDiffNeeded()
+
+            repo_root = repo.path.resolve()
+            if not target_file.resolve().is_relative_to(repo_root):
+                return Diff(path=path, is_binary=False, hunks=[])
+
+            if index_entry is None:
+                if st.st_size > _MAX_IN_MEMORY_BLOB_BYTES:
+                    return _run_git_diff_fallback(
+                        repo.path,
+                        ["diff", "--no-color", "--no-index", "--", "/dev/null", path],
+                        path,
+                        max_lines=max_lines,
+                        max_bytes=max_bytes,
+                        allow_diff_exit=True,
+                    )
+                work_bytes = target_file.read_bytes()
+                patch = pygit2.Patch.create_from(
+                    None,
+                    work_bytes,
+                    old_as_path=path,
+                    new_as_path=path,
+                )
+                return _patch_to_diff(patch, path, max_lines=max_lines, max_bytes=max_bytes)
+
+            # Tracked regular file in workdir
+            if index_entry.mode not in _REGULAR_BLOB_MODES:
+                raise _FallbackDiffNeeded()
+            if _is_filemode_enabled(r):
+                if (index_entry.mode == pygit2.GIT_FILEMODE_BLOB_EXECUTABLE) != bool(
+                    st.st_mode & 0o111
+                ):
+                    raise _FallbackDiffNeeded()
+            if st.st_size > _MAX_IN_MEMORY_BLOB_BYTES or not r.odb.exists(index_entry.id):
+                raise _FallbackDiffNeeded()
+            old_obj = r[index_entry.id]
+            if not isinstance(old_obj, pygit2.Blob) or old_obj.size > _MAX_IN_MEMORY_BLOB_BYTES:
+                raise _FallbackDiffNeeded()
+            work_bytes = target_file.read_bytes()
+            if old_obj.data == work_bytes:
+                return Diff(path=path, is_binary=False, hunks=[])
+            patch = pygit2.Patch.create_from(
+                old_obj,
+                work_bytes,
+                old_as_path=path,
+                new_as_path=path,
+            )
+            return _patch_to_diff(patch, path, max_lines=max_lines, max_bytes=max_bytes)
+
+        # Tracked file deleted in working tree (st is None, index_entry is not None)
+        if index_entry.mode not in _REGULAR_BLOB_MODES or not r.odb.exists(index_entry.id):
+            raise _FallbackDiffNeeded()
+        old_obj = r[index_entry.id]
+        if not isinstance(old_obj, pygit2.Blob) or old_obj.size > _MAX_IN_MEMORY_BLOB_BYTES:
+            raise _FallbackDiffNeeded()
+        patch = pygit2.Patch.create_from(
+            old_obj,
+            None,
+            old_as_path=path,
+            new_as_path=path,
+        )
+        return _patch_to_diff(patch, path, max_lines=max_lines, max_bytes=max_bytes)
+    except (_FallbackDiffNeeded, KeyError, pygit2.GitError, OSError) as exc:
+        logger.debug("Single-file get_diff CLI fallback for '%s': %s", path, exc)
+        git_args = (
+            ["diff", "--no-color", "--cached", "--", path]
+            if staged
+            else ["diff", "--no-color", "--", path]
+        )
         return _run_git_diff_fallback(
             repo.path,
             git_args,
@@ -807,17 +1063,18 @@ def get_ref_labels(repo: RepoHandle) -> dict[str, list[RefLabel]]:
             tag_name = ref_name.removeprefix("refs/tags/")
             ref = r.references[ref_name]
             try:
-                obj = r.get(ref.target)
+                target_oid = ref.target
+                obj = r.get(target_oid) if isinstance(target_oid, pygit2.Oid) else None
+                if obj is None and isinstance(target_oid, str):
+                    resolved = ref.resolve()
+                    obj = r.get(resolved.target)
+                depth = 0
+                while isinstance(obj, pygit2.Tag) and depth < 16:
+                    obj = r.get(obj.target)
+                    depth += 1
                 if isinstance(obj, pygit2.Commit):
                     add_label(str(obj.id), RefLabel(name=tag_name, kind="tag"))
-                elif isinstance(obj, pygit2.Tag):
-                    peeled = obj.peel(pygit2.Commit)
-                    add_label(str(peeled.id), RefLabel(name=tag_name, kind="tag"))
-                else:
-                    target_commit = ref.peel(pygit2.Commit)
-                    add_label(str(target_commit.id), RefLabel(name=tag_name, kind="tag"))
-
-            except Exception as e:
+            except (KeyError, pygit2.GitError, ValueError) as e:
                 logger.debug("Failed resolving tag commit for label: %s", e)
 
     # 3. HEAD
@@ -903,7 +1160,7 @@ def _commit_touches_path(r: pygit2.Repository, commit_sha: str, path: str) -> bo
 
 _WALKER_CACHE_MAXSIZE = 8
 _WALKER_CACHE_LOCK = threading.Lock()
-# Keyed by (repo_path, repo_obj_id, head_sha, all_refs, filter_key)
+# Keyed by (repo_path, repo_obj_id, repo_generation, head_sha, all_refs, filter_key)
 # Value is (walker, buffered_next_commit, expected_cursor_sha, refs_digest)
 _ACTIVE_WALKER_CACHE: OrderedDict[tuple[object, ...], tuple[object, Commit | None, str, str]] = (
     OrderedDict()
@@ -1005,7 +1262,14 @@ def get_log_page(
         filter.date_to if filter else None,
         filter.path if filter else None,
     )
-    cache_key = (str(repo.path), id(r), head_sha, bool(all_refs), filter_key)
+    cache_key = (
+        str(repo.path),
+        id(r),
+        getattr(repo, "_generation", 0),
+        head_sha,
+        bool(all_refs),
+        filter_key,
+    )
 
     walker = None
     buffered_commit: Commit | None = None
@@ -1159,3 +1423,57 @@ def blame_file(repo: RepoHandle, path: str) -> list[BlameLine]:
             )
 
     return lines
+
+
+def get_repo_refs_signature(
+    repo: RepoHandle,
+) -> tuple[str, bool, bool, str, str, str] | None:
+    """Return a deterministic signature of HEAD + all repository refs via fresh pygit2 read.
+
+    Returns ``(repo_path, head_is_unborn, head_is_detached, head_name, head_target, refs_digest)``
+    or ``None`` if the repository state cannot be inspected cleanly.
+    """
+    r: pygit2.Repository | None = None
+    try:
+        r = pygit2.Repository(str(repo.path))
+    except KeyError, pygit2.GitError, OSError, TypeError:
+        candidate = getattr(repo, "pygit2_repo", None)
+        if candidate is not None and isinstance(getattr(candidate, "head_is_unborn", None), bool):
+            r = candidate
+        else:
+            return None
+
+    try:
+        unborn = bool(r.head_is_unborn)
+        detached = bool(r.head_is_detached)
+        if unborn:
+            head_name = ""
+            head_target = ""
+        else:
+            head_ref = r.head
+            head_name = str(getattr(head_ref, "name", "") or "")
+            head_target = str(getattr(head_ref, "target", "") or "")
+
+        h = hashlib.blake2b(digest_size=16)
+        symbolic_enum = getattr(getattr(pygit2, "enums", None), "ReferenceType", None)
+        symbolic_type = getattr(symbolic_enum, "SYMBOLIC", getattr(pygit2, "GIT_REF_SYMBOLIC", 2))
+        refs = getattr(r, "references", ())
+        for ref_name in sorted(refs):
+            try:
+                ref = refs[ref_name]
+                raw_target = str(getattr(ref, "target", "") or "")
+                resolved_target = raw_target
+                if getattr(ref, "type", None) == symbolic_type:
+                    try:
+                        resolved_target = str(ref.resolve().target)
+                    except KeyError, pygit2.GitError:
+                        resolved_target = ""
+                h.update(f"{ref_name}={raw_target}->{resolved_target};".encode())
+            except KeyError, pygit2.GitError, OSError:
+                h.update(f"{ref_name}=<unreadable>;".encode())
+        return (str(repo.path), unborn, detached, head_name, head_target, h.hexdigest())
+    except (KeyError, pygit2.GitError, OSError, AttributeError) as exc:
+        logger.debug(
+            "Unable to compute refs signature for '%s': %s", getattr(repo, "path", "?"), exc
+        )
+        return None

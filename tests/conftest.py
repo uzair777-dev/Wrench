@@ -4,6 +4,8 @@ import os
 import tempfile
 from pathlib import Path
 
+import pytest
+
 # Ensure headless Qt test environment
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -23,3 +25,38 @@ os.environ.setdefault("XDG_STATE_HOME", str(_test_xdg_base / "state"))
 os.environ.setdefault("XDG_CACHE_HOME", str(_test_xdg_base / "cache"))
 
 pytest_plugins = ["tests.fixtures.git_repos"]
+
+
+@pytest.fixture(autouse=True)
+def _cleanup_qt_after_test():
+    """Safety-net teardown preventing Qt widget, timer, and worker leaks across tests."""
+    yield
+    import shiboken6
+    from PySide6.QtCore import QThreadPool, QTimer
+    from PySide6.QtWidgets import QApplication
+
+    app = QApplication.instance()
+    if app is None:
+        return
+
+    from wrench.ui import workers
+
+    for widget in list(app.topLevelWidgets()):
+        if shiboken6.isValid(widget):
+            widget.close()
+
+    app.processEvents()
+    QThreadPool.globalInstance().waitForDone(2000)
+    workers.wait_for_active_workers(2.0)
+    app.processEvents()
+
+    for widget in list(app.topLevelWidgets()):
+        if shiboken6.isValid(widget):
+            widget.close()
+        if shiboken6.isValid(widget):
+            for timer in list(widget.findChildren(QTimer)):
+                if shiboken6.isValid(timer) and timer.isActive():
+                    timer.stop()
+
+    workers.clear_activity_log()
+    app.processEvents()

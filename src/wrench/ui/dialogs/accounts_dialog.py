@@ -4,7 +4,8 @@ import logging
 import threading
 from typing import Any
 
-from PySide6.QtCore import Qt, QTimer, QUrl
+import shiboken6
+from PySide6.QtCore import Qt, QTimer, QUrl, Slot
 from PySide6.QtGui import QDesktopServices, QGuiApplication, QIcon
 from PySide6.QtWidgets import (
     QButtonGroup,
@@ -744,7 +745,7 @@ class AddAccountDialog(QDialog):
         )
 
     def _on_device_codes_received(self, codes: DeviceFlowCodes, instance_url: str) -> None:
-        if self._cancel_event.is_set():
+        if not shiboken6.isValid(self) or self._cancel_event.is_set():
             return
         self.verification_url_label.setText(codes.verification_uri)
         self.user_code_label.setText(codes.user_code)
@@ -771,6 +772,8 @@ class AddAccountDialog(QDialog):
         )
 
     def _on_device_token_received(self, token: str, instance_url: str) -> None:
+        if not shiboken6.isValid(self) or self._cancel_event.is_set():
+            return
         self._countdown_timer.stop()
         self.waiting_status_label.setStyleSheet("font-size: 12px;")
         self.waiting_status_label.setText("Validating credentials…")
@@ -795,6 +798,8 @@ class AddAccountDialog(QDialog):
         token: str,
         avatar_url: str | None = None,
     ) -> None:
+        if not shiboken6.isValid(self) or self._cancel_event.is_set():
+            return
         is_enterprise = "github.com" not in instance_url.lower()
         prefix = "GitHub Enterprise" if is_enterprise else "GitHub"
         user_suffix = f" ({username})" if username else ""
@@ -856,6 +861,8 @@ class AddAccountDialog(QDialog):
 
     def _on_device_flow_error(self, exc: Exception) -> None:
         """Map Device Flow errors to actionable UI messages."""
+        if not shiboken6.isValid(self):
+            return
         self._countdown_timer.stop()
         self.waiting_progress_bar.setVisible(False)
         self.countdown_label.setVisible(False)
@@ -935,6 +942,8 @@ class AddAccountDialog(QDialog):
         self.assisted_manual_fallback_btn.setVisible(show_manual_fallback)
 
     def _on_countdown_tick(self) -> None:
+        if not shiboken6.isValid(self):
+            return
         self._countdown_seconds = max(0, self._countdown_seconds - 1)
         mins = self._countdown_seconds // 60
         secs = self._countdown_seconds % 60
@@ -983,10 +992,22 @@ class AddAccountDialog(QDialog):
         self._reset_assisted_page()
         self._start_device_flow()
 
-    def reject(self) -> None:
+    def _stop_async_state(self) -> None:
         self._cancel_event.set()
-        self._countdown_timer.stop()
+        if hasattr(self, "_countdown_timer") and shiboken6.isValid(self._countdown_timer):
+            self._countdown_timer.stop()
+
+    def reject(self) -> None:
+        self._stop_async_state()
         super().reject()
+
+    def done(self, result: int) -> None:
+        self._stop_async_state()
+        super().done(result)
+
+    def closeEvent(self, event) -> None:
+        self._stop_async_state()
+        super().closeEvent(event)
 
     # --- Manual Setup Logic ---
 
@@ -1072,6 +1093,8 @@ class AddAccountDialog(QDialog):
         insecure: bool,
         avatar_url: str | None = None,
     ) -> None:
+        if not shiboken6.isValid(self):
+            return
         if not label:
             user_suffix = f" ({username})" if username else ""
             label = f"{provider.capitalize()}{user_suffix}"
@@ -1103,6 +1126,8 @@ class AddAccountDialog(QDialog):
         self.accept()
 
     def _on_validation_failure(self, exc: Exception) -> None:
+        if not shiboken6.isValid(self):
+            return
         self.save_btn.setEnabled(True)
         self.cancel_btn.setEnabled(True)
         self.status_label.setStyleSheet("color: palette(bright-text); font-size: 11px;")
@@ -1268,6 +1293,8 @@ class EditAccountDialog(QDialog):
         ca_bundle: str | None,
         insecure: bool,
     ) -> None:
+        if not shiboken6.isValid(self):
+            return
         conn = db.get_connection()
         try:
             forge_accounts.update_account(
@@ -1296,6 +1323,8 @@ class EditAccountDialog(QDialog):
         self.accept()
 
     def _on_validation_failure(self, exc: Exception) -> None:
+        if not shiboken6.isValid(self):
+            return
         self.save_btn.setEnabled(True)
         self.cancel_btn.setEnabled(True)
         self.status_label.setStyleSheet("color: palette(bright-text); font-size: 11px;")
@@ -1303,13 +1332,17 @@ class EditAccountDialog(QDialog):
 
     def _reauth_github(self) -> None:
         dlg = AddAccountDialog(self, initial_page=1, reauth_account_id=self.record.id)
-        if "github.com" not in self.record.instance_url.lower():
-            dlg.enterprise_radio.setChecked(True)
-            dlg.assisted_url_edit.setText(self.record.instance_url)
-        else:
-            dlg.personal_radio.setChecked(True)
-        if dlg.exec() == QDialog.Accepted:
-            self.accept()
+        try:
+            if "github.com" not in self.record.instance_url.lower():
+                dlg.enterprise_radio.setChecked(True)
+                dlg.assisted_url_edit.setText(self.record.instance_url)
+            else:
+                dlg.personal_radio.setChecked(True)
+            if dlg.exec() == QDialog.Accepted:
+                self.accept()
+        finally:
+            if isinstance(dlg, QDialog) and shiboken6.isValid(dlg):
+                dlg.close()
 
 
 class AccountsDialog(QDialog):
@@ -1323,10 +1356,19 @@ class AccountsDialog(QDialog):
         self._accounts: list[forge_accounts.ForgeAccountRecord] = []
         self._avatar_urls: dict[int, str] = {}
         self._avatar_loader = get_avatar_loader()
+        self._avatar_loader_connected: bool = False
         self._avatar_loader.avatar_ready.connect(self._on_avatar_ready)
-        self.destroyed.connect(self._disconnect_avatar_loader)
+        self._avatar_loader_connected = True
         self._init_ui()
         self.reload_accounts()
+
+    def done(self, result: int) -> None:
+        self._disconnect_avatar_loader()
+        super().done(result)
+
+    def closeEvent(self, event) -> None:
+        self._disconnect_avatar_loader()
+        super().closeEvent(event)
 
     def _init_ui(self) -> None:
         layout = QVBoxLayout(self)
@@ -1376,20 +1418,20 @@ class AccountsDialog(QDialog):
         layout.addLayout(btn_bar)
 
     def _disconnect_avatar_loader(self, *_) -> None:
+        if not getattr(self, "_avatar_loader_connected", False):
+            return
+        self._avatar_loader_connected = False
         try:
             self._avatar_loader.avatar_ready.disconnect(self._on_avatar_ready)
         except RuntimeError, TypeError:
             pass
 
-    def _on_avatar_ready(self, url: str, size: int) -> None:
-        try:
-            import shiboken6
-
-            if not shiboken6.isValid(self):
-                return
-            if not hasattr(self, "table") or not shiboken6.isValid(self.table):
-                return
-        except Exception:
+    @Slot(str, int)
+    @Slot()
+    def _on_avatar_ready(self, url: str = "", size: int = 0) -> None:
+        if not shiboken6.isValid(self):
+            return
+        if not hasattr(self, "table") or not shiboken6.isValid(self.table):
             return
         if size != 20 and size != 0:
             return
@@ -1452,16 +1494,24 @@ class AccountsDialog(QDialog):
 
     def _add_account(self) -> None:
         dlg = AddAccountDialog(self)
-        if dlg.exec() == QDialog.Accepted:
-            self.reload_accounts()
+        try:
+            if dlg.exec() == QDialog.Accepted:
+                self.reload_accounts()
+        finally:
+            if isinstance(dlg, QDialog) and shiboken6.isValid(dlg):
+                dlg.close()
 
     def _edit_account(self) -> None:
         acc = self._get_selected_account()
         if not acc:
             return
         dlg = EditAccountDialog(acc, self)
-        if dlg.exec() == QDialog.Accepted:
-            self.reload_accounts()
+        try:
+            if dlg.exec() == QDialog.Accepted:
+                self.reload_accounts()
+        finally:
+            if isinstance(dlg, QDialog) and shiboken6.isValid(dlg):
+                dlg.close()
 
     def _reauth_account(self) -> None:
         acc = self._get_selected_account()
@@ -1469,13 +1519,17 @@ class AccountsDialog(QDialog):
             return
         if acc.provider == "github":
             dlg = AddAccountDialog(self, initial_page=1, reauth_account_id=acc.id)
-            if "github.com" not in acc.instance_url.lower():
-                dlg.enterprise_radio.setChecked(True)
-                dlg.assisted_url_edit.setText(acc.instance_url)
-            else:
-                dlg.personal_radio.setChecked(True)
-            if dlg.exec() == QDialog.Accepted:
-                self.reload_accounts()
+            try:
+                if "github.com" not in acc.instance_url.lower():
+                    dlg.enterprise_radio.setChecked(True)
+                    dlg.assisted_url_edit.setText(acc.instance_url)
+                else:
+                    dlg.personal_radio.setChecked(True)
+                if dlg.exec() == QDialog.Accepted:
+                    self.reload_accounts()
+            finally:
+                if isinstance(dlg, QDialog) and shiboken6.isValid(dlg):
+                    dlg.close()
         else:
             self._edit_account()
 

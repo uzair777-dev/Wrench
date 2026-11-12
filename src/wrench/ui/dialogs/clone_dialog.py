@@ -35,6 +35,9 @@ from wrench.ui.theme import (
     PRIMARY_BUTTON_STYLES,
     SECONDARY_TEXT,
     get_banner_style,
+    get_icon_button_style,
+    get_secondary_button_style,
+    get_status_pill_style,
     is_dark_theme,
 )
 from wrench.ui.widgets.cli_preview_bar import CliCommandPreviewBar
@@ -60,6 +63,7 @@ class CloneDialog(QDialog):
         self._conn = conn
         self._matched_accounts: list[Any] = []
         self._applying_theme: bool = False
+        self._settings_open: bool = False
 
         self.setWindowTitle(self.tr("Clone Git Repository"))
         self.setMinimumWidth(560)
@@ -78,7 +82,6 @@ class CloneDialog(QDialog):
 
         self._refresh_account_candidates()
         self._update_resolved_dest_and_preview()
-        self.destroyed.connect(self._disconnect_registry)
 
     def _init_ui(self) -> None:
         root = QVBoxLayout(self)
@@ -99,6 +102,26 @@ class CloneDialog(QDialog):
         header.addWidget(self.settings_btn)
         root.addLayout(header)
 
+        # Inline non-modal Preferences-active banner
+        self.settings_open_banner = QFrame(self)
+        self.settings_open_banner.setFrameShape(QFrame.Shape.StyledPanel)
+        self.settings_open_banner.setVisible(False)
+        settings_banner_layout = QHBoxLayout(self.settings_open_banner)
+        settings_banner_layout.setContentsMargins(8, 6, 8, 6)
+        settings_banner_layout.setSpacing(8)
+        self.settings_open_label = QLabel(
+            self.tr("Preferences is currently open — close Preferences to continue here."),
+            self.settings_open_banner,
+        )
+        self.settings_open_label.setWordWrap(True)
+        settings_banner_layout.addWidget(self.settings_open_label, 1)
+        self.focus_settings_btn = QPushButton(
+            self.tr("Focus Preferences"), self.settings_open_banner
+        )
+        self.focus_settings_btn.clicked.connect(self._on_focus_settings_clicked)
+        settings_banner_layout.addWidget(self.focus_settings_btn)
+        root.addWidget(self.settings_open_banner)
+
         # Inline non-modal error banner
         self.error_banner = QFrame(self)
         self.error_banner.setFrameShape(QFrame.Shape.StyledPanel)
@@ -112,6 +135,7 @@ class CloneDialog(QDialog):
 
         # Form inputs
         form = QFormLayout()
+        form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
         form.setSpacing(8)
 
         self.url_input = QLineEdit(self)
@@ -134,6 +158,7 @@ class CloneDialog(QDialog):
         form.addRow(self.tr("Clone Into:"), dest_row)
 
         self.resolved_dest_label = QLabel("", self)
+        self.resolved_dest_label.setWordWrap(True)
         form.addRow(self.tr("Destination Path:"), self.resolved_dest_label)
 
         self.filter_combo = QComboBox(self)
@@ -201,6 +226,7 @@ class CloneDialog(QDialog):
         self._applying_theme = True
         try:
             is_dark = is_dark_theme(self)
+            mode = "dark" if is_dark else "light"
             err_style = get_banner_style("error", is_dark)
             self.error_banner.setStyleSheet(
                 f"QFrame {{ background-color: {err_style['bg']}; "
@@ -210,12 +236,23 @@ class CloneDialog(QDialog):
                 f"color: {err_style['fg']}; font-weight: bold; "
                 "border: none; background: transparent;"
             )
-            muted = SECONDARY_TEXT["dark" if is_dark else "light"]
-            self.resolved_dest_label.setStyleSheet(f"color: {muted}; font-size: 12px;")
-            if not is_dark:
-                self.clone_btn.setStyleSheet(PRIMARY_BUTTON_STYLES["light"])
-            else:
-                self.clone_btn.setStyleSheet("")
+
+            info_style = get_status_pill_style("info", is_dark)
+            self.settings_open_banner.setStyleSheet(
+                f"QFrame {{ background-color: {info_style['bg']}; "
+                f"border: 1px solid {info_style['border']}; border-radius: 4px; }}"
+            )
+            self.settings_open_label.setStyleSheet(
+                f"color: {info_style['fg']}; font-weight: bold; "
+                "border: none; background: transparent;"
+            )
+            self.focus_settings_btn.setStyleSheet(get_secondary_button_style(is_dark, compact=True))
+
+            self._update_resolved_dest_label_style()
+            self.clone_btn.setStyleSheet(PRIMARY_BUTTON_STYLES[mode])
+            self.cancel_btn.setStyleSheet(get_secondary_button_style(is_dark))
+            self.browse_btn.setStyleSheet(get_secondary_button_style(is_dark, compact=True))
+            self.settings_btn.setStyleSheet(get_icon_button_style(is_dark))
         finally:
             self._applying_theme = False
 
@@ -228,8 +265,17 @@ class CloneDialog(QDialog):
         ):
             self._apply_theme()
 
-    def closeEvent(self, event) -> None:
+    def _cleanup_connections(self) -> None:
         self._disconnect_registry()
+        if hasattr(self, "preview_bar") and shiboken6.isValid(self.preview_bar):
+            self.preview_bar._cleanup()
+
+    def done(self, result: int) -> None:
+        self._cleanup_connections()
+        super().done(result)
+
+    def closeEvent(self, event) -> None:
+        self._cleanup_connections()
         super().closeEvent(event)
 
     def _ensure_registry_connection(self) -> None:
@@ -253,8 +299,9 @@ class CloneDialog(QDialog):
             pass
         self._connected_registry = None
 
+    @Slot(str, object)
     @Slot(str, object, object)
-    def _on_setting_changed(self, key: str, _value: Any, _repo_path: Any) -> None:
+    def _on_setting_changed(self, key: str, _value: Any, _repo_path: Any = None) -> None:
         if not shiboken6.isValid(self):
             return
         if key == "clone.default_filter_mode":
@@ -291,10 +338,22 @@ class CloneDialog(QDialog):
 
     def repo_name(self) -> str:
         clean_url = self.clone_url()
-        raw_name = clean_url.rstrip("/").split("/")[-1] if clean_url else "repository"
+        if not clean_url:
+            return "repository"
+        base = clean_url.split("#", 1)[0].split("?", 1)[0].rstrip("/\\")
+        if not base:
+            return "repository"
+        raw_name = base.rsplit("/", 1)[-1]
+        if ":" in raw_name and "://" not in base:
+            raw_name = raw_name.rsplit(":", 1)[-1]
+        raw_name = raw_name.replace("\\", "/").rsplit("/", 1)[-1]
+        raw_name = "".join(ch for ch in raw_name if ch >= " " and ch != "\x7f").strip()
         if raw_name.endswith(".git"):
             raw_name = raw_name[:-4]
-        return raw_name or "repository"
+        raw_name = raw_name.strip()
+        if not raw_name or raw_name in (".", "..") or raw_name.startswith("-") or "/" in raw_name:
+            return "repository"
+        return raw_name
 
     def target_dest(self) -> str:
         parent_dir = self.dest_parent()
@@ -357,9 +416,27 @@ class CloneDialog(QDialog):
         self.account_list.setCurrentRow(0)
         self.account_group.setVisible(True)
 
+    def _update_resolved_dest_label_style(self) -> None:
+        is_dark = is_dark_theme(self)
+        muted = SECONDARY_TEXT["dark" if is_dark else "light"]
+        if self.dest_parent():
+            self.resolved_dest_label.setStyleSheet(f"color: {muted}; font-size: 12px;")
+        else:
+            self.resolved_dest_label.setStyleSheet(
+                f"color: {muted}; font-size: 12px; font-style: italic;"
+            )
+
     def _update_resolved_dest_and_preview(self) -> None:
-        dest_str = self.target_dest() if self.dest_parent() else "<choose destination>"
-        self.resolved_dest_label.setText(dest_str)
+        has_dest = bool(self.dest_parent())
+        if has_dest:
+            label_text = self.target_dest()
+            preview_dest = label_text
+        else:
+            label_text = self.tr("Choose a folder above to set destination path")
+            preview_dest = f"<destination>/{self.repo_name()}"
+
+        self.resolved_dest_label.setText(label_text)
+        self._update_resolved_dest_label_style()
 
         clean_url = self.clone_url() or "<url>"
         args: list[str] = ["clone", "--progress"]
@@ -368,7 +445,7 @@ class CloneDialog(QDialog):
             args.extend(["--filter", fspec])
         if self.sparse_enabled():
             args.append("--sparse")
-        args.extend(["--", clean_url, dest_str])
+        args.extend(["--", clean_url, preview_dest])
         self.preview_bar.set_command(args)
 
     def _on_browse_dest(self) -> None:
@@ -396,15 +473,44 @@ class CloneDialog(QDialog):
             self._show_error(self.tr("Please select a destination folder to clone into."))
             return
 
+        try:
+            parent_resolved = Path(self.dest_parent()).resolve()
+            dest_resolved = (parent_resolved / self.repo_name()).resolve()
+            if dest_resolved.parent != parent_resolved:
+                self._show_error(self.tr("Invalid repository destination path."))
+                return
+        except OSError:
+            self._show_error(self.tr("Invalid repository destination path."))
+            return
+
         self.url_input.setText(clean_url)
         self.error_banner.setVisible(False)
         self.accept()
+
+    def _on_focus_settings_clicked(self) -> None:
+        p = self.parent()
+        while p is not None:
+            focuser = getattr(p, "focus_active_settings_dialog", None)
+            if callable(focuser):
+                focuser()
+                return
+            p = p.parent()
 
     def _on_open_settings_clicked(self) -> None:
         p = self.parent()
         while p is not None:
             opener = getattr(p, "open_settings_at_category", None)
             if callable(opener):
-                opener("Remotes & LFS", "clone.default_filter_mode")
+                self._settings_open = True
+                self.settings_open_banner.setVisible(True)
+                try:
+                    try:
+                        opener("Remotes & LFS", "clone.default_filter_mode", parent_dialog=self)
+                    except TypeError:
+                        opener("Remotes & LFS", "clone.default_filter_mode")
+                finally:
+                    self._settings_open = False
+                    if shiboken6.isValid(self):
+                        self.settings_open_banner.setVisible(False)
                 return
             p = p.parent()

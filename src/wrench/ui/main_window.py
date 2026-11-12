@@ -1243,8 +1243,7 @@ class MainWindow(QMainWindow):
             # Restore cached draft/selections if available for this repo (skip duplicate
             # restore when ChangesTab._open_repo_by_path already restored _commit_drafts)
             if path in self._repos_state and not (
-                reused_from_changes_tab
-                and path in getattr(self.changes_tab, "_commit_drafts", {})
+                reused_from_changes_tab and path in getattr(self.changes_tab, "_commit_drafts", {})
             ):
                 self.changes_tab.restore_repo_state(self._repos_state[path])
 
@@ -3285,11 +3284,7 @@ class MainWindow(QMainWindow):
         if not self._settings_registry.is_enabled("rebase.interactive_ui.enabled", repo_str):
             return
         active_dlg = getattr(self, "_interactive_rebase_dialog", None)
-        if (
-            active_dlg is not None
-            and shiboken6.isValid(active_dlg)
-            and active_dlg.isVisible()
-        ):
+        if active_dlg is not None and shiboken6.isValid(active_dlg) and active_dlg.isVisible():
             active_dlg.raise_()
             active_dlg.activateWindow()
             return

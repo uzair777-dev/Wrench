@@ -535,9 +535,7 @@ class ChangesTab(QWidget):
         self.diff_view.set_repo(repo)
         self.refresh()
 
-    def _open_repo_by_path(
-        self, path: str, *, preopened_repo: RepoHandle | None = None
-    ) -> None:
+    def _open_repo_by_path(self, path: str, *, preopened_repo: RepoHandle | None = None) -> None:
         # Save current repo state (draft text, selections) before switching
         if self._repo:
             current_p = str(self._repo.path)

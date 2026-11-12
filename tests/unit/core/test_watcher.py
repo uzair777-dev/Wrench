@@ -325,9 +325,7 @@ class TestRepoWatcher:
         assert not tier2_handler._is_relevant(
             str(git_dir / "objects" / "info" / "commit-graph.lock")
         )
-        assert not tier2_handler._is_relevant(
-            str(common_dir / "objects" / "info" / "commit-graph")
-        )
+        assert not tier2_handler._is_relevant(str(common_dir / "objects" / "info" / "commit-graph"))
         assert not tier2_handler._is_relevant(
             str(common_dir / "objects" / "info" / "commit-graph.lock")
         )

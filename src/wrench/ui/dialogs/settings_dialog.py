@@ -1143,9 +1143,7 @@ class SettingsDialog(QDialog):
         else:
             self.btn_apply.setText(self.tr("Apply Changes"))
             if has_pending:
-                self.btn_apply.setToolTip(
-                    self.tr("Save %d pending change(s)") % pending_count
-                )
+                self.btn_apply.setToolTip(self.tr("Save %d pending change(s)") % pending_count)
             else:
                 self.btn_apply.setToolTip(self.tr("No pending preference changes"))
 
@@ -1164,8 +1162,7 @@ class SettingsDialog(QDialog):
         if self.has_pending_changes():
             count = len(self._pending_changes)
             self._show_toast(
-                self.tr("Pending changes (%d) — click %s to apply")
-                % (count, self.btn_apply.text())
+                self.tr("Pending changes (%d) — click %s to apply") % (count, self.btn_apply.text())
             )
         else:
             self.toast_label.setText("")

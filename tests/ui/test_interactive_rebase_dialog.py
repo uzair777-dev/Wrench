@@ -523,8 +523,7 @@ def test_live_view_theme_switch_while_interactive_rebase_dialog_is_open(
         assert observations["back_light_btn"] == PRIMARY_BUTTON_STYLES["light"]
         assert REBASE_ACTION_COLORS["light"]["squash"] in str(observations["back_light_combo"])
         assert (
-            str(observations["back_light_row_bg"]).lower()
-            == get_banner_style("error", False)["bg"]
+            str(observations["back_light_row_bg"]).lower() == get_banner_style("error", False)["bg"]
         )
     finally:
         win.close()

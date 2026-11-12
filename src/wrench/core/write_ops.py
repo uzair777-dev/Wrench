@@ -135,9 +135,7 @@ def _resolve_local_git_config_path(repo_path: Path) -> Path | None:
             if raw:
                 candidate = Path(raw)
                 common_dir = (
-                    candidate
-                    if candidate.is_absolute()
-                    else (git_dir / candidate).resolve()
+                    candidate if candidate.is_absolute() else (git_dir / candidate).resolve()
                 )
         except OSError:
             common_dir = git_dir

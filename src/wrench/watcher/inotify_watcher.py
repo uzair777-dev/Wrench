@@ -84,9 +84,7 @@ def _is_commit_graph_housekeeping(
     if not _is_inside_git_metadata(norm, git_dir_prefix, common_dir_prefix):
         return False
     name = norm.rsplit("/", 1)[-1]
-    if name == "commit-graph.lock" or (
-        name.startswith("commit-graph") and name.endswith(".lock")
-    ):
+    if name == "commit-graph.lock" or (name.startswith("commit-graph") and name.endswith(".lock")):
         return True
     if "/objects/info/commit-graph" in norm:
         return True

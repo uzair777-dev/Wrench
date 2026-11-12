@@ -248,9 +248,7 @@ class _RunInteractiveRebaseWorker(QRunnable):
                 msg = engine.redact_secrets(str(stderr))
                 lower = msg.lower()
                 is_locked = (
-                    ".lock" in lower
-                    or "index.lock" in lower
-                    or "another git process" in lower
+                    ".lock" in lower or "index.lock" in lower or "another git process" in lower
                 )
                 self._dispatcher.rebase_failed.emit(
                     self._dialog_ref,
@@ -333,9 +331,7 @@ class InteractiveRebaseDialog(QDialog):
         settings_registry: SettingsRegistry | None = None,
     ) -> None:
         super().__init__(parent)
-        self._repo: RepoHandle = (
-            repo if isinstance(repo, RepoHandle) else engine.open_repo(repo)
-        )
+        self._repo: RepoHandle = repo if isinstance(repo, RepoHandle) else engine.open_repo(repo)
         self._repo_path: Path = Path(self._repo.path)
         self._base_oid: str = base_oid
         self._registry: SettingsRegistry | None = settings_registry
@@ -1033,9 +1029,13 @@ class InteractiveRebaseDialog(QDialog):
         if not shiboken6.isValid(self) or generation_id != self._run_generation:
             return
         self._is_busy = False
-        self.last_result = result if isinstance(result, RebaseResult) else RebaseResult(
-            status=getattr(result, "status", "complete"),
-            conflicted_files=list(getattr(result, "conflicted_files", [])),
+        self.last_result = (
+            result
+            if isinstance(result, RebaseResult)
+            else RebaseResult(
+                status=getattr(result, "status", "complete"),
+                conflicted_files=list(getattr(result, "conflicted_files", [])),
+            )
         )
         self._update_controls_enabled(plan_valid=True)
         self.rebase_completed.emit(self.last_result)

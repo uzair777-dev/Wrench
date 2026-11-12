@@ -295,9 +295,7 @@ class TestForgeRepoSwitch:
                 emitted_paths: list[str] = []
                 win.changes_tab.repo_changed.connect(emitted_paths.append)
 
-                with patch.object(
-                    engine, "open_repo", wraps=engine.open_repo
-                ) as spy_open:
+                with patch.object(engine, "open_repo", wraps=engine.open_repo) as spy_open:
                     win.changes_tab.load_repos(select_path=path_b, auto_open=True)
 
                 assert emitted_paths == [path_b]

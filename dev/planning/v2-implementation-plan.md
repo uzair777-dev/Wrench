@@ -1209,7 +1209,7 @@ class LFSLock:
 
 ### Acceptance Check
 
-- [ ] Partial clone (`--filter=blob:none`) and `SparseCheckoutDialog` materialize only selected directories; 100k+ commit graphs load in \<1.5s and paginate smoothly; disabling `maintenance.auto_commit_graph.enabled` skips background `commit-graph write`.
+- [x] Partial clone (`--filter=blob:none`) and `SparseCheckoutDialog` materialize only selected directories; 100k+ commit graphs load in \<1.5s and paginate smoothly; disabling `maintenance.auto_commit_graph.enabled` skips background `commit-graph write`.
 
 ## VP-17 — Git Hook Runner, Login-Shell `PATH` Hydration & `--no-verify` Controls (`FR-2.7`, `FR-2.8`)
 
@@ -2184,8 +2184,8 @@ class TangledAdapter:
 - [ ] **VP-14.2:** Build `snapshots_dialog.py` visual snapshot browser and restore UI.  
 - [ ] **VP-15.1:** Register `VP-15` settings and implement `portal_secret.py` (XDG Secret Portal \+ ephemeral memory-only mode).  
 - [ ] **VP-15.2:** Create and validate Linux packaging manifests (`PKGBUILD`, `debian/`, `wrench.spec`).  
-- [ ] **VP-16.1:** Register `VP-16` settings and implement `sparse_checkout.py` and partial clone (`--filter=blob:none`).  
-- [ ] **VP-16.2:** Implement adaptive `inotify` fallback, `CommitGraphWidget` lazy pagination, and `sparse_checkout_dialog.py`.  
+- [x] **VP-16.1:** Register `VP-16` settings and implement `sparse_checkout.py` and partial clone (`--filter=blob:none`).  
+- [x] **VP-16.2:** Implement adaptive `inotify` fallback, `CommitGraphWidget` lazy pagination, and `sparse_checkout_dialog.py`.  
 - [ ] **VP-17.1:** Register `VP-17` settings and implement `hook_env.py` (login-shell `PATH` hydration \+ `core.hooksPath` discovery).  
 - [ ] **VP-17.2:** Build `hook_output_drawer.py` and `--no-verify` bypass controls in `ChangesTab`.  
 - [ ] **VP-18.1:** Register `VP-18` settings and implement `signing_ops.py` (batch signature verification \+ GPG/SSH signing) and `signing_askpass.py`.  

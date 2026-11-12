@@ -6,7 +6,7 @@
 ![GitHub Repo stars](https://img.shields.io/github/stars/uzair777-dev/Wrench)
 [![Python: 3.15](https://img.shields.io/badge/Python-3.15-blue.svg)](https://www.python.org/)
 [![GUI: PySide6](https://img.shields.io/badge/GUI-PySide6%20%2F%20Qt%206-informational.svg)](https://www.qt.io/)
-[![Tests: 534 passed](https://img.shields.io/badge/Tests-534%20passed-brightgreen.svg)](tests/)
+[![Tests: 743 passed](https://img.shields.io/badge/Tests-743%20passed-brightgreen.svg)](tests/)
 ![GitHub Actions Workflow Status](https://img.shields.io/github/actions/workflow/status/uzair777-dev/Wrench/ci.yml)
 
 ---
@@ -45,12 +45,20 @@
   - Interactive branch switcher (`🌿 main ▾` / `🔗 HEAD detached at {sha}`) with search filtering and uncommitted changes protection (`Stash & Switch`).
   - Unified changed files list with status badges (`M`, `A`, `D`, `R`, `?`, `⚠ C`), tri-state select-all checkbox, and context actions.
   - Commit box with forge account avatar, 72-character summary soft limit indicator, multi-line description, and one-click `--amend` pre-filling.
-- **Granular Staging**: Whole-file staging, synthetic patch hunk-level staging, and line-level staging with syntax highlighting.
+- **Granular & Partial Staging**: Whole-file staging, synthetic patch hunk-level staging, line-level staging with syntax highlighting, and `PartialStagingDialog` conflict-of-intent prompts for partially staged files (`MM`/`AM`).
 - **Visual Topological Commit Graph**:
   - Interactive Git DAG rendering branching, merging, and octopus merge topologies with smooth cubic Bézier curves.
   - Deterministic 10-color lane persistence with slot recycling algorithm preventing lane explosion.
-  - Infinite scrolling pagination with smooth per-pixel horizontal scrolling (`ScrollPerPixel`) and synchronized graph column scrollbar.
+  - Infinite scrolling cursor pagination (`performance.graph_page_size`), DPR `QPixmapCache` badges, background `git commit-graph write --reachable`, smooth per-pixel horizontal scrolling (`ScrollPerPixel`), and synchronized graph column scrollbar.
   - Integrated search, author filtering, and path filtering bar with 300ms debouncing.
+- **Monorepo Partial Clone & Cone Sparse-Checkout (`VP-16`)**:
+  - `CloneDialog` supporting partial clone filters (`--filter=blob:none`, `--filter=tree:0`), `--sparse`, single-line middle-eliding destination readout, and live secret-redacted `CliCommandPreviewBar` footers (`SEC-2`/`SEC-3`).
+  - `SparseCheckoutDialog` (`Repository -> Sparse-Checkout Directories...`) with lazy `QThreadPool` subdirectory tree expansion and watcher `suspend()/resume()` coordination.
+  - Default 5,000-line / KB `DiffView` truncation cap with non-modal warning banner and 1-click full-diff reload.
+- **Universal Preferences Center (`Ctrl+,`) & Live Propagation**:
+  - Registry-driven interface with 83 preferences across 13 categories, two-row header with `Normal` (17 essential settings) / `Advanced` (all 83 settings) tier switching, instant `< 5 ms` search filtering, per-repository overrides, 150ms debounced auto-save with close-flush, 100-entry SQLite delta undo/redo, Minimalist Local-Only preset, and instant theme/behavior application without restarts.
+- **Operation Feedback, Activity History & About Dialog (`Phase 4.6`)**:
+  - Live `ActivityLogBar` dock (`Ctrl+``) above the status bar backed by a 200-item ring buffer auto-populated by background workers, rotating waiting lines on indeterminate tasks (`ui.humor_lines`), single-line clean-state quotes in `ChangesTab`, and `AboutDialog` with dynamic version and third-party notices.
 - **Interactive 3-Way Merge Tool**:
   - Side-by-side "Ours" (Current Branch), "Base" (Common Ancestor), and "Theirs" (Incoming Branch) conflict resolution panes.
   - Block-level conflict acceptance (Take Ours, Take Theirs, Take Both, Manual Edit) with live merged output preview and automatic index staging.
@@ -74,7 +82,7 @@
   - Automated stale `.git/index.lock` detection and recovery with a 5-second grace window.
   - Reflog exploration and one-click branch restoration.
   - Wrench Crash Handler & Session Preserver ensuring drafts and uncommitted work are never lost.
-- **Real-Time File Monitoring**: Inotify-backed filesystem watcher with 300ms debouncing and atomic file-save detection (tempfile rename handling).
+- **Real-Time File Monitoring**: Adaptive 3-tier filesystem watcher stepping down seamlessly from full worktree `inotify` (300ms debounce, atomic tempfile rename handling) -> `.git`-only metadata `inotify` on `ENOSPC`/`EMFILE` watch-limit pressure -> Qt-thread polling fallback.
 - **Catppuccin Velvet Pastel Design System**: Native Latte (Light) and Mocha (Dark) pastel themes with luminance-based desktop detection and recursion-guarded palette propagation.
 
 ---
@@ -89,11 +97,11 @@
 | **Phase 3** | Remote Operations, Push/Pull & Credential Helper | **Completed** | [`phase-3.md`](dev/planning/phase-3.md) |
 | **Phase 4** | Multi-Forge Integration (GitHub, GitLab, Forgejo, Bitbucket) | **Completed** | [`phase-4.md`](dev/planning/phase-4.md) |
 | **Phase 4.5** | Multi-Repository Directory Discovery & `uv` Tooling | **Completed** | [`phase-4.5.md`](dev/planning/phase-4.5.md) |
-| **Phase 4.6** | Operation Feedback & Delight | 🚧 Next Up |
+| **Phase 4.6** | Operation Feedback & Delight | **Completed** | [`phase-4.6.md`](dev/planning/phase-4.6.md) |
 | **Phase 5 (Promoted)** | Self-Contained Linux Packaging (AppImage & Flatpak with Bundled Python 3.15 Runtime, `aur/wrench-bin`, `.deb`, `.rpm`) | 📋 Planned |
 | **Phase 6** | Git LFS & Submodule Management | 📋 Planned |
 | **Phase 7** | v1 Polish, Performance Benchmarks & Release | 📋 Planned |
-| **Phase 8 (v2 `VP-0`–`VP-26`)** | **Stage 1:** Universal `SettingsRegistry`, Zero-Copy Diffs (`OPT-8`), Single-Key Vim Chord Engine (`OPT-9`), Interactive Rebase, GPG/SSH Signing, 100k-Commit 60 FPS Graph & Command Palette (`Ctrl+K`)<br>**Stage 2:** Stacked Branches (`--update-refs`), Live `< 15 ms` Conflict Prediction (`git merge-tree --write-tree`), & `Ctrl+Alt+Z` Op-Log Time Machine<br>**Stage 3–6:** Wayland/XDG, Progressive Help, Blame Heatmap (`git log -L`), Bisect Wizard, 11-Forge Suite & 5-Stage Multi-Mirror DAG (`OPT-7`) | 📋 Spec Complete ([v2 Plan](dev/planning/v2-implementation-plan.md)) |
+| **Phase 8 (v2 `VP-0`–`VP-26`)** | **Stage 1:** Universal `SettingsRegistry`, Zero-Copy Diffs (`OPT-8`), Single-Key Vim Chord Engine (`OPT-9`), Interactive Rebase, GPG/SSH Signing, 100k-Commit 60 FPS Graph & Command Palette (`Ctrl+K`)<br>**Stage 2:** Stacked Branches (`--update-refs`), Live `< 15 ms` Conflict Prediction (`git merge-tree --write-tree`), & `Ctrl+Alt+Z` Op-Log Time Machine<br>**Stage 3–6:** Wayland/XDG, Progressive Help, Blame Heatmap (`git log -L`), Bisect Wizard, 11-Forge Suite & 5-Stage Multi-Mirror DAG (`OPT-7`) | 🚧 In Progress (`VP-0`, `VP-16` Completed; [v2 Plan](dev/planning/v2-implementation-plan.md)) |
 
 ---
 
@@ -152,8 +160,8 @@ All developer binaries in `bin/` leverage `uv run --no-sync` for fast, offline e
 - **HTTP Client:** `httpx` (HTTP/1.1 & HTTP/2 with custom TLS trust anchors, lazily imported)
 - **Credential Storage:** `secretstorage` (FreeDesktop Secret Service D-Bus specification, lazily imported)
 - **Local Storage:** SQLite (`~/.local/share/wrench/wrench.db` via `platformdirs`, lazily imported)
-- **Filesystem Watcher:** `watchdog` (Inotify) with Qt debounce event pipeline
-- **Testing:** `pytest`, `pytest-qt` (534 passed tests across unit, integration, and UI suites)
+- **Filesystem Watcher:** `watchdog` (3-tier Inotify -> `.git`-only -> polling fallback) with Qt debounce event pipeline
+- **Testing:** `pytest`, `pytest-qt` (743 passed tests across unit, integration, and UI suites)
 
 For an in-depth exploration of data flows, concurrency models, and database schemas, see **[ARCHITECTURE.md](ARCHITECTURE.md)**.
 
@@ -172,6 +180,7 @@ For an in-depth exploration of data flows, concurrency models, and database sche
 - **[dev/planning/phase-3.md](dev/planning/phase-3.md)**: Phase 3 completion summary (Remotes, sync & credential helper).
 - **[dev/planning/phase-4.md](dev/planning/phase-4.md)**: Phase 4 completion summary (Multi-forge integration layer).
 - **[dev/planning/phase-4.5.md](dev/planning/phase-4.5.md)**: Phase 4.5 completion summary (Multi-repository directory discovery, uv tooling & Python 3.15 migration).
+- **[dev/planning/phase-4.6.md](dev/planning/phase-4.6.md)**: Phase 4.6 completion summary (Operation feedback, live activity dock, quote banks & About dialog).
 - **[dev/planning/v2-implementation-plan.md](dev/planning/v2-implementation-plan.md)**: v2 deferred roadmap and backlog specifications.
 
 ---

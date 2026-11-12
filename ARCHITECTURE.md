@@ -157,7 +157,8 @@ Wrench is engineered around six non-negotiable architectural tenets:
 
 1. **User Interface (`src/wrench/ui`)**:
    - `MainWindow` coordinates top-level application actions, modal dialogs (`CloneDialog`, `SparseCheckoutDialog`, `PartialStagingDialog`, `MergeDialog`, `InteractiveRebaseDialog`, `RemotesDialog`, `AccountsDialog`, `LinkRepoDialog`, `DiscoverReposDialog`, `SubmoduleDialog`, `SettingsDialog`, `AboutDialog`, `BusyOperationDialog`, `PushRecoveryDialogs`), live setting propagation (`_on_registry_setting_changed`), background `commit-graph` maintenance, coalesced `DeferredDelete` heap reclamation (`_heap_trim_timer`), and actionable error routing.
-   - `TabContainer` manages dynamic tab lifecycles (`ChangesTab`, `HistoryTab`, `PRListTab`, `IssueListTab`, `PRDetailTab`, `IssueDetailTab`), disposing closed hidden tab widgets and pooled HTTP clients cleanly.
+   - `TabContainer` manages dynamic tab lifecycles (`ChangesTab`, `HistoryTab`, `PRListTab`, `IssueListTab`, `PRDetailTab`, `IssueDetailTab`), disconnecting signal/avatar bindings cleanly via `closeEvent` on tab disposal.
+   - `MainWindow.request_restart()` exits the Qt loop with `RESTART_EXIT_CODE`, handled by `app.py` to close SQLite WAL connections and relaunch cleanly via `os.execv` for restart-flagged preferences (e.g., `ui.theme_mode`).
    - Theme changes in `theme.py` trigger recursive palette recalculation and broadcast across all child widgets, status pills, and open dialogs without application restarts.
    - Heavy background tasks run through `run_in_background` (`ui/workers.py`) and `QThreadPool` workers (`_GraphPageWorker`, `_GraphSearchWorker`, `_TreeExpandWorker`, `_ApplySparseWorker`, `_CommitGraphWorker`), posting results via thread-safe Qt queued `_Dispatcher` signals back to the main thread.
    - **Avatar Subsystem (`ui/widgets/avatar.py`)**: `AvatarLoader` singleton resolves user avatars via a 2-tier cache (memory + 7-day disk cache with SHA-256 keying) and non-blocking background downloads. `AvatarWidget` renders anti-aliased circular avatars with deterministic initials badges. Commit author Gravatars are strictly gated behind the default-OFF `ui.avatars_gravatar` privacy setting on `SettingsDialog`.
@@ -235,6 +236,7 @@ Wrench is engineered around six non-negotiable architectural tenets:
   - Generation-counted request invalidation preventing stale asynchronous responses from overwriting newer user selections.
   - "New Pull Request" creation dialog (`CreatePRDialog`) with branch selectors, title, and description editors.
   - Double-click item selection spawning dynamic entity detail tabs.
+  - **Stale Signal & Disposal Hygiene**: Uses `QSignalBlocker` when refreshing `remote_combo` during repository switches and disconnects `AvatarLoader` callbacks inside `closeEvent` (`_disconnect_avatar_loader`, also on `PRDetailTab` / `IssueDetailTab`).
 - **`PRDetailTab` & `IssueDetailTab` (`ui/tabs/pr_detail_tab.py`, `ui/tabs/issue_detail_tab.py`)**:
   - Full-detail entity workspaces keyed by `(tab_type, repo_path, entity_id)`.
   - Header view displays 40px `AvatarWidget` circular author avatar beside author name and title.
@@ -375,6 +377,7 @@ Wrench is engineered around six non-negotiable architectural tenets:
   - Thread-safe in-memory ring buffer using `collections.deque(maxlen=200)` with queued signal dispatching.
   - Expandable ~8-line monospace history scrollback pane toggled via chevron click or `Ctrl+`` keyboard shortcut without stealing focus from active editors.
   - Automatic instrumentation via `workers.py`: `run_in_background` auto-posts start, finish (with elapsed time), and failure events when `op_name` is provided.
+  - **Live Theme Refresh**: Implements `refresh_theme()` and a `_refreshing_theme`-guarded `changeEvent()` to re-apply level/timestamp colors and `repolish_widget()` across the bar and scrollback pane on live theme changes.
 - **`AboutDialog` (`ui/dialogs/about_dialog.py`)**:
   - Native About dialog displaying package version dynamically resolved from `importlib.metadata.version("wrench")`.
   - Rotating wisdom lines drawn from `ABOUT_WISDOM` in `ui/quotes.py`.
@@ -490,7 +493,7 @@ Wrench is engineered around six non-negotiable architectural tenets:
 - **`capability.py`**:
   - `ForgeCapability`: Bitwise flags for granular feature gating (`PULL_REQUESTS`, `ISSUES`, `CI_STATUS`, `ISSUE_LINKING`, `REVIEWS`).
   - `ForgeAdapter(ABC)`: Abstract base class encapsulating `httpx.Client` with connection pooling, custom TLS CA bundle loading, self-signed skip-verification policies, automatic Secret Service token resolution, standard pagination (`_paged_get` with 500-item safeguard), status-code-to-exception translation, `get_primary_email()` contract, and `get_avatar_url(account, token)` capability method.
-- **`registry.py`**: Pluggable adapter discovery using Python entry points (`[project.entry-points."wrench.forge_adapters"]`). Provides collision detection and the `get_adapter_for_account(account)` factory.
+- **`registry.py`**: Pluggable adapter discovery using Python entry points (`[project.entry-points."wrench.forge_adapters"]`). Provides collision detection, the `get_adapter_for_account(account)` factory, and a shared stateless avatar HTTP pool (`_get_avatar_http_client`, `fetch_avatar_bytes` with HTTP/HTTPS scheme validation, request/response cookie stripping, and deferred retired-client disposal via `atexit`-registered `close_avatar_http_client()`).
 - **`adapters/`**: Provider-specific implementations:
   - `GitHubAdapter` (`github.py`): REST v3 API (`api.github.com` & GHES), Bearer authentication, `/issues` PR filtering, commit statuses + check-runs CI, full review submissions (`APPROVE`, `REQUEST_CHANGES`, `COMMENT`), `/user/emails` verified email resolution, and author avatar URL extraction via `user.avatar_url`.
   - `GitLabAdapter` (`gitlab.py`): REST v4 API (`gitlab.com` & self-hosted), Private-Token authentication, URL-encoded path slugs (`owner%2Frepo`), merge request state mapping, pipeline CI status, self-approval trap translation, and author avatar URL extraction via `author.avatar_url`.
@@ -785,6 +788,7 @@ Wrench implements recursion guards across all theme-responsive components:
 - `TabButton`: Guarded by `_updating_style` flag in both `changeEvent` and `_update_style()`.
 - `ChangesTab`: Guarded by `_refreshing_theme` flag in `changeEvent`.
 - `HistoryTab`: Guarded by `_refreshing_theme` flag in `changeEvent`.
+- `ActivityLogBar`: Guarded by `_refreshing_theme` flag in `changeEvent`.
 - `BranchSwitcherWidget`: Guarded by `_updating_display_active` in `changeEvent`.
 
 #### 4.7.3 Luminance-Based Theme Detection
@@ -1159,10 +1163,11 @@ To eliminate telemetry leakage and strictly protect developer privacy:
                               ▼
              [SettingRowWidget Value Mutation]
                               │
-                              ├── Checkbox / Combo / Spin editingFinished ──► Immediate save
-                              └── Text / Spin valueChanged ──► 150ms QTimer debounce (flush_pending() on close)
-                              │
-                              ▼
+                              ├── Checkbox / Combo / Spin editingFinished ──► Immediate save (or stage_change -> btn_apply)
+                              ├── Text / Spin valueChanged ──► 150ms QTimer debounce (flush_pending() on close)
+                              └──[requires_restart (e.g. ui.theme_mode)]──► "Apply Changes & Restart" -> request_restart() -> app.py RESTART_EXIT_CODE (os.execv)
+                                                                           │
+                                                                           ▼
            [registry.set(key, new_val, repo_path)]
                               │
                               ├── 1. Record inverse delta into SQLite settings_undo_log (capped at 100 entries, OPT-3)
@@ -1442,7 +1447,7 @@ wrench/
 │   │   └── build-appimage.sh
 │   └── flatpak/                  # Flatpak packaging manifests
 ├── src/wrench/
-│   ├── app.py                    # Application bootstrap & logging configuration
+│   ├── app.py                    # Application bootstrap, logging config & RESTART_EXIT_CODE os.execv loop
 │   ├── core/                     # Core Git engine & platform primitives
 │   │   ├── engine.py             # Public unified façade
 │   │   ├── models.py             # Core dataclass models (LFS, submodules, bundles, reflog, VP-16)
@@ -1567,12 +1572,12 @@ wrench/
 │       ├── test_forge_repo_switch.py   # Repo switch memory, diff reset & tab disposal tests
 │       ├── test_interactive_rebase_dialog.py # VP-2 InteractiveRebaseDialog & theme tests
 │       ├── test_large_graph_virtualization.py # 100k+ pagination, diff cap & sparse UI tests
-        ├── test_lazy_tabs.py           # Lazy/multi-forge tab lifecycle tests
-        ├── test_main_window_feedback.py# ActivityLogBar, humor toggle & AboutDialog tests
-        ├── test_partial_staging_dialog.py # PartialStagingDialog tests
-        ├── test_settings_dialog.py     # Legacy v1 SettingsDialog compatibility tests
-        ├── test_settings_dialog_v2.py  # 13-cat Normal/Advanced & live propagation tests
-        └── test_submodule_dialog.py    # SubmoduleDialog UI tests
+│       ├── test_lazy_tabs.py           # Lazy/multi-forge tab lifecycle tests
+│       ├── test_main_window_feedback.py# ActivityLogBar, humor toggle & AboutDialog tests
+│       ├── test_partial_staging_dialog.py # PartialStagingDialog tests
+│       ├── test_settings_dialog.py     # Legacy v1 SettingsDialog compatibility tests
+│       ├── test_settings_dialog_v2.py  # 13-cat Normal/Advanced & live propagation tests
+│       └── test_submodule_dialog.py    # SubmoduleDialog UI tests
 ```
 
 ---
@@ -1632,4 +1637,5 @@ GitHub Actions workflows (`.github/workflows/ci.yml`) mirror the local developer
 - **Standardized Runtime**: Configured with `actions/checkout@v7` and `actions/setup-python@v7` (Node.js 24 native) targeting Python `3.15` across all pipeline stages (`lint`, `unit-tests`, `integration-tests`, and `ui-tests`).
 - **Platform Abstraction Guard**: Enforces architectural boundaries (FR-11.1–FR-11.3) by verifying no platform-specific primitives (`secretstorage`, `SSH_AUTH_SOCK`, `XDG_`) leak outside `src/wrench/credentials/`, `src/wrench/core/paths.py`, or `src/wrench/core/ssh_agent.py`.
 - **Composite Setup Action (`.github/actions/setup-test-env/action.yml`)**: Installs minimal Ubuntu Qt runtime libraries (`libgl1`, `libegl1`, `libxkbcommon-x11-0`, `libdbus-1-3`, `libfontconfig1`) with GPG-strict APT retry/mirror fallback (`azure.archive.ubuntu.com` -> `archive.ubuntu.com`) and pre-built Python wheels (`--prefer-binary --only-binary=pygit2,PySide6,cffi`) under headless `QT_QPA_PLATFORM: offscreen` execution.
+- **Deterministic Git Identity Isolation**: Because `.github/workflows/ci.yml` sets `GIT_AUTHOR_NAME` / `GIT_COMMITTER_NAME` (`CI Runner`) globally while `tests/conftest.py` uses `os.environ.setdefault("GIT_AUTHOR_NAME", "Test Runner")`, tests that verify repo-configured `user.name` (e.g., `tests/core/test_interactive_rebase.py`) strip `GIT_AUTHOR_*`/`GIT_COMMITTER_*` in their local `_git()` subprocess helper so test outcomes remain identical locally and on CI.
 

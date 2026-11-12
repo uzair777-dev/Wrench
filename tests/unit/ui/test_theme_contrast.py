@@ -8,6 +8,7 @@ from wrench.ui.theme import (
     ICON_BUTTON_STYLES,
     MERGE_MODE_COLORS,
     PRIMARY_BUTTON_STYLES,
+    READONLY_FIELD_STYLES,
     SECONDARY_BUTTON_STYLES,
     SECONDARY_TEXT,
     SETTINGS_BADGE_STYLES,
@@ -213,3 +214,11 @@ def test_remediated_button_pill_tree_badge_and_toast_contrast():
     # TOAST_TEXT_COLOR against window background
     assert contrast_ratio(TOAST_TEXT_COLOR["light"], light_win) >= 4.5
     assert contrast_ratio(TOAST_TEXT_COLOR["dark"], dark_win) >= 4.5
+
+
+def test_readonly_field_styles_contrast():
+    """Verify WCAG >= 4.5:1 on READONLY_FIELD_STYLES fg and placeholder_fg against bg."""
+    for mode in ("light", "dark"):
+        ro = READONLY_FIELD_STYLES[mode]
+        assert contrast_ratio(ro["fg"], ro["bg"]) >= 4.5
+        assert contrast_ratio(ro["placeholder_fg"], ro["bg"]) >= 4.5

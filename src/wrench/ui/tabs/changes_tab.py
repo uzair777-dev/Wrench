@@ -47,6 +47,7 @@ from wrench.core import engine
 from wrench.core.engine import RepoHandle, RepoStatus
 from wrench.core.exceptions import NothingToCommitError
 from wrench.storage import forge_accounts, repo_registry, settings
+from wrench.storage.settings_registry import get_settings_registry, peek_settings_registry
 from wrench.ui.diff_view.diff_widget import DiffView
 from wrench.ui.merge_tool.merge_dialog import MergeDialog
 from wrench.ui.quotes import CLEAN_STATE_QUOTES, random_quote
@@ -465,7 +466,7 @@ class ChangesTab(QWidget):
         commit_shortcut = QShortcut(QKeySequence("Ctrl+Return"), self)
         commit_shortcut.activated.connect(self._on_commit_shortcut)
 
-    def load_repos(self, select_path: str | None = None) -> None:
+    def load_repos(self, select_path: str | None = None, *, auto_open: bool = True) -> None:
         """Populates the repository dropdown from registry."""
         self.repo_combo.blockSignals(True)
         self.repo_combo.clear()
@@ -487,6 +488,12 @@ class ChangesTab(QWidget):
             self.repo_combo.addItem(display, r.path)
             if select_path and r.path == select_path:
                 target_idx = i
+
+        if not auto_open:
+            self.repo_combo.setCurrentIndex(-1)
+            self.repo_combo.blockSignals(False)
+            self._show_zero_repos_state()
+            return
 
         self.repo_combo.setCurrentIndex(target_idx)
         self.repo_combo.blockSignals(False)
@@ -779,6 +786,8 @@ class ChangesTab(QWidget):
         self._update_large_list_notice_theme()
         if hasattr(self, "branch_switcher"):
             self.branch_switcher._update_display()
+        if hasattr(self, "account_btn"):
+            self._update_account_btn()
         if hasattr(self, "files_list"):
             for i in range(self.files_list.count()):
                 item = self.files_list.item(i)
@@ -1042,21 +1051,47 @@ class ChangesTab(QWidget):
             self.files_list.setCurrentItem(first_item)
             self._show_file_diff(first_item.data(Qt.UserRole))
 
+    def _is_humor_lines_enabled(self) -> bool:
+        reg = (
+            get_settings_registry(self._conn)
+            if self._conn is not None
+            else peek_settings_registry()
+        )
+        if reg is not None:
+            return reg.is_enabled("ui.humor_lines")
+        return True
+
+    def refresh_humor_setting(self) -> None:
+        if self._repo is not None and not self.clean_state_widget.isHidden():
+            self._show_clean_state()
+
     def _show_clean_state(self) -> None:
         self.diff_view.setVisible(False)
         self.clean_state_widget.setVisible(True)
-        quote, author = random_quote(CLEAN_STATE_QUOTES)
-        self.clean_quote.setText(f'"{self.tr(quote)}"')
-        self.clean_author.setText(f"— {author}")
+        self.clean_title.setText(self.tr("No changes"))
+        if self._is_humor_lines_enabled():
+            quote, author = random_quote(CLEAN_STATE_QUOTES)
+            self.clean_quote.setText(f'"{self.tr(quote)}"')
+            self.clean_author.setText(f"— {author}")
+            self.clean_quote.setVisible(True)
+            self.clean_author.setVisible(True)
+        else:
+            self.clean_quote.setText("")
+            self.clean_author.setText("")
+            self.clean_quote.setVisible(False)
+            self.clean_author.setVisible(False)
 
     def _show_zero_repos_state(self) -> None:
         self.files_list.clear()
         self.large_list_notice_label.setVisible(False)
         self.files_count_label.setText(self.tr("No repository open"))
-        self._show_clean_state()
+        self.diff_view.setVisible(False)
+        self.clean_state_widget.setVisible(True)
         self.clean_title.setText(self.tr("No repository open"))
         self.clean_quote.setText(self.tr("Open or clone a repository to get started."))
+        self.clean_quote.setVisible(True)
         self.clean_author.setText("")
+        self.clean_author.setVisible(False)
         self._update_account_btn()
 
     def _show_file_diff(self, path: str) -> None:

@@ -79,3 +79,32 @@ class TestSettings:
         assert settings.get_setting(db_conn, "theme") == "light"
         settings.delete_setting(db_conn, "theme")
         assert settings.get_setting(db_conn, "theme") is None
+
+    def test_alias_sync_theme_auto_fetch_and_session_blob_isolation(self, db_conn):
+        from wrench.storage.settings_registry import get_settings_registry
+
+        settings.set_setting(db_conn, "theme", "light")
+        reg = get_settings_registry(db_conn)
+        assert reg.get_str("ui.theme_mode") == "light"
+
+        reg.set("ui.theme_mode", "dark")
+        assert settings.get_setting(db_conn, "theme") == "dark"
+        stale = db_conn.execute("SELECT value FROM app_settings WHERE key = 'theme'").fetchone()
+        assert stale is None
+
+        reg.set("ui.theme_mode", "system")
+        assert settings.get_setting(db_conn, "theme") == "auto"
+
+        settings.set_setting(db_conn, "repo.auto_fetch_on_open", "false")
+        assert reg.get_bool("remote.auto_fetch.enabled") is False
+        reg.set("remote.auto_fetch.enabled", True)
+        assert settings.get_setting(db_conn, "repo.auto_fetch_on_open") == "true"
+
+        session_json = '{"version": 1, "active_repo_path": "/tmp/demo"}'
+        settings.set_setting(db_conn, "ui.session_state", session_json)
+        assert settings.get_setting(db_conn, "ui.session_state") == session_json
+        assert reg.get_bool("ui.session_state") is True
+
+        reg.set("ui.session_state", False)
+        assert settings.get_setting(db_conn, "ui.session_state") == session_json
+        assert reg.get_bool("ui.session_state") is False

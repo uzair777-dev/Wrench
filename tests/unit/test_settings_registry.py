@@ -22,7 +22,9 @@ from wrench.storage.db import run_migrations
 from wrench.storage.settings_registry import (
     CATEGORIES_ORDER,
     DEFAULT_SETTING_SPECS,
+    SettingScope,
     SettingsRegistry,
+    SettingTier,
 )
 
 
@@ -212,3 +214,108 @@ def test_export_and_import_json(registry, tmp_path):
 
     assert new_reg.get_int("ui.font_size_pt") == 15
     assert new_reg.get_bool("lfs.enabled", repo_path="/repo/one") is False
+
+
+def test_legacy_app_settings_migration_and_alias_precedence():
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    run_migrations(conn)
+    conn.execute(
+        "INSERT INTO app_settings (key, value) VALUES (?, ?)",
+        ("theme", "dark"),
+    )
+    conn.execute(
+        "INSERT INTO app_settings (key, value) VALUES (?, ?)",
+        ("repo.auto_fetch_on_open", "false"),
+    )
+    conn.execute(
+        "INSERT INTO app_settings (key, value) VALUES (?, ?)",
+        ("ui.session_state", '{"version": 1, "active_repo_path": "/tmp/repo"}'),
+    )
+    conn.commit()
+
+    reg = SettingsRegistry(conn=conn)
+    assert reg.get_str("ui.theme_mode") == "dark"
+    assert reg.get_bool("remote.auto_fetch.enabled") is False
+    # Session JSON blob must never clobber BOOL ui.session_state toggle
+    assert reg.get_bool("ui.session_state") is True
+    conn.close()
+
+    # Legacy "auto" theme migration + previously migrated "auto" repair -> "system"
+    conn2 = sqlite3.connect(":memory:")
+    conn2.row_factory = sqlite3.Row
+    run_migrations(conn2)
+    conn2.execute("INSERT INTO app_settings (key, value) VALUES ('theme', 'auto')")
+    conn2.commit()
+    reg2 = SettingsRegistry(conn=conn2)
+    assert reg2.get_str("ui.theme_mode") == "system"
+
+    conn2.execute("UPDATE global_settings SET value_json = '\"auto\"' WHERE key = 'ui.theme_mode'")
+    conn2.commit()
+    reg2_reopened = SettingsRegistry(conn=conn2)
+    assert reg2_reopened.get_str("ui.theme_mode") == "system"
+    conn2.close()
+
+
+def test_validation_handles_malformed_int_and_auto_theme_alias(registry):
+    registry.set("ui.font_size_pt", "not_an_int")
+    assert registry.get_int("ui.font_size_pt") == 10
+
+    registry.set("ui.font_size_pt", True)
+    assert registry.get_int("ui.font_size_pt") == 10
+
+    registry.set("ui.theme_mode", "auto")
+    assert registry.get_str("ui.theme_mode") == "system"
+
+    registry.set("ui.theme_mode", "  DARK  ")
+    assert registry.get_str("ui.theme_mode") == "dark"
+
+
+def test_undo_to_unset_global_clears_cache_and_falls_back_to_default(registry):
+    assert registry.get_str("ui.theme_mode") == "system"
+    registry.set("ui.theme_mode", "light")
+    assert registry.get_str("ui.theme_mode") == "light"
+
+    undone = registry.undo_last_change()
+    assert undone == ("ui.theme_mode", "system")
+    assert registry.get_str("ui.theme_mode") == "system"
+
+    # Repo fallback cache invalidation on reset_key
+    assert registry.get_bool("lfs.enabled", repo_path="/repo/alpha") is True
+    registry.set("lfs.enabled", False)
+    assert registry.get_bool("lfs.enabled", repo_path="/repo/alpha") is False
+    registry.reset_key("lfs.enabled")
+    assert registry.get_bool("lfs.enabled", repo_path="/repo/alpha") is True
+
+
+def test_setting_tier_enum_and_normal_keys(registry):
+    expected_normal = {
+        "ui.theme_mode",
+        "ui.font_size_pt",
+        "ui.confirm_destructive_actions",
+        "ui.avatars_gravatar",
+        "ui.session_state",
+        "ui.humor_lines",
+        "workspace.restore_session_on_startup",
+        "staging.line_staging.enabled",
+        "commit.undo_button.enabled",
+        "graph.show_lanes",
+        "graph.show_avatars",
+        "graph.date_format",
+        "diff.context_lines",
+        "merge.default_strategy",
+        "remote.auto_fetch.enabled",
+        "stash.ui.enabled",
+        "hooks.enabled",
+    }
+    specs = registry.list_specs()
+    actual_normal = {s.key for s in specs if s.tier == SettingTier.NORMAL}
+    assert actual_normal == expected_normal
+    assert len(actual_normal) == 17
+
+    view_spec = registry.get_spec("ui.settings_view_mode")
+    assert view_spec is not None
+    assert view_spec.tier == SettingTier.ADVANCED
+    assert view_spec.default == "normal"
+    assert view_spec.choices == ("normal", "advanced")
+    assert view_spec.scope == SettingScope.GLOBAL_ONLY

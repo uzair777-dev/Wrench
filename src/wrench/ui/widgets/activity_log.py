@@ -48,6 +48,11 @@ class ActivityLogModel(QObject):
     def entries(self) -> list[LogEntry]:
         return list(self._entries)
 
+    def set_maxlen(self, maxlen: int) -> None:
+        clamped = max(50, min(5000, int(maxlen)))
+        self._maxlen = clamped
+        self._entries = deque(self._entries, maxlen=clamped)
+
     def post(self, text: str, level: str = "info") -> None:
         entry = LogEntry(text=text, level=level)
         self._entries.append(entry)
@@ -143,3 +148,8 @@ class ActivityLogBar(QWidget):
         self._expanded = not self._expanded
         self.scrollback.setVisible(self._expanded)
         self.chevron_btn.setText("▴" if self._expanded else "▾")
+
+    def set_max_lines(self, max_lines: int) -> None:
+        clamped = max(50, min(5000, int(max_lines)))
+        self._model.set_maxlen(clamped)
+        self.scrollback.setMaximumBlockCount(clamped)

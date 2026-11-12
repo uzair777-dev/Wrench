@@ -68,7 +68,7 @@ from wrench.core.exceptions import (
 )
 from wrench.core.remote_urls import host_of_instance_url, parse_remote_url
 from wrench.storage import forge_accounts, get_connection, repo_registry, settings
-from wrench.storage.settings_registry import SettingsRegistry, get_settings_registry
+from wrench.storage.settings_registry import SettingScope, SettingsRegistry, get_settings_registry
 from wrench.ui.dialogs.about_dialog import AboutDialog
 from wrench.ui.dialogs.accounts_dialog import AccountsDialog
 from wrench.ui.dialogs.clone_dialog import CloneDialog
@@ -92,8 +92,14 @@ from wrench.ui.tabs.issue_list_tab import IssueListTab
 from wrench.ui.tabs.pr_detail_tab import PRDetailTab
 from wrench.ui.tabs.pr_list_tab import PRListTab
 from wrench.ui.tabs.tab_bar import TabContainer
-from wrench.ui.theme import apply_theme, get_status_pill_style, is_dark_theme
+from wrench.ui.theme import (
+    apply_theme,
+    get_status_pill_style,
+    is_dark_theme,
+    normalize_theme_mode,
+)
 from wrench.ui.widgets.activity_log import ActivityLogBar, ActivityLogModel
+from wrench.ui.widgets.avatar import clear_author_avatar_cache
 from wrench.ui.workers import clear_activity_log, run_in_background, set_activity_log
 from wrench.watcher.inotify_watcher import RepoWatcher
 
@@ -200,6 +206,8 @@ class MainWindow(QMainWindow):
         self._snapshot_timer.start()
 
         self._current_theme_mode: str = "auto"
+        self._applying_theme_setting: bool = False
+        self._refreshing_theme: bool = False
         self._style_hints = QGuiApplication.styleHints()
         self._style_hints_connected: bool = False
         if hasattr(self._style_hints, "colorSchemeChanged"):
@@ -208,10 +216,7 @@ class MainWindow(QMainWindow):
 
         self._init_ui()
         self._restore_settings()
-        self._settings_registry.setting_changed.connect(
-            self._on_registry_setting_changed,
-            Qt.ConnectionType.QueuedConnection,
-        )
+        self._settings_registry.setting_changed.connect(self._on_registry_setting_changed)
         self._registry_connected = True
 
     def _init_ui(self) -> None:
@@ -515,7 +520,11 @@ class MainWindow(QMainWindow):
 
     def _restore_settings(self) -> None:
         """Restores full session state (window, tabs, orientation, active repo, selections)."""
-        raw_session = settings.get_setting(self._conn, "ui.session_state")
+        restore_session = self._settings_registry.get_bool("ui.session_state")
+        restore_repos = self._settings_registry.get_bool("workspace.restore_session_on_startup")
+        raw_session = (
+            settings.get_setting(self._conn, "ui.session_state") if restore_session else None
+        )
         session_data = None
         if raw_session:
             try:
@@ -569,10 +578,12 @@ class MainWindow(QMainWindow):
             # Active repository
 
             saved_repo_path = session_data.get("active_repo_path")
-            self.changes_tab.load_repos(select_path=saved_repo_path)
-
-            if saved_repo_path and saved_repo_path in self._repos_state:
-                self.changes_tab.restore_repo_state(self._repos_state[saved_repo_path])
+            if restore_repos:
+                self.changes_tab.load_repos(select_path=saved_repo_path, auto_open=True)
+                if saved_repo_path and saved_repo_path in self._repos_state:
+                    self.changes_tab.restore_repo_state(self._repos_state[saved_repo_path])
+            else:
+                self.changes_tab.load_repos(auto_open=False)
 
             # Restore open tabs (Phase 4.2: lazy factory closures)
             tabs_data = session_data.get("tabs")
@@ -718,21 +729,22 @@ class MainWindow(QMainWindow):
                         idx = max(0, min(saved_active_idx, self.tab_container.count() - 1))
                         self.tab_container.set_current_index(idx)
         else:
-            # Fallback for initial launch or legacy settings
-            saved_orientation = settings.get_setting(self._conn, "ui.tab_orientation")
-            if saved_orientation == "horizontal":
-                self.tab_container.set_orientation(Qt.Horizontal)
-            else:
-                self.tab_container.set_orientation(Qt.Vertical)
+            # Fallback for initial launch or legacy settings when session restore is enabled
+            if restore_session:
+                saved_orientation = settings.get_setting(self._conn, "ui.tab_orientation")
+                if saved_orientation == "horizontal":
+                    self.tab_container.set_orientation(Qt.Horizontal)
+                else:
+                    self.tab_container.set_orientation(Qt.Vertical)
 
-            saved_geom = settings.get_setting(self._conn, "ui.window_geometry")
-            if saved_geom:
-                try:
-                    self.restoreGeometry(QByteArray.fromHex(saved_geom.encode("utf-8")))
-                except Exception as e:
-                    logger.warning("Could not restore window geometry: %s", e)
+                saved_geom = settings.get_setting(self._conn, "ui.window_geometry")
+                if saved_geom:
+                    try:
+                        self.restoreGeometry(QByteArray.fromHex(saved_geom.encode("utf-8")))
+                    except Exception as e:
+                        logger.warning("Could not restore window geometry: %s", e)
 
-            self.changes_tab.load_repos()
+            self.changes_tab.load_repos(auto_open=(restore_session and restore_repos))
 
         # Ensure window is visible on a valid screen
         screen = QGuiApplication.screenAt(self.pos())
@@ -742,30 +754,82 @@ class MainWindow(QMainWindow):
                 center = QGuiApplication.primaryScreen().availableGeometry().center()
                 self.move(center.x() - 600, center.y() - 400)
 
-        # Restore theme preference
+        if hasattr(self, "_activity_dock"):
+            self._activity_dock.set_max_lines(
+                self._settings_registry.get_int("ui.activity_dock.max_lines")
+            )
+
+        if self._settings_registry.has_explicit_setting("ui.font_size_pt"):
+            self._apply_font_size_pt(self._settings_registry.get_int("ui.font_size_pt"))
+
+        # Restore theme preference without re-writing stale legacy rows on launch
         saved_theme = settings.get_setting(self._conn, "theme") or "auto"
-        self._set_theme(saved_theme)
+        self._set_theme(saved_theme, persist=False)
+
+        self._sync_humor_lines_action()
+        self._sync_auto_fetch_action()
 
         # Mark restoration complete and ensure no lingering auto-save timer
         self._is_restoring = False
         if hasattr(self, "_auto_save_timer"):
             self._auto_save_timer.stop()
 
-    def _set_theme(self, mode: str) -> None:
-        """Applies the selected theme mode, updates UI actions, and persists setting."""
-        self._current_theme_mode = mode
+    def _apply_font_size_pt(self, point_size: int) -> None:
+        """Applies interface point font size without clobbering defaults when unset."""
+        if not shiboken6.isValid(self) or getattr(self, "_is_closing", False):
+            return
+        try:
+            pt = max(8, min(18, int(point_size)))
+        except ValueError, TypeError:
+            pt = 10
+        app = QApplication.instance()
+        if app is not None:
+            app_font = app.font()
+            if app_font.pointSize() != pt:
+                app_font.setPointSize(pt)
+                app.setFont(app_font)
+        win_font = self.font()
+        if win_font.pointSize() != pt:
+            win_font.setPointSize(pt)
+            self.setFont(win_font)
+        if hasattr(self, "history_tab") and shiboken6.isValid(self.history_tab):
+            if hasattr(self.history_tab, "graph_widget") and shiboken6.isValid(
+                self.history_tab.graph_widget
+            ):
+                self.history_tab.graph_widget.invalidate_paint_caches()
+        if hasattr(self, "changes_tab") and shiboken6.isValid(self.changes_tab):
+            self.changes_tab.refresh_theme()
+        self._propagate_theme_refresh()
+
+    def _set_theme(self, mode: str, *, persist: bool = True) -> None:
+        """Applies the selected theme mode, updates UI actions, and optionally persists setting."""
+        menu_mode = normalize_theme_mode(mode, target="legacy")
+        self._current_theme_mode = menu_mode
         app = QApplication.instance()
         if app:
-            apply_theme(app, mode)
-        settings.set_setting(self._conn, "theme", mode)
+            apply_theme(app, menu_mode)
+        if persist:
+            self._applying_theme_setting = True
+            try:
+                settings.set_setting(self._conn, "theme", menu_mode)
+            finally:
+                self._applying_theme_setting = False
 
-        if hasattr(self, "act_theme_auto"):
-            if mode == "light":
-                self.act_theme_light.setChecked(True)
-            elif mode == "dark":
-                self.act_theme_dark.setChecked(True)
-            else:
-                self.act_theme_auto.setChecked(True)
+        if hasattr(self, "theme_group") and hasattr(self, "act_theme_auto"):
+            self.theme_group.blockSignals(True)
+            for act in (self.act_theme_auto, self.act_theme_light, self.act_theme_dark):
+                act.blockSignals(True)
+            try:
+                if menu_mode == "light":
+                    self.act_theme_light.setChecked(True)
+                elif menu_mode == "dark":
+                    self.act_theme_dark.setChecked(True)
+                else:
+                    self.act_theme_auto.setChecked(True)
+            finally:
+                for act in (self.act_theme_auto, self.act_theme_light, self.act_theme_dark):
+                    act.blockSignals(False)
+                self.theme_group.blockSignals(False)
 
         self._propagate_theme_refresh()
 
@@ -814,14 +878,35 @@ class MainWindow(QMainWindow):
             )
 
     def _propagate_theme_refresh(self) -> None:
-        """Propagates theme change to all child tabs and diff views."""
-        if hasattr(self, "tab_container"):
-            self.tab_container.refresh_theme()
-        if hasattr(self, "changes_tab"):
-            self.changes_tab.refresh_theme()
-        if hasattr(self, "history_tab"):
-            self.history_tab.refresh_theme()
-        self._apply_status_bar_theme()
+        """Propagates theme change to all child tabs, diff views, and open dialogs."""
+        if getattr(self, "_refreshing_theme", False) or not shiboken6.isValid(self):
+            return
+        self._refreshing_theme = True
+        try:
+            if hasattr(self, "tab_container") and shiboken6.isValid(self.tab_container):
+                self.tab_container.refresh_theme()
+            if hasattr(self, "changes_tab") and shiboken6.isValid(self.changes_tab):
+                self.changes_tab.refresh_theme()
+            if hasattr(self, "history_tab") and shiboken6.isValid(self.history_tab):
+                self.history_tab.refresh_theme()
+            self._apply_status_bar_theme()
+            seen_dlgs: set[int] = set()
+            candidates: list[Any] = [
+                getattr(self, "_active_settings_dialog", None),
+                getattr(self, "_sparse_dialog", None),
+                *self.findChildren(QDialog),
+            ]
+            for dlg in candidates:
+                if (
+                    dlg is not None
+                    and id(dlg) not in seen_dlgs
+                    and shiboken6.isValid(dlg)
+                    and hasattr(dlg, "_apply_theme")
+                ):
+                    seen_dlgs.add(id(dlg))
+                    dlg._apply_theme()
+        finally:
+            self._refreshing_theme = False
 
     def _is_gravatar_enabled(self) -> bool:
         """Returns True if user opted into gravatar commit avatars (default False)."""
@@ -1360,6 +1445,8 @@ class MainWindow(QMainWindow):
         """Single-source setter for the humor lines setting."""
         settings.set_setting(self._conn, "ui.humor_lines", "true" if enabled else "false")
         self._sync_humor_lines_action()
+        if hasattr(self, "changes_tab") and shiboken6.isValid(self.changes_tab):
+            self.changes_tab.refresh_humor_setting()
 
     def _sync_humor_lines_action(self) -> None:
         """Synchronise the menu checkmark with the persisted setting."""
@@ -2757,14 +2844,42 @@ class MainWindow(QMainWindow):
 
     @Slot(str, object)
     @Slot(str, object, object)
-    def _on_registry_setting_changed(self, key: str, _value: Any, _repo_path: Any = None) -> None:
-        if not shiboken6.isValid(self):
+    def _on_registry_setting_changed(self, key: str, value: Any, repo_path: Any = None) -> None:
+        if not self._is_alive():
             return
-        if key == "monorepo.sparse_checkout_ui.enabled":
+        active_repo = str(self._current_repo.path) if self._current_repo else None
+        if repo_path is not None and repo_path != active_repo:
+            return
+
+        spec = self._settings_registry.get_spec(key)
+        eff_repo = active_repo if (spec and spec.scope == SettingScope.REPO_OVERRIDABLE) else None
+
+        if key == "ui.theme_mode":
+            if not getattr(self, "_applying_theme_setting", False):
+                eff_val = str(self._settings_registry.get(key) or "system")
+                self._set_theme(eff_val, persist=False)
+        elif key == "ui.font_size_pt":
+            self._apply_font_size_pt(self._settings_registry.get_int(key))
+        elif key == "ui.avatars_gravatar":
+            clear_author_avatar_cache()
+            if hasattr(self, "history_tab") and shiboken6.isValid(self.history_tab):
+                self.history_tab.graph_widget.invalidate_paint_caches()
+                self.history_tab.detail_panel.refresh_avatar()
+            if hasattr(self, "changes_tab") and shiboken6.isValid(self.changes_tab):
+                self.changes_tab._update_account_btn()
+        elif key == "ui.humor_lines":
+            self._sync_humor_lines_action()
+            if hasattr(self, "changes_tab") and shiboken6.isValid(self.changes_tab):
+                self.changes_tab.refresh_humor_setting()
+        elif key == "ui.activity_dock.max_lines":
+            if hasattr(self, "_activity_dock") and shiboken6.isValid(self._activity_dock):
+                self._activity_dock.set_max_lines(self._settings_registry.get_int(key))
+        elif key == "remote.auto_fetch.enabled":
+            self._sync_auto_fetch_action()
+        elif key == "monorepo.sparse_checkout_ui.enabled":
             self._sync_sparse_ui_visibility()
-            repo_str = str(self._current_repo.path) if self._current_repo else None
             if (
-                not self._settings_registry.is_enabled(key, repo_str)
+                not self._settings_registry.is_enabled(key, active_repo)
                 and self._sparse_dialog is not None
                 and shiboken6.isValid(self._sparse_dialog)
             ):
@@ -2773,8 +2888,7 @@ class MainWindow(QMainWindow):
                 else:
                     self._sparse_dialog.reject()
         elif key == "maintenance.auto_commit_graph.enabled":
-            repo_str = str(self._current_repo.path) if self._current_repo else None
-            if not self._settings_registry.is_enabled(key, repo_str):
+            if not self._settings_registry.is_enabled(key, eff_repo):
                 self._commit_graph_generation += 1
 
     @Slot(str, str)

@@ -5,6 +5,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication, QDialog
 
 from wrench.core.exceptions import GitCommandError
@@ -290,3 +291,43 @@ class TestClonePicker:
             assert not mock_bg.called
             assert mock_crit.called
         win.close()
+
+    def test_clone_dest_label_single_line_boxed_and_richtext_safe(self, db_conn, tmp_path):
+        """Destination path label renders single-line, boxed, and escapes RichText safely."""
+        dlg = CloneDialog(conn=db_conn)
+        try:
+            dlg.show()
+            QApplication.processEvents()
+
+            lbl = dlg.resolved_dest_label
+            assert lbl.wordWrap() is False
+            assert lbl.textFormat() == Qt.TextFormat.PlainText
+            assert lbl.text() == "Choose a folder above to set destination path"
+            assert lbl.toolTip() == ""
+            assert "border:" in lbl.styleSheet()
+            assert "background-color:" in lbl.styleSheet()
+
+            single_line_height = lbl.height()
+            max_allowed = lbl.fontMetrics().height() + 20
+            assert 24 <= single_line_height <= max_allowed
+
+            # Long nested path must remain single-line while preserving exact .text()
+            deep_parent = tmp_path / ("very_long_nested_directory_" * 6)
+            dlg.url_input.setText("https://github.com/org/awesome-monorepo.git")
+            dlg.dest_parent_input.setText(str(deep_parent))
+            QApplication.processEvents()
+
+            expected_full = str(deep_parent / "awesome-monorepo")
+            assert lbl.text() == expected_full
+            assert lbl.height() == single_line_height
+
+            # Craft HTML-like characters to ensure PlainText + tooltip escaping (SEC-1)
+            xss_parent = tmp_path / "<a href='http://evil'>click</a>"
+            dlg.dest_parent_input.setText(str(xss_parent))
+            QApplication.processEvents()
+            assert lbl.textFormat() == Qt.TextFormat.PlainText
+            assert "<a href" in lbl.text()
+            tip = lbl.toolTip()
+            assert tip.startswith("<qt>") and "&lt;a href" in tip
+        finally:
+            dlg.close()

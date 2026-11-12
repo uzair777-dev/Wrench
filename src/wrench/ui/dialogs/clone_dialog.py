@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import html
 import logging
 from pathlib import Path
 from typing import Any
 
 import shiboken6
-from PySide6.QtCore import QEvent, Qt, Slot
+from PySide6.QtCore import QEvent, QSize, Qt, Slot
+from PySide6.QtGui import QPainter
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -22,6 +24,9 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QPushButton,
+    QSizePolicy,
+    QStyle,
+    QStyleOption,
     QToolButton,
     QVBoxLayout,
     QWidget,
@@ -33,9 +38,9 @@ from wrench.storage import forge_accounts
 from wrench.storage.settings_registry import SettingsRegistry, peek_settings_registry
 from wrench.ui.theme import (
     PRIMARY_BUTTON_STYLES,
-    SECONDARY_TEXT,
     get_banner_style,
     get_icon_button_style,
+    get_readonly_field_qss,
     get_secondary_button_style,
     get_status_pill_style,
     is_dark_theme,
@@ -43,6 +48,63 @@ from wrench.ui.theme import (
 from wrench.ui.widgets.cli_preview_bar import CliCommandPreviewBar
 
 logger = logging.getLogger(__name__)
+
+
+class _SingleLinePathLabel(QLabel):
+    """Single-line read-only path readout that paints ElideMiddle while preserving .text()."""
+
+    def __init__(self, text: str = "", parent: QWidget | None = None) -> None:
+        super().__init__(text, parent)
+        self._fixed_height: int = 28
+        self.setWordWrap(False)
+        self.setTextFormat(Qt.TextFormat.PlainText)
+        self.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self._sync_fixed_height()
+
+    def _sync_fixed_height(self) -> None:
+        self._fixed_height = max(28, self.fontMetrics().height() + 12)
+        self.setFixedHeight(self._fixed_height)
+        self.updateGeometry()
+
+    def changeEvent(self, event: QEvent) -> None:
+        super().changeEvent(event)
+        if event.type() in (
+            QEvent.Type.FontChange,
+            QEvent.Type.StyleChange,
+            QEvent.Type.Polish,
+        ):
+            self._sync_fixed_height()
+
+    def minimumSizeHint(self) -> QSize:
+        hint = super().minimumSizeHint()
+        return QSize(min(hint.width(), 120), self._fixed_height)
+
+    def sizeHint(self) -> QSize:
+        hint = super().sizeHint()
+        return QSize(hint.width(), self._fixed_height)
+
+    def paintEvent(self, event) -> None:
+        painter = QPainter(self)
+        opt = QStyleOption()
+        opt.initFrom(self)
+        self.style().drawPrimitive(QStyle.PrimitiveElement.PE_Widget, opt, painter, self)
+        cr = self.contentsRect()
+        if cr.width() <= 0 or cr.height() <= 0:
+            return
+        painter.setFont(self.font())
+        elided = self.fontMetrics().elidedText(
+            self.text(), Qt.TextElideMode.ElideMiddle, max(0, cr.width())
+        )
+        self.style().drawItemText(
+            painter,
+            cr,
+            int(self.alignment()),
+            opt.palette,
+            self.isEnabled(),
+            elided,
+            self.foregroundRole(),
+        )
 
 
 class CloneDialog(QDialog):
@@ -66,8 +128,8 @@ class CloneDialog(QDialog):
         self._settings_open: bool = False
 
         self.setWindowTitle(self.tr("Clone Git Repository"))
-        self.setMinimumWidth(560)
-        self.resize(620, 420)
+        self.setMinimumWidth(620)
+        self.resize(680, 440)
 
         self._init_ui()
         self._apply_theme()
@@ -157,8 +219,7 @@ class CloneDialog(QDialog):
         dest_row.addWidget(self.browse_btn)
         form.addRow(self.tr("Clone Into:"), dest_row)
 
-        self.resolved_dest_label = QLabel("", self)
-        self.resolved_dest_label.setWordWrap(True)
+        self.resolved_dest_label = _SingleLinePathLabel("", self)
         form.addRow(self.tr("Destination Path:"), self.resolved_dest_label)
 
         self.filter_combo = QComboBox(self)
@@ -262,6 +323,7 @@ class CloneDialog(QDialog):
             QEvent.Type.PaletteChange,
             QEvent.Type.ApplicationPaletteChange,
             QEvent.Type.ThemeChange,
+            QEvent.Type.FontChange,
         ):
             self._apply_theme()
 
@@ -418,24 +480,26 @@ class CloneDialog(QDialog):
 
     def _update_resolved_dest_label_style(self) -> None:
         is_dark = is_dark_theme(self)
-        muted = SECONDARY_TEXT["dark" if is_dark else "light"]
-        if self.dest_parent():
-            self.resolved_dest_label.setStyleSheet(f"color: {muted}; font-size: 12px;")
-        else:
-            self.resolved_dest_label.setStyleSheet(
-                f"color: {muted}; font-size: 12px; font-style: italic;"
-            )
+        placeholder = not bool(self.dest_parent())
+        self.resolved_dest_label.setStyleSheet(
+            get_readonly_field_qss(is_dark, placeholder=placeholder)
+        )
 
     def _update_resolved_dest_and_preview(self) -> None:
         has_dest = bool(self.dest_parent())
         if has_dest:
             label_text = self.target_dest()
             preview_dest = label_text
+            tooltip_text = (
+                f"<qt>{html.escape(label_text)}</qt>" if "<" in label_text else label_text
+            )
         else:
             label_text = self.tr("Choose a folder above to set destination path")
             preview_dest = f"<destination>/{self.repo_name()}"
+            tooltip_text = ""
 
         self.resolved_dest_label.setText(label_text)
+        self.resolved_dest_label.setToolTip(tooltip_text)
         self._update_resolved_dest_label_style()
 
         clean_url = self.clone_url() or "<url>"

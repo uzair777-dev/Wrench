@@ -130,8 +130,10 @@ class CommitDetailPanel(QWidget):
                 self._refreshing_theme = False
 
     def refresh_theme(self) -> None:
-        """Refreshes diff widget, table item styling, and header labels on theme change."""
+        """Refreshes diff widget, table item styling, avatar, and header labels on theme change."""
         self.diff_widget.refresh_theme()
+        if hasattr(self, "avatar_widget"):
+            self.avatar_widget._refresh()
         if hasattr(self, "author_date_label"):
             self.author_date_label.setStyleSheet("color: palette(placeholder-text);")
         if self._file_stats:
@@ -185,19 +187,7 @@ class CommitDetailPanel(QWidget):
         self._remote_urls_cached_for = None
         self.diff_widget.set_repo(repo)
 
-    def set_commit(self, commit: Commit | None):
-        self._current_commit = commit
-        if not commit or not self._repo:
-            self.avatar_widget.setVisible(False)
-            self.sha_label.setText("SHA: -")
-            self.author_date_label.setText("-")
-            self.message_edit.clear()
-            self.files_table.setRowCount(0)
-            self.diff_widget.set_diff_model(
-                engine.Diff(path="", is_binary=False, hunks=[]), title="No commit selected"
-            )
-            return
-
+    def _resolve_commit_avatar_url(self, commit: Commit) -> str | None:
         conn = getattr(self, "_conn", None)
         close_conn = False
         if not conn:
@@ -225,7 +215,7 @@ class CommitDetailPanel(QWidget):
                     self._remote_urls_cached_for = repo_ident
                 remote_urls = self._cached_remote_urls
 
-            url = resolve_author_avatar_url(
+            return resolve_author_avatar_url(
                 commit.author_name,
                 commit.author_email,
                 remote_urls=remote_urls,
@@ -234,6 +224,31 @@ class CommitDetailPanel(QWidget):
         finally:
             if close_conn and conn:
                 conn.close()
+
+    def refresh_avatar(self) -> None:
+        """Re-resolves and refreshes the active commit avatar (e.g., Gravatar toggle)."""
+        if not self._current_commit or not self._repo:
+            return
+        url = self._resolve_commit_avatar_url(self._current_commit)
+        self.avatar_widget.setVisible(True)
+        self.avatar_widget.set_avatar(
+            url, self._current_commit.author_name or self._current_commit.author_email
+        )
+
+    def set_commit(self, commit: Commit | None):
+        self._current_commit = commit
+        if not commit or not self._repo:
+            self.avatar_widget.setVisible(False)
+            self.sha_label.setText("SHA: -")
+            self.author_date_label.setText("-")
+            self.message_edit.clear()
+            self.files_table.setRowCount(0)
+            self.diff_widget.set_diff_model(
+                engine.Diff(path="", is_binary=False, hunks=[]), title="No commit selected"
+            )
+            return
+
+        url = self._resolve_commit_avatar_url(commit)
 
         self.avatar_widget.setVisible(True)
         self.avatar_widget.set_avatar(url, commit.author_name or commit.author_email)

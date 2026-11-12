@@ -243,3 +243,53 @@ def test_changes_tab_palette_propagation():
     assert win.changes_tab.commit_desc_input.palette().base().color().name().lower() == "#ffffff"
     win.close()
     conn.close()
+
+
+def test_theme_sync_across_menu_registry_and_restart(tmp_path, app):
+    orig_palette = app.palette()
+    db_file = tmp_path / "theme_sync.db"
+
+    conn1 = sqlite3.connect(db_file)
+    conn1.row_factory = sqlite3.Row
+    run_migrations(conn1)
+    try:
+        win1 = MainWindow(conn=conn1)
+        try:
+            win1._set_theme("light")
+            assert win1._settings_registry.get_str("ui.theme_mode") == "light"
+            assert settings.get_setting(conn1, "theme") == "light"
+
+            win1._settings_registry.set("ui.theme_mode", "dark")
+            assert win1._current_theme_mode == "dark"
+            assert win1.act_theme_dark.isChecked() is True
+            assert is_dark_theme(win1) is True
+        finally:
+            win1.close()
+            conn1.close()
+
+        conn2 = sqlite3.connect(db_file)
+        conn2.row_factory = sqlite3.Row
+        win2 = MainWindow(conn=conn2)
+        try:
+            assert win2._current_theme_mode == "dark"
+            assert settings.get_setting(conn2, "theme") == "dark"
+
+            win2._settings_registry.reset_key("ui.theme_mode")
+            assert win2._current_theme_mode == "auto"
+            assert win2.act_theme_auto.isChecked() is True
+        finally:
+            win2.close()
+            conn2.close()
+
+        conn3 = sqlite3.connect(db_file)
+        conn3.row_factory = sqlite3.Row
+        win3 = MainWindow(conn=conn3)
+        try:
+            assert win3._current_theme_mode == "auto"
+            assert win3.act_theme_auto.isChecked() is True
+            assert settings.get_setting(conn3, "theme") is None
+        finally:
+            win3.close()
+            conn3.close()
+    finally:
+        app.setPalette(orig_palette)

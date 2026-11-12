@@ -48,6 +48,7 @@ from wrench.storage.settings_registry import (
     CATEGORIES_ORDER,
     SettingSpec,
     SettingsRegistry,
+    SettingTier,
     SettingType,
     get_settings_registry,
 )
@@ -57,6 +58,7 @@ from wrench.ui.theme import (
     GRAPH_LANES,
     SECONDARY_TEXT,
     TOAST_TEXT_COLOR,
+    get_secondary_button_style,
     get_settings_badge_qss,
     is_dark_theme,
 )
@@ -65,6 +67,17 @@ if TYPE_CHECKING:
     from wrench.ui.main_window import MainWindow
 
 logger = logging.getLogger(__name__)
+
+
+def _repolish_widget(widget: QWidget | None) -> None:
+    """Re-polish a Qt widget so palette and QSS updates paint immediately."""
+    if widget is None or not shiboken6.isValid(widget):
+        return
+    style = widget.style()
+    if style is not None:
+        style.unpolish(widget)
+        style.polish(widget)
+    widget.update()
 
 
 class SettingsPage(QWidget):
@@ -699,6 +712,7 @@ class SettingsDialog(QDialog):
 
         self.v1_compat = bool(v1_compat)
         self._applying_theme: bool = False
+        self._is_closing: bool = False
         self._connected_registry: SettingsRegistry | None = None
         if self.v1_compat:
             self._init_v1_ui()
@@ -762,6 +776,11 @@ class SettingsDialog(QDialog):
         conn = getattr(self.main_window, "_conn", None) if self.main_window else None
         self.registry = get_settings_registry(conn)
 
+        saved_view = self.registry.get_str("ui.settings_view_mode").strip().lower()
+        self._current_view_tier: SettingTier = (
+            SettingTier.ADVANCED if saved_view == SettingTier.ADVANCED.value else SettingTier.NORMAL
+        )
+
         # Resolve active repo path if open
         self.repo_path: str | None = None
         if (
@@ -780,9 +799,13 @@ class SettingsDialog(QDialog):
         root_layout.setContentsMargins(12, 12, 12, 12)
         root_layout.setSpacing(10)
 
-        # Top Bar: Search, Scope, Preset, Undo/Redo
-        top_bar = QHBoxLayout()
-        top_bar.setSpacing(8)
+        # Top Bar (2 logical rows): Discovery (Row 1) + Contextual Actions (Row 2)
+        top_bar_container = QVBoxLayout()
+        top_bar_container.setContentsMargins(0, 0, 0, 0)
+        top_bar_container.setSpacing(6)
+
+        self.top_row_1 = QHBoxLayout()
+        self.top_row_1.setSpacing(8)
 
         self.search_input = QLineEdit(self)
         self.search_input.setPlaceholderText(
@@ -790,7 +813,26 @@ class SettingsDialog(QDialog):
         )
         self.search_input.setClearButtonEnabled(True)
         self.search_input.textChanged.connect(self._on_search_changed)
-        top_bar.addWidget(self.search_input, 2)
+        self.top_row_1.addWidget(self.search_input, 3)
+
+        self.view_mode_combo = QComboBox(self)
+        self.view_mode_combo.addItem(self.tr("Normal"), SettingTier.NORMAL.value)
+        self.view_mode_combo.addItem(self.tr("Advanced"), SettingTier.ADVANCED.value)
+        self.view_mode_combo.setToolTip(
+            self.tr("Switch between essential Normal preferences and all Advanced preferences")
+        )
+        self.view_mode_combo.blockSignals(True)
+        self.view_mode_combo.setCurrentIndex(
+            1 if self._current_view_tier == SettingTier.ADVANCED else 0
+        )
+        self.view_mode_combo.blockSignals(False)
+        self.view_mode_combo.currentIndexChanged.connect(self._on_view_mode_changed)
+        self.top_row_1.addWidget(self.view_mode_combo)
+
+        top_bar_container.addLayout(self.top_row_1)
+
+        self.top_row_2 = QHBoxLayout()
+        self.top_row_2.setSpacing(8)
 
         self.scope_combo = QComboBox(self)
         self.scope_combo.addItem(self.tr("🌐 Global Defaults"), None)
@@ -798,31 +840,35 @@ class SettingsDialog(QDialog):
             repo_name = Path(self.repo_path).name
             self.scope_combo.addItem(self.tr("📁 Repo Override: %s") % repo_name, self.repo_path)
         self.scope_combo.currentIndexChanged.connect(self._on_scope_changed)
-        top_bar.addWidget(self.scope_combo, 1)
+        self.top_row_2.addWidget(self.scope_combo, 1)
 
-        self.btn_modified_only = QPushButton(self.tr("Modified Only"), self)
+        self.btn_modified_only = QPushButton(self.tr("Modified"), self)
         self.btn_modified_only.setCheckable(True)
+        self.btn_modified_only.setToolTip(self.tr("Show only settings differing from defaults"))
         self.btn_modified_only.toggled.connect(self._on_modified_only_toggled)
-        top_bar.addWidget(self.btn_modified_only)
+        self.top_row_2.addWidget(self.btn_modified_only)
 
-        self.btn_minimalist = QPushButton(self.tr("⚡ Minimalist Mode"), self)
-        self.btn_minimalist.setToolTip(self.tr("Apply distraction-free local-only settings preset"))
-        self.btn_minimalist.clicked.connect(self._on_minimalist_preset_clicked)
-        top_bar.addWidget(self.btn_minimalist)
+        self.top_row_2.addStretch()
 
-        self.btn_undo = QPushButton(self.tr("↶ Undo (Ctrl+Z)"), self)
+        self.btn_undo = QPushButton(self.tr("↶"), self)
+        self.btn_undo.setToolTip(self.tr("Undo last change (Ctrl+Z)"))
         self.btn_undo.clicked.connect(self._on_undo_clicked)
-        top_bar.addWidget(self.btn_undo)
+        self.top_row_2.addWidget(self.btn_undo)
 
-        self.btn_redo = QPushButton(self.tr("↷ Redo (Ctrl+Y)"), self)
+        self.btn_redo = QPushButton(self.tr("↷"), self)
+        self.btn_redo.setToolTip(self.tr("Redo (Ctrl+Y)"))
         self.btn_redo.clicked.connect(self._on_redo_clicked)
-        top_bar.addWidget(self.btn_redo)
+        self.top_row_2.addWidget(self.btn_redo)
 
-        self.btn_reset_category = QPushButton(self.tr("Reset Category"), self)
+        self.btn_reset_category = QPushButton(self.tr("↺ Reset"), self)
+        self.btn_reset_category.setToolTip(
+            self.tr("Reset all settings in this category to defaults")
+        )
         self.btn_reset_category.clicked.connect(self._on_reset_category_clicked)
-        top_bar.addWidget(self.btn_reset_category)
+        self.top_row_2.addWidget(self.btn_reset_category)
 
-        root_layout.addLayout(top_bar)
+        top_bar_container.addLayout(self.top_row_2)
+        root_layout.addLayout(top_bar_container)
 
         # Main splitter / middle layout: Nav list + Category page stack
         middle_layout = QHBoxLayout()
@@ -840,9 +886,20 @@ class SettingsDialog(QDialog):
 
         root_layout.addLayout(middle_layout, 1)
 
-        # Bottom status bar / auto-save toast
+        # Bottom status bar: auto-save toast + footer minimalist preset action
+        self.bottom_bar = QHBoxLayout()
+        self.bottom_bar.setSpacing(8)
+
         self.toast_label = QLabel(self)
-        root_layout.addWidget(self.toast_label)
+        self.bottom_bar.addWidget(self.toast_label, 1)
+
+        self.btn_minimalist = QPushButton(self.tr("⚡ Apply Minimalist Preset…"), self)
+        self.btn_minimalist.setFlat(True)
+        self.btn_minimalist.setToolTip(self.tr("Apply distraction-free local-only settings preset"))
+        self.btn_minimalist.clicked.connect(self._on_minimalist_preset_clicked)
+        self.bottom_bar.addWidget(self.btn_minimalist)
+
+        root_layout.addLayout(self.bottom_bar)
 
         # Keyboard shortcuts
         self._shortcut_undo = QShortcut(QKeySequence("Ctrl+Z"), self)
@@ -850,16 +907,143 @@ class SettingsDialog(QDialog):
         self._shortcut_redo = QShortcut(QKeySequence("Ctrl+Y"), self)
         self._shortcut_redo.activated.connect(self._on_redo_clicked)
 
-        # Navigation selection
+        # Apply initial tier visibility & select first visible category
+        self._sync_view_mode_chrome()
         self.nav_list.currentRowChanged.connect(self._on_nav_category_changed)
-        self.nav_list.setCurrentRow(0)
+        self._refresh_nav_list(preserve_selection=False)
+        if self.nav_list.currentRow() < 0:
+            self.nav_list.setCurrentRow(0)
 
         # Connect registry signal
         self.registry.setting_changed.connect(self._on_external_setting_changed)
         self._connected_registry = self.registry
 
+    def _effective_modified_only(self) -> bool:
+        return (
+            self._current_view_tier == SettingTier.ADVANCED
+            and hasattr(self, "btn_modified_only")
+            and self.btn_modified_only.isChecked()
+        )
+
+    def _sync_view_mode_chrome(self) -> None:
+        if self.v1_compat:
+            return
+        is_adv = self._current_view_tier == SettingTier.ADVANCED
+        for w_name in ("scope_combo", "btn_modified_only", "btn_reset_category", "btn_minimalist"):
+            w = getattr(self, w_name, None)
+            if w is not None:
+                w.setVisible(is_adv)
+
+    def _apply_view_mode(self, tier: SettingTier, *, persist: bool = True) -> None:
+        if self.v1_compat:
+            return
+        self._current_view_tier = tier
+        if hasattr(self, "view_mode_combo"):
+            self.view_mode_combo.blockSignals(True)
+            idx = self.view_mode_combo.findData(tier.value)
+            if idx >= 0:
+                self.view_mode_combo.setCurrentIndex(idx)
+            self.view_mode_combo.blockSignals(False)
+        self._sync_view_mode_chrome()
+        self._refresh_nav_list(preserve_selection=True)
+        if persist:
+            self.registry.set("ui.settings_view_mode", tier.value)
+            label = self.tr("Advanced") if tier == SettingTier.ADVANCED else self.tr("Normal")
+            self._show_toast(self.tr("View mode: %s") % label)
+
+    def _on_view_mode_changed(self, _index: int) -> None:
+        if self.v1_compat:
+            return
+        raw = self.view_mode_combo.currentData()
+        tier = (
+            SettingTier.ADVANCED
+            if str(raw).strip().lower() == SettingTier.ADVANCED.value
+            else SettingTier.NORMAL
+        )
+        self._apply_view_mode(tier, persist=True)
+
+    def _refresh_nav_list(
+        self,
+        *,
+        preserve_selection: bool = True,
+        auto_select_first_match: bool = False,
+    ) -> None:
+        if self.v1_compat:
+            return
+        query = self.search_input.text() if hasattr(self, "search_input") else ""
+        has_query = bool(query.strip())
+        modified_only = self._effective_modified_only()
+        current_row = self.nav_list.currentRow()
+        first_visible_idx: int | None = None
+
+        for idx, cat in enumerate(self.categories):
+            item = self.nav_list.item(idx)
+            if item is None:
+                continue
+
+            if has_query:
+                page = self._get_or_create_category_page(cat)
+                matches = page.filter_rows(
+                    query,
+                    modified_only=modified_only,
+                    view_tier=self._current_view_tier,
+                )
+                is_visible = matches > 0
+            else:
+                specs = self.registry.list_specs(category=cat)
+                is_visible = False
+                for spec in specs:
+                    if (
+                        self._current_view_tier != SettingTier.ADVANCED
+                        and spec.tier != SettingTier.NORMAL
+                    ):
+                        continue
+                    if (
+                        modified_only
+                        and self.registry.get(spec.key, self.active_scope) == spec.default
+                    ):
+                        continue
+                    is_visible = True
+                    break
+                if cat in self._category_pages:
+                    self._category_pages[cat].filter_rows(
+                        "",
+                        modified_only=modified_only,
+                        view_tier=self._current_view_tier,
+                    )
+
+            item.setHidden(not is_visible)
+            if is_visible:
+                item.setFlags(item.flags() | Qt.ItemFlag.ItemIsEnabled)
+                if first_visible_idx is None:
+                    first_visible_idx = idx
+            else:
+                item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEnabled)
+
+        if first_visible_idx is not None:
+            cur_item = (
+                self.nav_list.item(current_row) if 0 <= current_row < len(self.categories) else None
+            )
+            cur_hidden = cur_item is None or cur_item.isHidden()
+            if (auto_select_first_match and current_row != first_visible_idx) or (
+                not preserve_selection or cur_hidden
+            ):
+                self.nav_list.setCurrentRow(first_visible_idx)
+            elif 0 <= current_row < len(self.categories):
+                cur_cat = self.categories[current_row]
+                if cur_cat in self._category_pages:
+                    self._category_pages[cur_cat].filter_rows(
+                        query,
+                        modified_only=modified_only,
+                        view_tier=self._current_view_tier,
+                    )
+
     def _apply_theme(self) -> None:
-        if getattr(self, "_applying_theme", False):
+        if (
+            not shiboken6.isValid(self)
+            or getattr(self, "_applying_theme", False)
+            or getattr(self, "_is_closing", False)
+        ):
             return
         self._applying_theme = True
         try:
@@ -870,9 +1054,28 @@ class SettingsDialog(QDialog):
                 self.toast_label.setStyleSheet(
                     f"color: {toast_fg}; font-weight: bold; padding: 2px;"
                 )
+            if hasattr(self, "btn_minimalist"):
+                self.btn_minimalist.setStyleSheet(get_secondary_button_style(is_dark, compact=True))
+            for attr in (
+                "nav_list",
+                "page_stack",
+                "search_input",
+                "view_mode_combo",
+                "scope_combo",
+                "btn_modified_only",
+                "btn_undo",
+                "btn_redo",
+                "btn_reset_category",
+            ):
+                _repolish_widget(getattr(self, attr, None))
+            _repolish_widget(self)
             for page in getattr(self, "_category_pages", {}).values():
-                if hasattr(page, "apply_theme"):
+                if shiboken6.isValid(page) and hasattr(page, "apply_theme"):
                     page.apply_theme()
+            for page in getattr(self, "_pages", []):
+                if shiboken6.isValid(page) and hasattr(page, "preview_strip"):
+                    if shiboken6.isValid(page.preview_strip):
+                        page.preview_strip.update()
         finally:
             self._applying_theme = False
 
@@ -907,46 +1110,31 @@ class SettingsDialog(QDialog):
         category = self.categories[row]
         page = self._get_or_create_category_page(category)
         self.page_stack.setCurrentWidget(page)
-        # Apply any active search or modified filters
+        # Apply active search, modified, and view-tier filters
         query = self.search_input.text()
-        page.filter_rows(query, modified_only=self.btn_modified_only.isChecked())
+        page.filter_rows(
+            query,
+            modified_only=self._effective_modified_only(),
+            view_tier=self._current_view_tier,
+        )
 
     def _on_search_changed(self, query: str) -> None:
         """Instant search filtering across categories (< 5 ms)."""
-        modified_only = self.btn_modified_only.isChecked()
-        first_match_idx: int | None = None
-
-        for idx, cat in enumerate(self.categories):
-            # If query is non-empty, ensure page is instantiated to check matches
-            if query.strip():
-                page = self._get_or_create_category_page(cat)
-                matches = page.filter_rows(query, modified_only=modified_only)
-                item = self.nav_list.item(idx)
-                if matches == 0:
-                    item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEnabled)
-                else:
-                    item.setFlags(item.flags() | Qt.ItemFlag.ItemIsEnabled)
-                    if first_match_idx is None:
-                        first_match_idx = idx
-            else:
-                item = self.nav_list.item(idx)
-                item.setFlags(item.flags() | Qt.ItemFlag.ItemIsEnabled)
-                if cat in self._category_pages:
-                    self._category_pages[cat].filter_rows("", modified_only=modified_only)
-
-        if first_match_idx is not None and self.nav_list.currentRow() != first_match_idx:
-            self.nav_list.setCurrentRow(first_match_idx)
+        self._refresh_nav_list(
+            preserve_selection=True,
+            auto_select_first_match=bool(query.strip()),
+        )
 
     def _on_scope_changed(self, index: int) -> None:
         self.active_scope = self.scope_combo.currentData()
         for page in self._category_pages.values():
             page.set_repo_path(self.active_scope)
+        if self._effective_modified_only():
+            self._refresh_nav_list(preserve_selection=True)
         self._show_toast(self.tr("Scope changed to: %s") % self.scope_combo.currentText())
 
     def _on_modified_only_toggled(self, checked: bool) -> None:
-        query = self.search_input.text()
-        for page in self._category_pages.values():
-            page.filter_rows(query, modified_only=checked)
+        self._refresh_nav_list(preserve_selection=True)
 
     def _on_setting_modified(self, key: str, val: Any) -> None:
         self._show_toast(self.tr("Saved '%s' → %s") % (key, str(val)))
@@ -954,15 +1142,27 @@ class SettingsDialog(QDialog):
     @Slot(str, object)
     @Slot(str, object, object)
     def _on_external_setting_changed(self, key: str, val: Any, repo_path: Any = None) -> None:
-        if not shiboken6.isValid(self):
+        if not shiboken6.isValid(self) or getattr(self, "_is_closing", False):
+            return
+        if key == "ui.settings_view_mode":
+            target = (
+                SettingTier.ADVANCED
+                if str(val).strip().lower() == SettingTier.ADVANCED.value
+                else SettingTier.NORMAL
+            )
+            if target != self._current_view_tier:
+                self._apply_view_mode(target, persist=False)
             return
         for page in self._category_pages.values():
-            page.reload_all()
+            if shiboken6.isValid(page):
+                page.reload_key(key)
 
     def _on_minimalist_preset_clicked(self) -> None:
         self.registry.apply_minimalist_local_only_preset(self.active_scope)
         for page in self._category_pages.values():
             page.reload_all()
+        if self._effective_modified_only():
+            self._refresh_nav_list(preserve_selection=True)
         self._show_toast(self.tr("Applied Minimalist Local-Only Preset"))
 
     def _on_undo_clicked(self) -> None:
@@ -971,6 +1171,8 @@ class SettingsDialog(QDialog):
             key, val = res
             for page in self._category_pages.values():
                 page.reload_all()
+            if self._effective_modified_only():
+                self._refresh_nav_list(preserve_selection=True)
             self._show_toast(self.tr("Undone: '%s' restored to %s") % (key, str(val)))
         else:
             self._show_toast(self.tr("Nothing to undo"))
@@ -981,6 +1183,8 @@ class SettingsDialog(QDialog):
             key, val = res
             for page in self._category_pages.values():
                 page.reload_all()
+            if self._effective_modified_only():
+                self._refresh_nav_list(preserve_selection=True)
             self._show_toast(self.tr("Redone: '%s' applied as %s") % (key, str(val)))
         else:
             self._show_toast(self.tr("Nothing to redo"))
@@ -992,6 +1196,8 @@ class SettingsDialog(QDialog):
             self.registry.reset_category(cat, self.active_scope)
             if cat in self._category_pages:
                 self._category_pages[cat].reload_all()
+            if self._effective_modified_only():
+                self._refresh_nav_list(preserve_selection=True)
             self._show_toast(self.tr("Reset category: %s") % cat)
 
     def _show_toast(self, msg: str) -> None:
@@ -1013,13 +1219,28 @@ class SettingsDialog(QDialog):
         if self.search_input.text().strip():
             self.search_input.clear()
 
+        if self._current_view_tier == SettingTier.NORMAL:
+            spec = self.registry.get_spec(highlight_key) if highlight_key else None
+            needs_adv = spec is not None and spec.tier == SettingTier.ADVANCED
+            if not needs_adv:
+                cat_specs = self.registry.list_specs(category=category)
+                needs_adv = not any(s.tier == SettingTier.NORMAL for s in cat_specs)
+            if needs_adv:
+                self._apply_view_mode(SettingTier.ADVANCED, persist=False)
+
         idx = self.categories.index(category)
         item = self.nav_list.item(idx)
         if item is not None:
+            item.setHidden(False)
             item.setFlags(item.flags() | Qt.ItemFlag.ItemIsEnabled)
         self.nav_list.setCurrentRow(idx)
 
         page = self._get_or_create_category_page(category)
+        page.filter_rows(
+            self.search_input.text(),
+            modified_only=self._effective_modified_only(),
+            view_tier=self._current_view_tier,
+        )
         if highlight_key:
             for row in page.row_widgets:
                 if row.spec.key == highlight_key:
@@ -1037,6 +1258,7 @@ class SettingsDialog(QDialog):
         return [self._get_or_create_category_page(cat) for cat in self.categories]
 
     def _cleanup_connections(self) -> None:
+        self._is_closing = True
         reg = getattr(self, "_connected_registry", None)
         if reg is not None:
             try:
@@ -1048,10 +1270,8 @@ class SettingsDialog(QDialog):
             if not shiboken6.isValid(page):
                 continue
             for row in getattr(page, "row_widgets", []):
-                if shiboken6.isValid(row) and hasattr(row, "_debounce_timer"):
-                    if row._debounce_timer.isActive():
-                        row._debounce_timer.stop()
-                        row._flush_debounced_save()
+                if shiboken6.isValid(row) and hasattr(row, "flush_pending"):
+                    row.flush_pending()
 
     def done(self, result: int) -> None:
         self._cleanup_connections()
@@ -1062,13 +1282,18 @@ class SettingsDialog(QDialog):
         super().closeEvent(event)
 
     def showEvent(self, event) -> None:
+        self._is_closing = False
         super().showEvent(event)
         if self.v1_compat:
             for page in self._pages:
                 page.load()
         else:
+            if getattr(self, "_connected_registry", None) is None and hasattr(self, "registry"):
+                self.registry.setting_changed.connect(self._on_external_setting_changed)
+                self._connected_registry = self.registry
             for page in self._category_pages.values():
                 page.reload_all()
+            self._refresh_nav_list(preserve_selection=True)
 
 
 class SettingRowWidget(QFrame):
@@ -1150,6 +1375,7 @@ class SettingRowWidget(QFrame):
             max_val = self.spec.max_value if self.spec.max_value is not None else 100000
             self.spin_control.setRange(min_val, max_val)
             self.spin_control.valueChanged.connect(self._on_int_changed)
+            self.spin_control.editingFinished.connect(self._flush_spin_edit)
             ctrl_layout.addWidget(self.spin_control)
             self.control_widget = self.spin_control
 
@@ -1164,6 +1390,7 @@ class SettingRowWidget(QFrame):
         elif self.spec.setting_type == SettingType.PATH:
             self.edit_control = QLineEdit(self)
             self.edit_control.textChanged.connect(self._on_str_changed)
+            self.edit_control.editingFinished.connect(self._flush_debounced_save)
             ctrl_layout.addWidget(self.edit_control)
             self.btn_browse = QPushButton(self.tr("Browse…"), self)
             self.btn_browse.clicked.connect(self._on_browse_path)
@@ -1173,6 +1400,7 @@ class SettingRowWidget(QFrame):
         else:  # STR
             self.edit_control = QLineEdit(self)
             self.edit_control.textChanged.connect(self._on_str_changed)
+            self.edit_control.editingFinished.connect(self._flush_debounced_save)
             ctrl_layout.addWidget(self.edit_control)
             self.control_widget = self.edit_control
 
@@ -1188,10 +1416,15 @@ class SettingRowWidget(QFrame):
         self._apply_theme()
 
     def _apply_theme(self) -> None:
+        if not shiboken6.isValid(self):
+            return
         is_dark = is_dark_theme(self)
         muted = SECONDARY_TEXT["dark" if is_dark else "light"]
         self.lbl_key.setStyleSheet(f"color: {muted}; font-size: 11px;")
         self.lbl_override.setStyleSheet(get_settings_badge_qss(is_dark))
+        _repolish_widget(self)
+        for attr in ("lbl_title", "lbl_desc", "control_widget", "btn_reset", "btn_browse"):
+            _repolish_widget(getattr(self, attr, None))
 
     def changeEvent(self, event: QEvent) -> None:
         super().changeEvent(event)
@@ -1205,6 +1438,15 @@ class SettingRowWidget(QFrame):
     def set_repo_path(self, repo_path: str | None) -> None:
         self.repo_path = repo_path
         self.reload_value()
+
+    def _sync_badges(self, val: Any) -> None:
+        is_overridden = False
+        if self.repo_path:
+            override_val = self.registry.get(self.spec.key, self.repo_path)
+            global_val = self.registry.get(self.spec.key, None)
+            is_overridden = override_val != global_val
+        self.lbl_override.setVisible(is_overridden)
+        self.btn_reset.setEnabled(val != self.spec.default)
 
     def reload_value(self) -> None:
         """Reload value from registry into control widget without triggering save."""
@@ -1222,16 +1464,7 @@ class SettingRowWidget(QFrame):
             elif self.spec.setting_type in (SettingType.STR, SettingType.PATH):
                 self.edit_control.setText(str(val) if val is not None else "")
 
-            # Show/hide override badge
-            is_overridden = False
-            if self.repo_path:
-                override_val = self.registry.get(self.spec.key, self.repo_path)
-                global_val = self.registry.get(self.spec.key, None)
-                is_overridden = override_val != global_val
-            self.lbl_override.setVisible(is_overridden)
-
-            # Show/hide reset button if modified
-            self.btn_reset.setEnabled(val != self.spec.default)
+            self._sync_badges(val)
         finally:
             self._block_signals = False
 
@@ -1257,6 +1490,22 @@ class SettingRowWidget(QFrame):
         self._pending_val = val
         self._debounce_timer.start()
 
+    @Slot()
+    def _flush_spin_edit(self) -> None:
+        if not shiboken6.isValid(self) or self._block_signals:
+            return
+        if self.spec.setting_type != SettingType.INT or not hasattr(self, "spin_control"):
+            return
+        self.spin_control.interpretText()
+        current_spin = self.spin_control.value()
+        if self._pending_val is not None or current_spin != self.registry.get_int(
+            self.spec.key, self.repo_path
+        ):
+            self._pending_val = current_spin
+            if self._debounce_timer.isActive():
+                self._debounce_timer.stop()
+            self._flush_debounced_save()
+
     def _on_choice_changed(self, index: int) -> None:
         if self._block_signals:
             return
@@ -1275,26 +1524,52 @@ class SettingRowWidget(QFrame):
             self.edit_control.setText(path)
             self._save_val(path)
 
+    def flush_pending(self) -> None:
+        """Flush any in-flight typed edits (including uncommitted QSpinBox text)."""
+        if not shiboken6.isValid(self):
+            return
+        if self.spec.setting_type == SettingType.INT and hasattr(self, "spin_control"):
+            self.spin_control.interpretText()
+            current_spin = self.spin_control.value()
+            stored = self.registry.get_int(self.spec.key, self.repo_path)
+            if self._pending_val is not None or current_spin != stored:
+                self._pending_val = current_spin
+                if self._debounce_timer.isActive():
+                    self._debounce_timer.stop()
+                self._flush_debounced_save()
+                return
+        if self._debounce_timer.isActive() or self._pending_val is not None:
+            self._debounce_timer.stop()
+            self._flush_debounced_save()
+
     @Slot()
     def _flush_debounced_save(self) -> None:
         if not shiboken6.isValid(self):
             return
+        if self._debounce_timer.isActive():
+            self._debounce_timer.stop()
         if self._pending_val is not None:
             val = self._pending_val
             self._pending_val = None
+            if val == self.registry.get(self.spec.key, self.repo_path):
+                return
             self._save_val(val)
 
     def _save_val(self, val: Any) -> None:
         self.registry.set(self.spec.key, val, self.repo_path)
-        self.btn_reset.setEnabled(val != self.spec.default)
+        self._sync_badges(val)
         if self.on_changed:
             self.on_changed(self.spec.key, val)
 
     def _on_reset_clicked(self) -> None:
+        if self._debounce_timer.isActive():
+            self._debounce_timer.stop()
+        self._pending_val = None
         self.registry.reset_key(self.spec.key, self.repo_path)
         self.reload_value()
         if self.on_changed:
-            self.on_changed(self.spec.key, self.spec.default)
+            effective = self.registry.get(self.spec.key, self.repo_path)
+            self.on_changed(self.spec.key, effective)
 
     def matches_query(self, query: str) -> bool:
         if not query:
@@ -1334,12 +1609,12 @@ class CategorySettingsPage(QWidget):
         main_layout.setSpacing(8)
 
         # Header with Category Name
-        header = QLabel(self.category, self)
-        font = header.font()
+        self.header_label = QLabel(self.category, self)
+        font = self.header_label.font()
         font.setPointSize(14)
         font.setBold(True)
-        header.setFont(font)
-        main_layout.addWidget(header)
+        self.header_label.setFont(font)
+        main_layout.addWidget(self.header_label)
 
         # Scroll area for rows
         self.scroll_area = QScrollArea(self)
@@ -1385,17 +1660,42 @@ class CategorySettingsPage(QWidget):
             row.reload_value()
         self.update_dependencies()
 
-    def apply_theme(self) -> None:
+    def reload_key(self, key: str) -> None:
+        """Reload rows matching key unless the row holds an active unsaved edit."""
         for row in self.row_widgets:
-            row._apply_theme()
+            if not shiboken6.isValid(row):
+                continue
+            if row.spec.key == key:
+                if row._debounce_timer.isActive() or row._pending_val is not None:
+                    continue
+                row.reload_value()
+        self.update_dependencies()
+
+    def apply_theme(self) -> None:
+        if not shiboken6.isValid(self):
+            return
+        _repolish_widget(self)
+        _repolish_widget(getattr(self, "header_label", None))
+        if hasattr(self, "scroll_area") and shiboken6.isValid(self.scroll_area):
+            _repolish_widget(self.scroll_area)
+            _repolish_widget(self.scroll_area.viewport())
+        for row in self.row_widgets:
+            if shiboken6.isValid(row):
+                row._apply_theme()
 
     def update_dependencies(self) -> None:
         for row in self.row_widgets:
             row.update_parent_dependency()
 
-    def filter_rows(self, query: str, modified_only: bool = False) -> int:
+    def filter_rows(
+        self,
+        query: str,
+        modified_only: bool = False,
+        view_tier: SettingTier = SettingTier.ADVANCED,
+    ) -> int:
         visible_count = 0
         for row in self.row_widgets:
+            matches_tier = view_tier == SettingTier.ADVANCED or row.spec.tier == SettingTier.NORMAL
             matches_q = row.matches_query(query)
             if modified_only:
                 val = self.registry.get(row.spec.key, self.repo_path)
@@ -1403,7 +1703,7 @@ class CategorySettingsPage(QWidget):
             else:
                 matches_mod = True
 
-            should_show = matches_q and matches_mod
+            should_show = matches_tier and matches_q and matches_mod
             row.setVisible(should_show)
             if should_show:
                 visible_count += 1

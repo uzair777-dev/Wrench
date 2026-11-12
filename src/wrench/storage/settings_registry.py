@@ -35,6 +35,11 @@ class SettingScope(str, Enum):
     REPO_OVERRIDABLE = "repo_overridable"
 
 
+class SettingTier(str, Enum):
+    NORMAL = "normal"  # Shown in Normal view (basic user-facing settings)
+    ADVANCED = "advanced"  # Shown only in Advanced view (power-user / internals)
+
+
 @dataclass(frozen=True)
 class SettingSpec:
     key: str
@@ -48,6 +53,7 @@ class SettingSpec:
     min_value: int | None = None
     max_value: int | None = None
     parent_toggle_key: str | None = None
+    tier: SettingTier = SettingTier.ADVANCED
 
 
 @dataclass(frozen=True)
@@ -73,6 +79,7 @@ DEFAULT_SETTING_SPECS: dict[str, SettingSpec] = {
         default="system",
         choices=("system", "dark", "light"),
         scope=SettingScope.GLOBAL_ONLY,
+        tier=SettingTier.NORMAL,
     ),
     "ui.font_size_pt": SettingSpec(
         key="ui.font_size_pt",
@@ -84,6 +91,7 @@ DEFAULT_SETTING_SPECS: dict[str, SettingSpec] = {
         min_value=8,
         max_value=18,
         scope=SettingScope.GLOBAL_ONLY,
+        tier=SettingTier.NORMAL,
     ),
     "ui.confirm_destructive_actions": SettingSpec(
         key="ui.confirm_destructive_actions",
@@ -95,6 +103,7 @@ DEFAULT_SETTING_SPECS: dict[str, SettingSpec] = {
         ),
         setting_type=SettingType.BOOL,
         default=True,
+        tier=SettingTier.NORMAL,
     ),
     "ui.avatars_gravatar": SettingSpec(
         key="ui.avatars_gravatar",
@@ -103,6 +112,7 @@ DEFAULT_SETTING_SPECS: dict[str, SettingSpec] = {
         description="Fetch author avatars from Gravatar service when local avatar is missing.",
         setting_type=SettingType.BOOL,
         default=False,
+        tier=SettingTier.NORMAL,
     ),
     "ui.session_state": SettingSpec(
         key="ui.session_state",
@@ -114,6 +124,7 @@ DEFAULT_SETTING_SPECS: dict[str, SettingSpec] = {
         setting_type=SettingType.BOOL,
         default=True,
         scope=SettingScope.GLOBAL_ONLY,
+        tier=SettingTier.NORMAL,
     ),
     "ui.humor_lines": SettingSpec(
         key="ui.humor_lines",
@@ -123,6 +134,7 @@ DEFAULT_SETTING_SPECS: dict[str, SettingSpec] = {
         setting_type=SettingType.BOOL,
         default=True,
         scope=SettingScope.GLOBAL_ONLY,
+        tier=SettingTier.NORMAL,
     ),
     "ui.activity_dock.max_lines": SettingSpec(
         key="ui.activity_dock.max_lines",
@@ -155,6 +167,18 @@ DEFAULT_SETTING_SPECS: dict[str, SettingSpec] = {
         setting_type=SettingType.BOOL,
         default=True,
         scope=SettingScope.GLOBAL_ONLY,
+        tier=SettingTier.NORMAL,
+    ),
+    "ui.settings_view_mode": SettingSpec(
+        key="ui.settings_view_mode",
+        category="General & UI",
+        label="Preferences View Mode",
+        description="Display basic user preferences (normal) or all advanced settings (advanced).",
+        setting_type=SettingType.CHOICE,
+        default="normal",
+        choices=("normal", "advanced"),
+        scope=SettingScope.GLOBAL_ONLY,
+        tier=SettingTier.ADVANCED,
     ),
     "repo.recent_max_count": SettingSpec(
         key="repo.recent_max_count",
@@ -212,6 +236,7 @@ DEFAULT_SETTING_SPECS: dict[str, SettingSpec] = {
         ),
         setting_type=SettingType.BOOL,
         default=True,
+        tier=SettingTier.NORMAL,
     ),
     "commit.subject_max_length_guide": SettingSpec(
         key="commit.subject_max_length_guide",
@@ -253,6 +278,7 @@ DEFAULT_SETTING_SPECS: dict[str, SettingSpec] = {
         ),
         setting_type=SettingType.BOOL,
         default=True,
+        tier=SettingTier.NORMAL,
     ),
     # 3. Commit Graph
     "graph.show_lanes": SettingSpec(
@@ -262,6 +288,7 @@ DEFAULT_SETTING_SPECS: dict[str, SettingSpec] = {
         description="Draw topological branch lane curves connecting commits in the history table.",
         setting_type=SettingType.BOOL,
         default=True,
+        tier=SettingTier.NORMAL,
     ),
     "graph.lane_width_px": SettingSpec(
         key="graph.lane_width_px",
@@ -291,6 +318,7 @@ DEFAULT_SETTING_SPECS: dict[str, SettingSpec] = {
         setting_type=SettingType.CHOICE,
         default="relative",
         choices=("relative", "iso", "locale"),
+        tier=SettingTier.NORMAL,
     ),
     "graph.show_avatars": SettingSpec(
         key="graph.show_avatars",
@@ -299,6 +327,7 @@ DEFAULT_SETTING_SPECS: dict[str, SettingSpec] = {
         description="Display circular author avatar images in commit history rows.",
         setting_type=SettingType.BOOL,
         default=True,
+        tier=SettingTier.NORMAL,
     ),
     "graph.sort_order": SettingSpec(
         key="graph.sort_order",
@@ -351,6 +380,7 @@ DEFAULT_SETTING_SPECS: dict[str, SettingSpec] = {
         default=3,
         min_value=1,
         max_value=20,
+        tier=SettingTier.NORMAL,
     ),
     "diff.ignore_whitespace_mode": SettingSpec(
         key="diff.ignore_whitespace_mode",
@@ -369,6 +399,7 @@ DEFAULT_SETTING_SPECS: dict[str, SettingSpec] = {
         setting_type=SettingType.CHOICE,
         default="merge",
         choices=("merge", "ff-only", "no-ff"),
+        tier=SettingTier.NORMAL,
     ),
     "merge.builtin_3way_tool.enabled": SettingSpec(
         key="merge.builtin_3way_tool.enabled",
@@ -501,6 +532,7 @@ DEFAULT_SETTING_SPECS: dict[str, SettingSpec] = {
         description="Periodically check configured remotes in the background for incoming commits.",
         setting_type=SettingType.BOOL,
         default=True,
+        tier=SettingTier.NORMAL,
     ),
     "remote.auto_fetch.interval_seconds": SettingSpec(
         key="remote.auto_fetch.interval_seconds",
@@ -651,6 +683,7 @@ DEFAULT_SETTING_SPECS: dict[str, SettingSpec] = {
         description="Run pre-commit, commit-msg, and pre-push hooks located in .git/hooks.",
         setting_type=SettingType.BOOL,
         default=True,
+        tier=SettingTier.NORMAL,
     ),
     "signing.enabled": SettingSpec(
         key="signing.enabled",
@@ -866,6 +899,7 @@ DEFAULT_SETTING_SPECS: dict[str, SettingSpec] = {
         description="Provide dedicated Stashes drawer and stash/pop/apply toolbar actions.",
         setting_type=SettingType.BOOL,
         default=True,
+        tier=SettingTier.NORMAL,
     ),
     "stash.confirm_before_drop": SettingSpec(
         key="stash.confirm_before_drop",
@@ -927,6 +961,39 @@ CATEGORIES_ORDER = (
     "Safety & Backups",
     "Custom Actions & Shortcuts",
 )
+
+_SESSION_BLOB_KEYS: frozenset[str] = frozenset({"ui.session_state", "ui.window_geometry"})
+_LEGACY_KEY_ALIASES: dict[str, str] = {
+    "theme": "ui.theme_mode",
+    "repo.auto_fetch_on_open": "remote.auto_fetch.enabled",
+}
+_CANON_TO_LEGACY_KEY: dict[str, str] = {v: k for k, v in _LEGACY_KEY_ALIASES.items()}
+
+
+def _normalize_theme_choice(raw_val: Any) -> str:
+    low = str(raw_val or "").strip().lower()
+    if low in ("light", "dark"):
+        return low
+    return "system"
+
+
+def _delete_stale_legacy_app_settings(conn: sqlite3.Connection, key: str) -> None:
+    """Remove shadowed legacy app_settings entries when writing canonical global_settings."""
+    if key in _SESSION_BLOB_KEYS:
+        return
+    cursor = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='app_settings'"
+    )
+    if not cursor.fetchone():
+        return
+    legacy_key = _CANON_TO_LEGACY_KEY.get(key)
+    if legacy_key is not None:
+        conn.execute(
+            "DELETE FROM app_settings WHERE key IN (?, ?)",
+            (key, legacy_key),
+        )
+    else:
+        conn.execute("DELETE FROM app_settings WHERE key = ?", (key,))
 
 
 class SettingsRegistry(QObject):
@@ -996,25 +1063,27 @@ class SettingsRegistry(QObject):
                 k = row[0] if isinstance(row, tuple) else row["key"]
                 v = row[1] if isinstance(row, tuple) else row["value"]
 
+                # Never import session/geometry JSON blobs into global_settings (BOOL collision)
+                if k in _SESSION_BLOB_KEYS or (isinstance(v, str) and v.lstrip().startswith("{")):
+                    continue
+
                 # Translate common legacy keys
-                target_key = k
-                if k == "theme":
-                    target_key = "ui.theme_mode"
-                elif k == "repo.auto_fetch_on_open":
-                    target_key = "remote.auto_fetch.enabled"
-                elif k == "ui.tab_orientation":
-                    target_key = "ui.tab_orientation"  # Preserved for tabs page
+                target_key = _LEGACY_KEY_ALIASES.get(k, k)
 
                 spec = self._specs.get(target_key)
                 parsed_val: Any = v
                 if spec:
-                    if spec.setting_type == SettingType.BOOL:
-                        parsed_val = str(v).lower() in ("true", "1", "yes")
+                    if target_key == "ui.theme_mode":
+                        parsed_val = _normalize_theme_choice(v)
+                    elif spec.setting_type == SettingType.BOOL:
+                        parsed_val = str(v).strip().lower() in ("true", "1", "yes", "on")
                     elif spec.setting_type == SettingType.INT:
                         try:
                             parsed_val = int(v)
                         except ValueError, TypeError:
                             parsed_val = spec.default
+                    else:
+                        parsed_val = self._validate_value(spec, v)
                 else:
                     # Generic string/json parse attempt
                     if str(v).lower() in ("true", "false"):
@@ -1029,6 +1098,11 @@ class SettingsRegistry(QObject):
                     "INSERT OR IGNORE INTO global_settings (key, value_json) VALUES (?, ?)",
                     (target_key, json.dumps(parsed_val)),
                 )
+            # Repair previously migrated legacy "auto" value in ui.theme_mode
+            conn.execute(
+                "UPDATE global_settings SET value_json = ? WHERE key = ? AND value_json = ?",
+                (json.dumps("system"), "ui.theme_mode", json.dumps("auto")),
+            )
             conn.commit()
         except sqlite3.Error as err:
             logger.debug("Legacy settings migration skipped or already completed: %s", err)
@@ -1055,6 +1129,37 @@ class SettingsRegistry(QObject):
     def get_spec(self, key: str) -> SettingSpec | None:
         """Return the spec for key, or None if unregistered."""
         return self._specs.get(key)
+
+    def has_explicit_setting(self, key: str, repo_path: str | None = None) -> bool:
+        """Return True if key has an explicit persisted row in repo overrides or global_settings."""
+        spec = self._specs.get(key)
+        conn = self._get_conn()
+        with _db_lock:
+            if repo_path and (spec is None or spec.scope == SettingScope.REPO_OVERRIDABLE):
+                try:
+                    row = conn.execute(
+                        "SELECT 1 FROM repo_settings_overrides WHERE repo_path = ? AND key = ?",
+                        (repo_path, key),
+                    ).fetchone()
+                    if row:
+                        return True
+                except sqlite3.Error as err:
+                    logger.debug("Error checking repo setting existence: %s", err)
+            try:
+                row = conn.execute(
+                    "SELECT 1 FROM global_settings WHERE key = ?",
+                    (key,),
+                ).fetchone()
+                return bool(row)
+            except sqlite3.Error as err:
+                logger.debug("Error checking global setting existence: %s", err)
+                return False
+
+    def _invalidate_repo_fallbacks(self, key: str) -> None:
+        """Clear all repo-scoped cached entries for key after a global mutation."""
+        keys_to_clear = [k for k in self._effective_cache if k[1] == key and k[0] is not None]
+        for k in keys_to_clear:
+            self._effective_cache.pop(k, None)
 
     def list_specs(self, category: str | None = None) -> list[SettingSpec]:
         """Return registered SettingSpecs, optionally filtered by category."""
@@ -1206,6 +1311,7 @@ class SettingsRegistry(QObject):
                     """,
                     (key, val_json),
                 )
+                _delete_stale_legacy_app_settings(conn, key)
 
             # Record change in settings_undo_log (OPT-3 delta stack)
             conn.execute(
@@ -1225,14 +1331,15 @@ class SettingsRegistry(QObject):
             conn.commit()
 
             # Invalidate/update cache
-            self._effective_cache[(repo_path, key)] = validated_value
-            if repo_path is None:
+            effective_repo = (
+                repo_path
+                if (repo_path and (spec is None or spec.scope == SettingScope.REPO_OVERRIDABLE))
+                else None
+            )
+            self._effective_cache[(effective_repo, key)] = validated_value
+            if effective_repo is None:
                 # Invalidate any cached repo entries that were falling back to global
-                keys_to_clear = [
-                    k for k in self._effective_cache if k[1] == key and k[0] is not None
-                ]
-                for k in keys_to_clear:
-                    self._effective_cache.pop(k, None)
+                self._invalidate_repo_fallbacks(key)
 
         self.setting_changed.emit(key, validated_value, repo_path)
 
@@ -1246,11 +1353,16 @@ class SettingsRegistry(QObject):
 
         if spec.setting_type == SettingType.BOOL:
             if isinstance(value, str):
-                return value.lower() in ("true", "1", "yes", "on")
+                return value.strip().lower() in ("true", "1", "yes", "on")
             return bool(value)
 
         if spec.setting_type == SettingType.INT:
-            int_val = int(value)
+            if isinstance(value, bool) or value is None:
+                return spec.default
+            try:
+                int_val = int(value)
+            except ValueError, TypeError:
+                return spec.default
             if spec.min_value is not None:
                 int_val = max(spec.min_value, int_val)
             if spec.max_value is not None:
@@ -1258,7 +1370,17 @@ class SettingsRegistry(QObject):
             return int_val
 
         if spec.setting_type == SettingType.CHOICE:
-            str_val = str(value)
+            str_val = str(value or "").strip()
+            if spec.key == "ui.theme_mode":
+                low = str_val.lower()
+                if low in ("auto", "system"):
+                    str_val = "system"
+                elif low in ("light", "dark"):
+                    str_val = low
+                else:
+                    str_val = low
+            elif spec.key == "ui.settings_view_mode":
+                str_val = str_val.lower()
             if spec.choices and str_val not in spec.choices:
                 return spec.default
             return str_val
@@ -1283,6 +1405,7 @@ class SettingsRegistry(QObject):
                 )
             else:
                 conn.execute("DELETE FROM global_settings WHERE key = ?", (key,))
+                _delete_stale_legacy_app_settings(conn, key)
 
             conn.execute(
                 """
@@ -1297,6 +1420,7 @@ class SettingsRegistry(QObject):
             self._effective_cache.pop((repo_path, key), None)
             if repo_path is None:
                 self._effective_cache.pop((None, key), None)
+                self._invalidate_repo_fallbacks(key)
 
         self.setting_changed.emit(key, new_val, repo_path)
 
@@ -1363,16 +1487,23 @@ class SettingsRegistry(QObject):
                         """,
                         (key, json.dumps(old_val)),
                     )
+                _delete_stale_legacy_app_settings(conn, key)
 
             conn.execute(
                 "UPDATE settings_undo_log SET undone = 1 WHERE change_id = ?", (change_id,)
             )
             conn.commit()
 
-            self._effective_cache[(repo_path, key)] = old_val
+            if old_val is None:
+                self._effective_cache.pop((repo_path, key), None)
+            else:
+                self._effective_cache[(repo_path, key)] = old_val
+            if repo_path is None:
+                self._invalidate_repo_fallbacks(key)
 
-        self.setting_changed.emit(key, old_val, repo_path)
-        return (key, old_val)
+        emit_val = old_val if old_val is not None else self.get(key, repo_path)
+        self.setting_changed.emit(key, emit_val, repo_path)
+        return (key, emit_val)
 
     def redo_last_change(self) -> tuple[str, Any] | None:
         """Re-apply the most recent undone=1 delta row in settings_undo_log."""
@@ -1414,16 +1545,23 @@ class SettingsRegistry(QObject):
                     """,
                     (key, json.dumps(new_val)),
                 )
+                _delete_stale_legacy_app_settings(conn, key)
 
             conn.execute(
                 "UPDATE settings_undo_log SET undone = 0 WHERE change_id = ?", (change_id,)
             )
             conn.commit()
 
-            self._effective_cache[(repo_path, key)] = new_val
+            if new_val is None:
+                self._effective_cache.pop((repo_path, key), None)
+            else:
+                self._effective_cache[(repo_path, key)] = new_val
+            if repo_path is None:
+                self._invalidate_repo_fallbacks(key)
 
-        self.setting_changed.emit(key, new_val, repo_path)
-        return (key, new_val)
+        emit_val = new_val if new_val is not None else self.get(key, repo_path)
+        self.setting_changed.emit(key, emit_val, repo_path)
+        return (key, emit_val)
 
     def list_recent_changes(self, limit: int = 50) -> list[SettingDelta]:
         """Return the most recent delta entries from settings_undo_log."""
@@ -1574,6 +1712,6 @@ def get_settings_registry(conn: sqlite3.Connection | None = None) -> SettingsReg
     """Return the global SettingsRegistry singleton, instantiating if needed."""
     global _GLOBAL_REGISTRY
     with _GLOBAL_REGISTRY_LOCK:
-        if _GLOBAL_REGISTRY is None or (conn is not None and _GLOBAL_REGISTRY._conn != conn):
+        if _GLOBAL_REGISTRY is None or (conn is not None and _GLOBAL_REGISTRY._conn is not conn):
             _GLOBAL_REGISTRY = SettingsRegistry(conn=conn)
         return _GLOBAL_REGISTRY

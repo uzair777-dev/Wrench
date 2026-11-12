@@ -109,11 +109,20 @@ def create_pastel_dark_palette() -> QPalette:
     return pal
 
 
+def normalize_theme_mode(mode: str | None, *, target: str = "canonical") -> str:
+    """Normalize theme mode between canonical ('system') and legacy ('auto') names."""
+    raw = str(mode or "").strip().lower()
+    if raw in ("light", "dark"):
+        return raw
+    return "auto" if target == "legacy" else "system"
+
+
 def apply_theme(app: QApplication, mode: str) -> None:
-    """Applies a theme mode ('auto', 'light', 'dark') to the application."""
-    if mode == "light":
+    """Applies a theme mode ('auto', 'system', 'light', 'dark') to the application."""
+    norm_mode = normalize_theme_mode(mode, target="legacy")
+    if norm_mode == "light":
         palette = create_pastel_light_palette()
-    elif mode == "dark":
+    elif norm_mode == "dark":
         palette = create_pastel_dark_palette()
     else:  # 'auto' / system
         palette = app.style().standardPalette()
@@ -704,3 +713,30 @@ CLI_PREVIEW_STYLES = {
         "fg": "#cdd6f4",  # Catppuccin Mocha Text
     },
 }
+
+READONLY_FIELD_STYLES = {
+    "light": {
+        "bg": "#e6e9ef",  # Catppuccin Latte Mantle
+        "border": "#ccd0da",  # Catppuccin Latte Surface0
+        "fg": "#4c4f69",  # Catppuccin Latte Text
+        "placeholder_fg": "#5c5f77",  # Catppuccin Latte Subtext1
+    },
+    "dark": {
+        "bg": "#1e1e2e",  # Catppuccin Mocha Base
+        "border": "#45475a",  # Catppuccin Mocha Surface1
+        "fg": "#cdd6f4",  # Catppuccin Mocha Text
+        "placeholder_fg": "#a6adc8",  # Catppuccin Mocha Subtext0
+    },
+}
+
+
+def get_readonly_field_qss(is_dark: bool, *, placeholder: bool = False) -> str:
+    """Return theme-aware single-line read-only field QSS for path readouts."""
+    c = READONLY_FIELD_STYLES["dark" if is_dark else "light"]
+    fg = c["placeholder_fg"] if placeholder else c["fg"]
+    font_style = "font-style: italic; " if placeholder else ""
+    return (
+        f"QLabel {{ background-color: {c['bg']}; color: {fg}; "
+        f"border: 1px solid {c['border']}; border-radius: 4px; "
+        f"padding: 4px 8px; {font_style}}}"
+    )

@@ -32,7 +32,15 @@ from .engine import (
     RepoHandle,
     RepoStatus,
 )
-from .models import LogPage
+from .models import (
+    BranchInfo,
+    BranchSyncStatus,
+    LogPage,
+    RefName,
+    RefSidebarTree,
+    StashEntry,
+    TagInfo,
+)
 from .paths import resolve_git_dir
 
 logger = logging.getLogger(__name__)
@@ -228,6 +236,13 @@ def configure_libgit2_cache_limits(*, force: bool = False) -> None:
         except AttributeError as exc:
             logger.debug("pygit2.settings.mwindow_mapped_limit unavailable: %s", exc)
         _libgit2_limits_applied = True
+
+
+def configure_libgit2_memory_limits(max_cache_mb: int = 32) -> None:
+    """Enforce OPT-11 libgit2 32MB cache cap and mwindow limit."""
+    global _LIBGIT2_CACHE_MAX_BYTES
+    _LIBGIT2_CACHE_MAX_BYTES = max_cache_mb * 1024 * 1024
+    configure_libgit2_cache_limits(force=True)
 
 
 def get_status(repo: RepoHandle) -> RepoStatus:
@@ -1075,11 +1090,27 @@ def get_ref_labels(repo: RepoHandle) -> dict[str, list[RefLabel]]:
         branch = r.branches.local[branch_name]
         try:
             target_commit = branch.peel(pygit2.Commit)
-            add_label(str(target_commit.id), RefLabel(name=branch_name, kind="branch"))
+            add_label(
+                str(target_commit.id), RefLabel(name=RefName(f"local:{branch_name}"), kind="branch")
+            )
         except Exception as e:
             logger.debug("Failed resolving branch commit for label: %s", e)
 
-    # 2. Tags
+    # 2. Remote tracking branches (omit /HEAD symrefs per FR-3.16)
+    for branch_name in r.branches.remote:
+        if branch_name.endswith("/HEAD"):
+            continue
+        branch = r.branches.remote[branch_name]
+        try:
+            target_commit = branch.peel(pygit2.Commit)
+            add_label(
+                str(target_commit.id),
+                RefLabel(name=RefName(f"remote:{branch_name}"), kind="remote_branch"),
+            )
+        except Exception as e:
+            logger.debug("Failed resolving remote branch commit for label: %s", e)
+
+    # 3. Tags
     for ref_name in r.references:
         if ref_name.startswith("refs/tags/"):
             tag_name = ref_name.removeprefix("refs/tags/")
@@ -1095,18 +1126,18 @@ def get_ref_labels(repo: RepoHandle) -> dict[str, list[RefLabel]]:
                     obj = r.get(obj.target)
                     depth += 1
                 if isinstance(obj, pygit2.Commit):
-                    add_label(str(obj.id), RefLabel(name=tag_name, kind="tag"))
+                    add_label(str(obj.id), RefLabel(name=RefName(f"tag:{tag_name}"), kind="tag"))
             except (KeyError, pygit2.GitError, ValueError) as e:
                 logger.debug("Failed resolving tag commit for label: %s", e)
 
-    # 3. HEAD
+    # 4. HEAD
     if not r.head_is_unborn:
         try:
             head_target = r.head.target
             if r.head_is_detached:
-                add_label(str(head_target), RefLabel(name="HEAD", kind="head"))
+                add_label(str(head_target), RefLabel(name=RefName("HEAD"), kind="head"))
             else:
-                add_label(str(head_target), RefLabel(name="HEAD", kind="head"))
+                add_label(str(head_target), RefLabel(name=RefName("HEAD"), kind="head"))
         except Exception as e:
             logger.debug("Failed resolving HEAD target for label: %s", e)
 
@@ -1116,27 +1147,13 @@ def get_ref_labels(repo: RepoHandle) -> dict[str, list[RefLabel]]:
 def iter_commits(repo: RepoHandle, *, all_refs: bool = False) -> Iterator[Commit]:
     """Yield commits in topological/time order.
 
-    When all_refs=True, seeds from local branches and HEAD for fast, deterministic DAG traversal.
+    When all_refs=True, seeds from local branches, remote branches, tags, and HEAD.
     """
     r = repo.pygit2_repo
     if r.head_is_unborn:
         return
 
-    walker = r.walk(r.head.target, pygit2.GIT_SORT_TOPOLOGICAL | pygit2.GIT_SORT_TIME)
-
-    if all_refs:
-        # Push HEAD first
-        pushed_oids: set[pygit2.Oid] = {r.head.target}
-        # Push all local branches
-        for branch_name in r.branches.local:
-            try:
-                b = r.branches.local[branch_name]
-                target = b.peel(pygit2.Commit).id
-                if target not in pushed_oids:
-                    walker.push(target)
-                    pushed_oids.add(target)
-            except Exception as e:
-                logger.debug("Failed peeling branch commit in walker: %s", e)
+    walker = _create_walker(r, all_refs=all_refs)
 
     for git_commit in walker:
         author_date = datetime.fromtimestamp(
@@ -1237,9 +1254,17 @@ def _repo_refs_digest(r: pygit2.Repository, all_refs: bool) -> str:
         for branch_name in sorted(r.branches.local):
             try:
                 tip = r.branches.local[branch_name].peel(pygit2.Commit).id
-                h.update(f"{branch_name}:{tip};".encode("utf-8"))
+                h.update(f"local:{branch_name}:{tip};".encode("utf-8"))
             except (KeyError, pygit2.GitError) as exc:
                 logger.debug("Skipping branch '%s' in refs digest: %s", branch_name, exc)
+        for branch_name in sorted(r.branches.remote):
+            if branch_name.endswith("/HEAD"):
+                continue
+            try:
+                tip = r.branches.remote[branch_name].peel(pygit2.Commit).id
+                h.update(f"remote:{branch_name}:{tip};".encode("utf-8"))
+            except (KeyError, pygit2.GitError) as exc:
+                logger.debug("Skipping remote branch '%s' in refs digest: %s", branch_name, exc)
     return h.hexdigest()
 
 
@@ -1247,6 +1272,7 @@ def _create_walker(r: pygit2.Repository, *, all_refs: bool):
     walker = r.walk(r.head.target, pygit2.GIT_SORT_TOPOLOGICAL | pygit2.GIT_SORT_TIME)
     if all_refs:
         pushed_oids: set[pygit2.Oid] = {r.head.target}
+        # 1. Local branches
         for branch_name in r.branches.local:
             try:
                 b = r.branches.local[branch_name]
@@ -1256,6 +1282,36 @@ def _create_walker(r: pygit2.Repository, *, all_refs: bool):
                     pushed_oids.add(target)
             except (KeyError, pygit2.GitError) as exc:
                 logger.debug("Failed peeling branch commit in walker: %s", exc)
+
+        # 2. Remote tracking branches (sorted newest-first, capped at 150 tips per OPT-11)
+        remote_tips: list[tuple[int, pygit2.Oid]] = []
+        for branch_name in r.branches.remote:
+            if branch_name.endswith("/HEAD"):
+                continue
+            try:
+                b = r.branches.remote[branch_name]
+                commit = b.peel(pygit2.Commit)
+                remote_tips.append((getattr(commit, "commit_time", 0), commit.id))
+            except (KeyError, pygit2.GitError, ValueError) as exc:
+                logger.debug("Failed peeling remote branch in walker: %s", exc)
+
+        remote_tips.sort(key=lambda x: x[0], reverse=True)
+        for _, tip_oid in remote_tips[:150]:
+            if tip_oid not in pushed_oids:
+                walker.push(tip_oid)
+                pushed_oids.add(tip_oid)
+
+        # 3. Peeled tags
+        for ref_name in r.references:
+            if ref_name.startswith("refs/tags/"):
+                try:
+                    ref = r.references[ref_name]
+                    obj = ref.peel(pygit2.Commit)
+                    if obj.id not in pushed_oids:
+                        walker.push(obj.id)
+                        pushed_oids.add(obj.id)
+                except (KeyError, pygit2.GitError, ValueError):
+                    pass
     return walker
 
 
@@ -1412,6 +1468,26 @@ def get_log(
     return commits
 
 
+def get_commit(repo: RepoHandle | Path | str, sha: str) -> Commit | None:
+    """Retrieve Commit details for a specific sha."""
+    try:
+        if hasattr(repo, "pygit2_repo"):
+            raw = repo.pygit2_repo.get(sha)
+        else:
+            raw = pygit2.Repository(str(Path(repo))).get(sha)
+        if isinstance(raw, pygit2.Commit):
+            return _commit_from_pygit2(raw)
+        return None
+    except (KeyError, ValueError, pygit2.GitError) as exc:
+        logger.debug("Failed getting commit for sha %s: %s", sha, exc)
+        return None
+
+
+def get_commit_details(repo: RepoHandle | Path | str, sha: str) -> Commit | None:
+    """Alias for get_commit."""
+    return get_commit(repo, sha)
+
+
 def blame_file(repo: RepoHandle, path: str) -> list[BlameLine]:
     """Get per-line blame for a file."""
     r = repo.pygit2_repo
@@ -1499,3 +1575,168 @@ def get_repo_refs_signature(
             "Unable to compute refs signature for '%s': %s", getattr(repo, "path", "?"), exc
         )
         return None
+
+
+# ---------------------------------------------------------------------------
+# VP-2.5: Multi-Branch & Remote DAG Walk, Ref Sidebar & Sync (FR-3.16)
+# ---------------------------------------------------------------------------
+
+
+def get_branch_sync_status(repo_path: Path | str) -> BranchSyncStatus:
+    """Calculates ahead/behind commits between active branch and its upstream (FR-3.16).
+
+    // LO, checked this six times so you never wonder if you're out of sync
+    """
+    try:
+        r = pygit2.Repository(str(repo_path))
+    except Exception as exc:
+        logger.debug("Failed opening repository for sync status: %s", exc)
+        return BranchSyncStatus(
+            branch_name="unknown", upstream_name=None, ahead=0, behind=0, is_detached=False
+        )
+
+    try:
+        if r.head_is_unborn:
+            return BranchSyncStatus(
+                branch_name="main", upstream_name=None, ahead=0, behind=0, is_detached=False
+            )
+
+        if r.head_is_detached:
+            head_oid = str(r.head.target)
+            return BranchSyncStatus(
+                branch_name=f"(detached at {head_oid[:7]})",
+                upstream_name=None,
+                ahead=0,
+                behind=0,
+                is_detached=True,
+            )
+
+        branch_name = r.head.shorthand
+        branch = r.branches.local.get(branch_name)
+        if branch is None:
+            return BranchSyncStatus(
+                branch_name=branch_name, upstream_name=None, ahead=0, behind=0, is_detached=False
+            )
+
+        upstream = branch.upstream
+        if upstream is None:
+            return BranchSyncStatus(
+                branch_name=branch_name, upstream_name=None, ahead=0, behind=0, is_detached=False
+            )
+
+        upstream_name = upstream.shorthand
+        ahead, behind = r.ahead_behind(branch.target, upstream.target)
+        return BranchSyncStatus(
+            branch_name=branch_name,
+            upstream_name=upstream_name,
+            ahead=ahead,
+            behind=behind,
+            is_detached=False,
+        )
+    except Exception as exc:
+        logger.debug("Error computing ahead/behind for '%s': %s", repo_path, exc)
+        return BranchSyncStatus(
+            branch_name=getattr(r.head, "shorthand", "unknown") if not r.head_is_unborn else "main",
+            upstream_name=None,
+            ahead=0,
+            behind=0,
+            is_detached=False,
+        )
+    finally:
+        del r
+
+
+def get_ref_sidebar_tree(repo_path: Path | str) -> RefSidebarTree:
+    """Collect structured branch, tag, and stash inventory for History sidebar (FR-3.16)."""
+    try:
+        r = pygit2.Repository(str(repo_path))
+    except Exception as exc:
+        logger.debug("Failed opening repository for sidebar tree: %s", exc)
+        return RefSidebarTree()
+
+    try:
+        if r.head_is_unborn:
+            return RefSidebarTree()
+
+        head_shorthand = r.head.shorthand if not r.head_is_detached else None
+
+        # 1. Local branches
+        local_branches: list[BranchInfo] = []
+        for name in sorted(r.branches.local):
+            b = r.branches.local[name]
+            upstream_name = b.upstream.shorthand if b.upstream else None
+            ahead = 0
+            behind = 0
+            if b.upstream:
+                try:
+                    ahead, behind = r.ahead_behind(b.target, b.upstream.target)
+                except (KeyError, pygit2.GitError, ValueError) as exc:
+                    logger.debug("Failed ahead_behind for '%s': %s", name, exc)
+            local_branches.append(
+                BranchInfo(
+                    name=name,
+                    is_head=(name == head_shorthand),
+                    upstream_name=upstream_name,
+                    ahead=ahead,
+                    behind=behind,
+                    target_oid=str(b.target),
+                )
+            )
+
+        # 2. Remote tracking branches (skip /HEAD symrefs)
+        remote_branches: list[BranchInfo] = []
+        for name in sorted(r.branches.remote):
+            if name.endswith("/HEAD"):
+                continue
+            b = r.branches.remote[name]
+            remote_branches.append(
+                BranchInfo(
+                    name=name,
+                    is_head=False,
+                    upstream_name=None,
+                    ahead=0,
+                    behind=0,
+                    target_oid=str(b.target),
+                )
+            )
+
+        # 3. Tags
+        tags: list[TagInfo] = []
+        for ref_name in sorted(r.references):
+            if ref_name.startswith("refs/tags/"):
+                tag_name = ref_name.removeprefix("refs/tags/")
+                ref = r.references[ref_name]
+                try:
+                    obj = ref.peel()
+                    oid = str(obj.id)
+                    msg = getattr(obj, "message", None)
+                    tagger_date = None
+                    tagger = getattr(obj, "tagger", None)
+                    if tagger:
+                        tagger_date = str(tagger.time)
+                    tags.append(
+                        TagInfo(name=tag_name, target_oid=oid, message=msg, tagger_date=tagger_date)
+                    )
+                except (KeyError, pygit2.GitError, ValueError) as exc:
+                    logger.debug("Failed peeling tag '%s': %s", tag_name, exc)
+                    tags.append(TagInfo(name=tag_name, target_oid=str(ref.target)))
+
+        # 4. Stashes
+        stashes: list[StashEntry] = []
+        try:
+
+            def _stash_cb(index: int, message: str, oid: pygit2.Oid) -> None:
+                stashes.append(StashEntry(index=index, message=message, oid=str(oid)))
+
+            r.listall_stashes(_stash_cb)
+        except Exception as exc:
+            logger.debug("Failed listing stashes: %s", exc)
+
+        return RefSidebarTree(
+            local_branches=tuple(local_branches),
+            remote_branches=tuple(remote_branches),
+            tags=tuple(tags),
+            stashes=tuple(stashes),
+        )
+    finally:
+        del r

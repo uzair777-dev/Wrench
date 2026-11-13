@@ -32,7 +32,15 @@ def is_dark_theme(widget_or_palette: QWidget | QPalette | None = None) -> bool:
     """
     if isinstance(widget_or_palette, QPalette):
         pal = widget_or_palette
-    elif widget_or_palette is not None and hasattr(widget_or_palette, "palette"):
+    elif isinstance(widget_or_palette, QWidget) and widget_or_palette.testAttribute(
+        Qt.WidgetAttribute.WA_SetPalette
+    ):
+        pal = widget_or_palette.palette()
+    elif (
+        widget_or_palette is not None
+        and hasattr(widget_or_palette, "palette")
+        and not isinstance(widget_or_palette, QWidget)
+    ):
         p = widget_or_palette.palette
         pal = p() if callable(p) else p
     else:
@@ -61,6 +69,63 @@ ACCENT_COLORS = {
     },
 }
 
+
+# --- Icon Color Tokens (FR-11.8) ---
+DEFAULT_ICON_COLOR = "#cdd6f4"
+ICON_COLOR_MOCHA = "#cdd6f4"
+ICON_COLOR_LATTE = "#4c4f69"
+
+# --- Context Header Bar Tokens (FR-11.9) ---
+CONTEXT_BAR_BG_DARK = "#11111b"
+CONTEXT_BAR_BG_LIGHT = "#dce0e8"
+CONTEXT_BAR_BORDER_DARK = "#313244"
+CONTEXT_BAR_BORDER_LIGHT = "#ccd0da"
+CONTEXT_BAR_SUBTITLE_DARK = "#a6adc8"
+CONTEXT_BAR_SUBTITLE_LIGHT = "#6c6f85"
+CONTEXT_BAR_TITLE_DARK = "#cdd6f4"
+CONTEXT_BAR_TITLE_LIGHT = "#4c4f69"
+CONTEXT_BTN_BG_DARK = "#181825"
+CONTEXT_BTN_BG_LIGHT = "#e6e9ef"
+
+# --- Launchpad & Diff Gutter Tokens (FR-11.10) ---
+LAUNCHPAD_CARD_BG_DARK = "#181825"
+LAUNCHPAD_CARD_BG_LIGHT = "#e6e9ef"
+LAUNCHPAD_CARD_BORDER_DARK = "#313244"
+LAUNCHPAD_CARD_BORDER_LIGHT = "#ccd0da"
+LAUNCHPAD_TITLE_DARK = "#cdd6f4"
+LAUNCHPAD_TITLE_LIGHT = "#4c4f69"
+LAUNCHPAD_SUBTITLE_DARK = "#a6adc8"
+LAUNCHPAD_SUBTITLE_LIGHT = "#6c6f85"
+LAUNCHPAD_KBD_BG_DARK = "#11111b"
+LAUNCHPAD_KBD_BG_LIGHT = "#dce0e8"
+LAUNCHPAD_KBD_TEXT_DARK = "#bac2de"
+LAUNCHPAD_KBD_TEXT_LIGHT = "#4c4f69"
+DIFF_GUTTER_BG_DARK = "#181825"
+DIFF_GUTTER_BG_LIGHT = "#e6e9ef"
+DIFF_GUTTER_TEXT_DARK = "#6c7086"
+DIFF_GUTTER_TEXT_LIGHT = "#9ca0b0"
+DIFF_ADD_BAR = "#a6e3a1"
+DIFF_DEL_BAR = "#f38ba8"
+
+# --- History View & Neon Lane Tokens (FR-3.17) ---
+SIDEBAR_BG_DARK = "#181825"
+SIDEBAR_BG_LIGHT = "#e6e9ef"
+INSPECTOR_BG_DARK = "#181825"
+INSPECTOR_BG_LIGHT = "#e6e9ef"
+GRAPH_CANVAS_BG_DARK = "#1e1e2e"
+GRAPH_CANVAS_BG_LIGHT = "#eff1f5"
+NEON_LANES_DARK = (
+    "#89b4fa",
+    "#94e2d5",
+    "#cba6f7",
+    "#f5c2e7",
+    "#f38ba8",
+    "#fab387",
+    "#f9e2af",
+    "#a6e3a1",
+    "#74c7ec",
+    "#b4befe",
+)
 
 # --- Pastel Palettes ---
 
@@ -111,6 +176,159 @@ def create_pastel_dark_palette() -> QPalette:
     return pal
 
 
+def build_catppuccin_palette(theme_name: str = "mocha") -> QPalette:
+    """Builds a strict 4-Tier Catppuccin QPalette setting all 18 ColorRoles (FR-11.7).
+
+    // LO, i tuned every single role here so Qt native widgets never bleed 3D gray
+    """
+    pal = QPalette()
+    norm = normalize_theme_mode(theme_name, target="legacy")
+    is_dark = norm in ("dark", "mocha", "system", "auto")
+
+    if is_dark:
+        # Tier 1 Mantle Window
+        pal.setColor(QPalette.ColorRole.Window, QColor("#181825"))
+        pal.setColor(QPalette.ColorRole.WindowText, QColor("#cdd6f4"))
+        # Tier 2 Base Canvas
+        pal.setColor(QPalette.ColorRole.Base, QColor("#1e1e2e"))
+        pal.setColor(QPalette.ColorRole.AlternateBase, QColor("#181825"))
+        # Tier 0 Crust Deep Chrome
+        pal.setColor(QPalette.ColorRole.ToolTipBase, QColor("#11111b"))
+        pal.setColor(QPalette.ColorRole.ToolTipText, QColor("#cdd6f4"))
+        pal.setColor(QPalette.ColorRole.Dark, QColor("#11111b"))
+        pal.setColor(QPalette.ColorRole.Shadow, QColor("#11111b"))
+        # Text & Controls
+        pal.setColor(QPalette.ColorRole.PlaceholderText, QColor("#6c7086"))
+        pal.setColor(QPalette.ColorRole.Text, QColor("#cdd6f4"))
+        # Tier 3 Surface0 Controls
+        pal.setColor(QPalette.ColorRole.Button, QColor("#313244"))
+        pal.setColor(QPalette.ColorRole.ButtonText, QColor("#cdd6f4"))
+        pal.setColor(QPalette.ColorRole.BrightText, QColor("#f38ba8"))
+        pal.setColor(QPalette.ColorRole.Link, QColor("#89b4fa"))
+        pal.setColor(QPalette.ColorRole.Highlight, QColor("#313244"))
+        pal.setColor(QPalette.ColorRole.HighlightedText, QColor("#89b4fa"))
+        pal.setColor(QPalette.ColorRole.Mid, QColor("#45475a"))
+        pal.setColor(QPalette.ColorRole.Midlight, QColor("#585b70"))
+    else:
+        # Tier 1 Mantle Window
+        pal.setColor(QPalette.ColorRole.Window, QColor("#e6e9ef"))
+        pal.setColor(QPalette.ColorRole.WindowText, QColor("#4c4f69"))
+        # Tier 2 Base Canvas
+        pal.setColor(QPalette.ColorRole.Base, QColor("#eff1f5"))
+        pal.setColor(QPalette.ColorRole.AlternateBase, QColor("#e6e9ef"))
+        # Tier 0 Crust Deep Chrome
+        pal.setColor(QPalette.ColorRole.ToolTipBase, QColor("#dce0e8"))
+        pal.setColor(QPalette.ColorRole.ToolTipText, QColor("#4c4f69"))
+        pal.setColor(QPalette.ColorRole.Dark, QColor("#dce0e8"))
+        pal.setColor(QPalette.ColorRole.Shadow, QColor("#dce0e8"))
+        # Text & Controls
+        pal.setColor(QPalette.ColorRole.PlaceholderText, QColor("#9ca0b0"))
+        pal.setColor(QPalette.ColorRole.Text, QColor("#4c4f69"))
+        # Tier 3 Surface0 Controls
+        pal.setColor(QPalette.ColorRole.Button, QColor("#ccd0da"))
+        pal.setColor(QPalette.ColorRole.ButtonText, QColor("#4c4f69"))
+        pal.setColor(QPalette.ColorRole.BrightText, QColor("#d20f39"))
+        pal.setColor(QPalette.ColorRole.Link, QColor("#1e66f5"))
+        pal.setColor(QPalette.ColorRole.Highlight, QColor("#ccd0da"))
+        pal.setColor(QPalette.ColorRole.HighlightedText, QColor("#1e66f5"))
+        pal.setColor(QPalette.ColorRole.Mid, QColor("#bcc0cc"))
+        pal.setColor(QPalette.ColorRole.Midlight, QColor("#acb0be"))
+    return pal
+
+
+def get_global_catppuccin_qss(theme_name: str = "mocha") -> str:
+    """Return the global 4-Tier Catppuccin QSS stylesheet (ui-planning.md §6.29.1)."""
+    norm = normalize_theme_mode(theme_name, target="legacy")
+    is_dark = norm in ("dark", "mocha", "system", "auto")
+
+    if is_dark:
+        bg_window = "#181825"
+        bg_crust = "#11111b"
+        border_col = "#313244"
+        fg_text = "#cdd6f4"
+        fg_subtext0 = "#a6adc8"
+        accent_blue = "#89b4fa"
+        scrollbar_thumb = "rgba(166, 173, 200, 0.28)"
+        scrollbar_hover = "rgba(137, 180, 250, 0.6)"
+    else:
+        bg_window = "#e6e9ef"
+        bg_crust = "#dce0e8"
+        border_col = "#ccd0da"
+        fg_text = "#4c4f69"
+        fg_subtext0 = "#6c6f85"
+        accent_blue = "#1e66f5"
+        scrollbar_thumb = "rgba(92, 95, 119, 0.28)"
+        scrollbar_hover = "rgba(30, 102, 245, 0.6)"
+
+    return f"""
+    QHeaderView::section {{
+        background-color: {bg_crust};
+        color: {fg_subtext0};
+        border: none;
+        border-bottom: 1px solid {border_col};
+        border-right: 1px solid {bg_window};
+        padding: 6px 10px;
+        font-size: 11px;
+        font-weight: 700;
+        text-transform: uppercase;
+    }}
+    QSplitter::handle {{
+        background-color: {border_col};
+        width: 1px;
+        height: 1px;
+    }}
+    QSplitter::handle:hover {{
+        background-color: {accent_blue};
+    }}
+    QTabBar::tab:selected {{
+        border-bottom: 2px solid {accent_blue};
+        font-weight: bold;
+    }}
+    QScrollBar:vertical {{
+        background: transparent;
+        width: 8px;
+        margin: 0px;
+    }}
+    QScrollBar::handle:vertical {{
+        background: {scrollbar_thumb};
+        min-height: 24px;
+        border-radius: 4px;
+    }}
+    QScrollBar::handle:vertical:hover {{
+        background: {scrollbar_hover};
+    }}
+    QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
+        height: 0px;
+        border: none;
+        background: none;
+    }}
+    QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{
+        background: none;
+    }}
+    QScrollBar:horizontal {{
+        background: transparent;
+        height: 8px;
+        margin: 0px;
+    }}
+    QScrollBar::handle:horizontal {{
+        background: {scrollbar_thumb};
+        min-width: 24px;
+        border-radius: 4px;
+    }}
+    QScrollBar::handle:horizontal:hover {{
+        background: {scrollbar_hover};
+    }}
+    QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{
+        width: 0px;
+        border: none;
+        background: none;
+    }}
+    QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {{
+        background: none;
+    }}
+    """
+
+
 def normalize_theme_mode(mode: str | None, *, target: str = "canonical") -> str:
     """Normalize theme mode between canonical ('system') and legacy ('auto') names."""
     raw = str(mode or "").strip().lower()
@@ -145,7 +363,15 @@ def apply_theme(app: QApplication, mode: str) -> None:
         elif norm_mode == "auto" and hasattr(hints, "unsetColorScheme"):
             hints.unsetColorScheme()
 
-    if norm_mode == "light":
+    if hasattr(app, "setStyle"):
+        try:
+            app.setStyle("Fusion")
+        except Exception as exc:
+            logger.debug("Failed setting Fusion style: %s", exc)
+
+    if norm_mode in ("mocha", "latte", "catppuccin", "catppuccin_mocha", "catppuccin_latte"):
+        palette = build_catppuccin_palette(norm_mode)
+    elif norm_mode == "light":
         palette = create_pastel_light_palette()
     elif norm_mode == "dark":
         palette = create_pastel_dark_palette()
@@ -198,14 +424,17 @@ def apply_theme(app: QApplication, mode: str) -> None:
             except RuntimeError as exc:
                 logger.debug("Skipping deleted child widget during theme apply: %s", exc)
 
-    # Update children before top-level windows and QApplication so synchronous
-    # changeEvent / _propagate_theme_refresh handlers read the new palette via is_dark_theme().
-    for child in child_widgets:
-        if shiboken6.isValid(child):
-            try:
-                child.setPalette(palette)
-            except RuntimeError as exc:
-                logger.debug("Skipping setPalette on deleted child widget: %s", exc)
+    app.setPalette(palette)
+
+    global_qss = get_global_catppuccin_qss(norm_mode)
+    if hasattr(app, "setStyleSheet") and global_qss:
+        try:
+            app.setStyleSheet(global_qss)
+        except Exception as exc:
+            logger.debug("Failed setting global Catppuccin QSS: %s", exc)
+
+    # Set palette on top-level windows and child widgets AFTER applying stylesheet
+    # so Qt's QStyleSheetStyle polish doesn't reset child palettes to obsolete cache.
     for top_widget in top_widgets:
         if shiboken6.isValid(top_widget):
             try:
@@ -213,7 +442,12 @@ def apply_theme(app: QApplication, mode: str) -> None:
             except RuntimeError as exc:
                 logger.debug("Skipping setPalette on deleted top-level widget: %s", exc)
 
-    app.setPalette(palette)
+    for child in child_widgets:
+        if shiboken6.isValid(child):
+            try:
+                child.setPalette(palette)
+            except RuntimeError as exc:
+                logger.debug("Skipping setPalette on deleted child widget: %s", exc)
 
     for top_widget in top_widgets:
         if shiboken6.isValid(top_widget):

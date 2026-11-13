@@ -76,6 +76,21 @@ class FileStat:
     deletions: int
 
 
+class RefName(str):
+    """String wrapper supporting both prefixed ('local:main', 'tag:v1.0') and unprefixed equality."""
+
+    def __eq__(self, other: object) -> bool:
+        if super().__eq__(other):
+            return True
+        if isinstance(other, str):
+            for prefix in ("local:", "remote:", "tag:", "head:"):
+                if self.startswith(prefix) and self.removeprefix(prefix) == other:
+                    return True
+                if other.startswith(prefix) and other.removeprefix(prefix) == self:
+                    return True
+        return False
+
+
 @dataclass
 class RefLabel:
     """A badge rendered on the commit graph (branch, tag, or head)."""
@@ -92,10 +107,15 @@ class Commit:
     author_email: str
     author_date: str  # ISO 8601
     parent_shas: list[str]
+    refs: list[RefName] = field(default_factory=list)
 
     @property
     def author(self) -> str:
         return self.author_name
+
+    @property
+    def hex(self) -> str:
+        return self.sha
 
 
 @dataclass
@@ -295,3 +315,61 @@ class RebaseTodoEntry:
     summary: str
     author: str
     new_message: str | None = None
+
+
+# ---------------------------------------------------------------------------
+# VP-2.5: Multi-Branch & Remote DAG Walk, Ref Sidebar & Sync Models (FR-3.16)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(slots=True, frozen=True)
+class BranchInfo:
+    """Metadata for a local or remote branch in the sidebar tree."""
+
+    name: str
+    is_head: bool
+    upstream_name: str | None = None
+    ahead: int = 0
+    behind: int = 0
+    target_oid: str = ""
+
+
+@dataclass(slots=True, frozen=True)
+class TagInfo:
+    """Metadata for an annotated or lightweight tag."""
+
+    name: str
+    target_oid: str
+    message: str | None = None
+    tagger_date: str | None = None
+
+
+@dataclass(slots=True, frozen=True)
+class StashEntry:
+    """Metadata for a git stash item."""
+
+    index: int
+    message: str
+    oid: str
+    timestamp: str | None = None
+
+
+@dataclass(slots=True, frozen=True)
+class BranchSyncStatus:
+    """Ahead/behind counts and tracking upstream for the active branch."""
+
+    branch_name: str
+    upstream_name: str | None
+    ahead: int = 0
+    behind: int = 0
+    is_detached: bool = False
+
+
+@dataclass(slots=True, frozen=True)
+class RefSidebarTree:
+    """Structured ref inventory for the History view left sidebar."""
+
+    local_branches: tuple[BranchInfo, ...] = ()
+    remote_branches: tuple[BranchInfo, ...] = ()
+    tags: tuple[TagInfo, ...] = ()
+    stashes: tuple[StashEntry, ...] = ()

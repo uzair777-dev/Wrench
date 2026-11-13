@@ -37,7 +37,7 @@ from PySide6.QtCore import (
     Signal,
     Slot,
 )
-from PySide6.QtGui import QActionGroup, QGuiApplication, QKeySequence, QPixmapCache
+from PySide6.QtGui import QActionGroup, QGuiApplication, QKeySequence, QPixmapCache, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
     QDialog,
@@ -108,6 +108,7 @@ from wrench.ui.theme import (
 )
 from wrench.ui.widgets.activity_log import ActivityLogBar, ActivityLogModel
 from wrench.ui.widgets.avatar import clear_author_avatar_cache
+from wrench.ui.widgets.context_header_bar import ContextHeaderBar, GitTerminalDrawer
 from wrench.ui.workers import clear_activity_log, run_in_background, set_activity_log
 from wrench.watcher.inotify_watcher import RepoWatcher
 
@@ -277,8 +278,30 @@ class MainWindow(QMainWindow):
         _central_layout.setContentsMargins(0, 0, 0, 0)
         _central_layout.setSpacing(0)
 
+        # Context Header Bar (VP-2.5)
+        self.context_header_bar = ContextHeaderBar(self)
+        self.context_header_bar.repo_selector_clicked.connect(self._on_open_repo)
+        self.context_header_bar.branch_selector_clicked.connect(self._on_branch_selector_clicked)
+        self.context_header_bar.sync_requested.connect(self._on_sync_requested)
+        self.context_header_bar.terminal_toggled.connect(self._toggle_terminal_drawer)
+        self.context_header_bar.undo_requested.connect(self._on_undo_last_commit)
+        self.context_header_bar.pull_requested.connect(self._on_pull_remote)
+        self.context_header_bar.push_requested.connect(self._on_push_remote)
+        self.context_header_bar.stash_requested.connect(self._on_stash_changes)
+        self.context_header_bar.pop_requested.connect(self._on_pop_stash)
+        _central_layout.addWidget(self.context_header_bar)
+
         self.tab_container = TabContainer(orientation=Qt.Vertical, parent=self)
         _central_layout.addWidget(self.tab_container)
+
+        # Embedded Git Terminal Drawer (VP-2.5)
+        self.terminal_drawer = GitTerminalDrawer(self)
+        self.terminal_drawer.setVisible(False)
+        self.terminal_drawer.set_command_runner(self._run_terminal_git_command)
+        _central_layout.addWidget(self.terminal_drawer)
+
+        QShortcut(QKeySequence("Ctrl+`"), self, activated=self._toggle_terminal_drawer)
+        QShortcut(QKeySequence("Ctrl+~"), self, activated=self._toggle_terminal_drawer)
 
         self._activity_log = ActivityLogModel(maxlen=200, parent=self)
         self._activity_dock = ActivityLogBar(self._activity_log, parent=self)
@@ -820,6 +843,11 @@ class MainWindow(QMainWindow):
         self._sync_humor_lines_action()
         self._sync_auto_fetch_action()
 
+        if hasattr(self, "context_header_bar"):
+            self.context_header_bar.setVisible(
+                self._settings_registry.is_enabled("ui.show_context_header_bar")
+            )
+
         # Mark restoration complete and ensure no lingering auto-save timer
         self._is_restoring = False
         if hasattr(self, "_auto_save_timer"):
@@ -1239,6 +1267,7 @@ class MainWindow(QMainWindow):
                 except Exception:
                     branch = "main"
             self.status_label.setText(self.tr(f"Opened: {Path(path).name} ({branch})"))
+            self._update_context_header_bar()
 
             # Restore cached draft/selections if available for this repo (skip duplicate
             # restore when ChangesTab._open_repo_by_path already restored _commit_drafts)
@@ -1894,6 +1923,7 @@ class MainWindow(QMainWindow):
             self.history_tab.refresh()
         if hasattr(self, "snapshots_panel"):
             self.snapshots_panel.refresh_if_visible()
+        self._update_context_header_bar()
         if self._current_repo:
             try:
                 status = getattr(self.changes_tab, "_current_status", None)
@@ -1912,6 +1942,161 @@ class MainWindow(QMainWindow):
             except Exception as e:
                 logger.debug("Failed updating status label: %s", e)
         self._sync_sparse_ui_visibility()
+
+    def _update_context_header_bar(self) -> None:
+        """Update ContextHeaderBar repository, branch, and sync status."""
+        if not hasattr(self, "context_header_bar"):
+            return
+        if not self._current_repo:
+            self.context_header_bar.update_repo(None, "", False)
+            self.context_header_bar.update_sync_status(0, 0, False)
+            return
+
+        repo_path = self._current_repo.path
+        is_detached = False
+        branch_name = "main"
+        try:
+            is_detached = self._current_repo.pygit2_repo.head_is_detached
+            if is_detached:
+                branch_name = self._current_repo.pygit2_repo.head.target.hex[:7]
+            else:
+                branch_name = self._current_repo.pygit2_repo.head.shorthand
+        except Exception:
+            branch_name = "main"
+
+        self.context_header_bar.update_repo(repo_path, branch_name, is_detached)
+
+        try:
+            sync = self._engine.get_branch_sync_status(self._current_repo, branch_name)
+            self.context_header_bar.update_sync_status(sync.ahead, sync.behind, False)
+        except Exception as exc:
+            logger.debug("Branch sync status check skipped: %s", exc)
+            self.context_header_bar.update_sync_status(0, 0, False)
+
+    def _on_branch_selector_clicked(self) -> None:
+        """Handle click on branch context cell in ContextHeaderBar."""
+        if not self._current_repo:
+            return
+        try:
+            branches = engine.list_branches(self._current_repo, local=True, remote=False)
+            branch_names = [b.name for b in branches]
+        except Exception as exc:
+            logger.debug("Failed listing local branches: %s", exc)
+            branch_names = []
+
+        if not branch_names:
+            return
+
+        current_branch = self._get_current_branch() or ""
+        curr_idx = branch_names.index(current_branch) if current_branch in branch_names else 0
+        chosen, ok = QInputDialog.getItem(
+            self,
+            self.tr("Switch Branch"),
+            self.tr("Select branch to checkout:"),
+            branch_names,
+            curr_idx,
+            False,
+        )
+        if ok and chosen and chosen != current_branch:
+            try:
+                engine.checkout_branch(self._current_repo, chosen)
+                self._on_checkout_branch(chosen)
+            except Exception as e:
+                QMessageBox.critical(
+                    self,
+                    self.tr("Checkout Failed"),
+                    self.tr(f"Could not switch to branch '{chosen}': {e}"),
+                )
+
+    def _on_sync_requested(self, kind: str = "") -> None:
+        """Handle click on SyncActionCell in ContextHeaderBar."""
+        if not self._current_repo:
+            return
+        branch = self._get_current_branch()
+        if not branch:
+            QMessageBox.warning(
+                self,
+                self.tr("Detached HEAD"),
+                self.tr("Cannot synchronize while HEAD is detached."),
+            )
+            return
+        try:
+            sync = self._engine.get_branch_sync_status(self._current_repo, branch)
+        except Exception:
+            sync = None
+
+        if sync and sync.behind > 0 and sync.ahead == 0:
+            self._on_pull_remote()
+        elif sync and sync.ahead > 0 and sync.behind == 0:
+            self._on_push_remote()
+        elif sync and sync.ahead > 0 and sync.behind > 0:
+            self._on_pull_remote()
+        else:
+            self._on_fetch_remote()
+
+    def _toggle_terminal_drawer(self) -> None:
+        """Toggle visibility of the embedded git terminal drawer."""
+        if hasattr(self, "terminal_drawer"):
+            self.terminal_drawer.toggle()
+            if hasattr(self, "context_header_bar"):
+                self.context_header_bar.quick_actions.set_terminal_active(
+                    self.terminal_drawer.isVisible()
+                )
+
+    def _run_terminal_git_command(self, cmd_line: str) -> tuple[int, str, str]:
+        """Execute a git command in the embedded terminal drawer."""
+        if not self._current_repo:
+            return (1, "", self.tr("No repository open"))
+        args = cmd_line.strip().split()
+        if not args:
+            return (0, "", "")
+        code, out, err = self._engine.run_git_terminal_command(args, cwd=self._current_repo.path)
+        first_cmd = args[0].lower()
+        if first_cmd in (
+            "commit",
+            "checkout",
+            "switch",
+            "branch",
+            "merge",
+            "rebase",
+            "reset",
+            "stash",
+            "pull",
+            "push",
+            "cherry-pick",
+            "revert",
+        ):
+            self._refresh_after_git_op()
+        return (code, out, err)
+
+    def _on_undo_last_commit(self) -> None:
+        """Undo the most recent commit (git reset --soft HEAD~1)."""
+        if not self._current_repo:
+            return
+        res = QMessageBox.question(
+            self,
+            self.tr("Undo Last Commit"),
+            self.tr(
+                "Are you sure you want to undo the last commit?\n\n"
+                "Your changes will be kept staged in the working area."
+            ),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if res == QMessageBox.StandardButton.Yes:
+            code, stdout, stderr = self._engine.run_git_terminal_command(
+                ["reset", "--soft", "HEAD~1"],
+                cwd=self._current_repo.path,
+            )
+            if code == 0:
+                self.status_label.setText(self.tr("Last commit undone (changes kept staged)."))
+                self._refresh_after_git_op()
+            else:
+                QMessageBox.critical(
+                    self,
+                    self.tr("Undo Commit Failed"),
+                    self.tr(f"git reset failed: {stderr or stdout}"),
+                )
 
     def _on_manage_remotes(self) -> None:
         if not self._current_repo:
@@ -3040,6 +3225,10 @@ class MainWindow(QMainWindow):
         elif key == "maintenance.auto_commit_graph.enabled":
             if not self._settings_registry.is_enabled(key, eff_repo):
                 self._commit_graph_generation += 1
+        elif key == "ui.show_context_header_bar":
+            enabled = self._settings_registry.is_enabled(key, eff_repo)
+            if hasattr(self, "context_header_bar") and shiboken6.isValid(self.context_header_bar):
+                self.context_header_bar.setVisible(enabled)
 
     @Slot(str, str)
     def _on_watcher_mode_changed(self, mode: str, reason: str) -> None:

@@ -50,6 +50,7 @@ from PySide6.QtWidgets import (
 
 from wrench.core import engine
 from wrench.core.engine import Commit, LogFilter, LogPage, RefLabel, RepoHandle
+from wrench.core.models import RefName
 from wrench.storage.settings_registry import SettingsRegistry, peek_settings_registry
 from wrench.ui.commit_graph.layout import (
     GRAPH_COLORS,
@@ -308,6 +309,7 @@ class CommitTableModel(QAbstractTableModel):
     """Table model feeding GraphRows to QTableView."""
 
     COLUMNS = ["Graph", "Message", "Author", "Date", "SHA"]
+    COLUMNS_3COL = ["Branch / Tag", "Graph", "Message", "Author", "Date", "SHA"]
 
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
@@ -317,6 +319,13 @@ class CommitTableModel(QAbstractTableModel):
         self._max_active_lane: int = 0
         self._paint_cache_epoch: int = 0
         self._avatar_url_cache: dict[tuple[str, str, tuple[str, ...]], str | None] = {}
+        self._three_column_mode: bool = False
+
+    def set_three_column_mode(self, enabled: bool) -> None:
+        if self._three_column_mode != enabled:
+            self.beginResetModel()
+            self._three_column_mode = enabled
+            self.endResetModel()
 
     @staticmethod
     def _row_max_lane(row: GraphRow) -> int:
@@ -355,12 +364,57 @@ class CommitTableModel(QAbstractTableModel):
         return len(self._rows)
 
     def columnCount(self, parent: QModelIndex | None = None) -> int:
-        return len(self.COLUMNS)
+        return len(self.COLUMNS_3COL) if self._three_column_mode else len(self.COLUMNS)
 
     def headerData(self, section: int, orientation: Qt.Orientation, role: int = Qt.DisplayRole):
         if orientation == Qt.Horizontal and role == Qt.DisplayRole:
-            return self.COLUMNS[section]
+            cols = self.COLUMNS_3COL if self._three_column_mode else self.COLUMNS
+            if 0 <= section < len(cols):
+                return cols[section]
         return None
+
+    def _get_avatar_decoration(self, row: GraphRow) -> QPixmap | None:
+        is_dark = False
+        dpr = 1.0
+        epoch = self._paint_cache_epoch
+        parent_widget = self.parent()
+        if parent_widget is not None:
+            is_dark = is_dark_theme(parent_widget)
+            if hasattr(parent_widget, "devicePixelRatioF"):
+                dpr = max(1.0, float(parent_widget.devicePixelRatioF()))
+            epoch = getattr(parent_widget, "_paint_cache_epoch", epoch)
+        remote_urls = getattr(self, "_remote_urls", None)
+        db_conn = getattr(self, "_conn", None)
+        author_label = row.commit.author_name or row.commit.author_email or "?"
+        url_cache_key = (
+            row.commit.author_name or "",
+            row.commit.author_email or "",
+            tuple(remote_urls or ()),
+        )
+        if url_cache_key in self._avatar_url_cache:
+            url = self._avatar_url_cache[url_cache_key]
+        else:
+            url = resolve_author_avatar_url(
+                row.commit.author_name,
+                row.commit.author_email,
+                remote_urls=remote_urls,
+                db_conn=db_conn,
+            )
+            self._avatar_url_cache[url_cache_key] = url
+        avatar_key_id = url or f"{row.commit.author_name}|{row.commit.author_email}"
+        cache_key = f"wrench:avatar:{avatar_key_id}:{int(is_dark)}:18:{dpr:.2f}:{epoch}"
+        cached_pm = QPixmapCache.find(cache_key)
+        if cached_pm is not None and not cached_pm.isNull():
+            return cached_pm
+        pm = get_avatar_loader().get_avatar(
+            url,
+            author_label,
+            size=18,
+            is_dark=is_dark,
+        )
+        if pm is not None and not pm.isNull():
+            QPixmapCache.insert(cache_key, pm)
+        return pm
 
     def data(self, index: QModelIndex, role: int = Qt.DisplayRole):
         if not index.isValid() or not (0 <= index.row() < len(self._rows)):
@@ -372,6 +426,63 @@ class CommitTableModel(QAbstractTableModel):
         if role == Qt.UserRole:
             return row
 
+        if self._three_column_mode:
+            # 6 Columns: 0=Branch/Tag, 1=Graph, 2=Message, 3=Author, 4=Date, 5=SHA
+            if role == Qt.ToolTipRole:
+                if col == 0:
+                    if row.ref_labels:
+                        return " ".join(f"[{lbl.name}]" for lbl in row.ref_labels)
+                    return None
+                elif col == 1:
+                    msg_first = row.commit.message.splitlines()[0] if row.commit.message else ""
+                    return (
+                        f"{msg_first} ({row.commit.sha[:8]})"
+                        if msg_first
+                        else (row.commit.sha[:8] if row.commit.sha else None)
+                    )
+                elif col == 2:
+                    if not row.commit.message:
+                        return None
+                    msg = row.commit.message.strip()
+                    if len(msg) > 2000:
+                        msg = msg[:2000] + "\n\n... [message truncated]"
+                    if row.ref_labels:
+                        badges = " ".join(f"[{lbl.name}]" for lbl in row.ref_labels)
+                        return f"{badges}\n\n{msg}"
+                    return msg
+                elif col == 3:
+                    if row.commit.author_name and row.commit.author_email:
+                        return f"{row.commit.author_name} <{row.commit.author_email}>"
+                    return row.commit.author_name or None
+                elif col == 4:
+                    return (
+                        f"Committed: {row.commit.author_date}" if row.commit.author_date else None
+                    )
+                elif col == 5:
+                    return f"Commit SHA: {row.commit.sha}" if row.commit.sha else None
+
+            if role == Qt.DecorationRole and col == 3:
+                return self._get_avatar_decoration(row)
+
+            if role == Qt.DisplayRole:
+                if col in (0, 1):
+                    return ""
+                elif col == 2:
+                    return row.commit.message.splitlines()[0] if row.commit.message else ""
+                elif col == 3:
+                    return row.commit.author_name
+                elif col == 4:
+                    return (
+                        row.commit.author_date[:19].replace("T", " ")
+                        if row.commit.author_date
+                        else ""
+                    )
+                elif col == 5:
+                    return row.commit.sha[:8] if row.commit.sha else ""
+
+            return None
+
+        # 5 Columns (Default): 0=Graph, 1=Message, 2=Author, 3=Date, 4=SHA
         if role == Qt.ToolTipRole:
             if col == 0:
                 msg_first = row.commit.message.splitlines()[0] if row.commit.message else ""
@@ -400,47 +511,7 @@ class CommitTableModel(QAbstractTableModel):
                 return f"Commit SHA: {row.commit.sha}" if row.commit.sha else None
 
         if role == Qt.DecorationRole and col == 2:
-            is_dark = False
-            dpr = 1.0
-            epoch = self._paint_cache_epoch
-            parent_widget = self.parent()
-            if parent_widget is not None:
-                is_dark = is_dark_theme(parent_widget)
-                if hasattr(parent_widget, "devicePixelRatioF"):
-                    dpr = max(1.0, float(parent_widget.devicePixelRatioF()))
-                epoch = getattr(parent_widget, "_paint_cache_epoch", epoch)
-            remote_urls = getattr(self, "_remote_urls", None)
-            db_conn = getattr(self, "_conn", None)
-            author_label = row.commit.author_name or row.commit.author_email or "?"
-            url_cache_key = (
-                row.commit.author_name or "",
-                row.commit.author_email or "",
-                tuple(remote_urls or ()),
-            )
-            if url_cache_key in self._avatar_url_cache:
-                url = self._avatar_url_cache[url_cache_key]
-            else:
-                url = resolve_author_avatar_url(
-                    row.commit.author_name,
-                    row.commit.author_email,
-                    remote_urls=remote_urls,
-                    db_conn=db_conn,
-                )
-                self._avatar_url_cache[url_cache_key] = url
-            avatar_key_id = url or f"{row.commit.author_name}|{row.commit.author_email}"
-            cache_key = f"wrench:avatar:{avatar_key_id}:{int(is_dark)}:18:{dpr:.2f}:{epoch}"
-            cached_pm = QPixmapCache.find(cache_key)
-            if cached_pm is not None and not cached_pm.isNull():
-                return cached_pm
-            pm = get_avatar_loader().get_avatar(
-                url,
-                author_label,
-                size=18,
-                is_dark=is_dark,
-            )
-            if pm is not None and not pm.isNull():
-                QPixmapCache.insert(cache_key, pm)
-            return pm
+            return self._get_avatar_decoration(row)
 
         if role == Qt.DisplayRole:
             if col == 0:
@@ -675,6 +746,7 @@ class CommitGraphWidget(QTableView):
 
         self._graph_scroll_x: int = 0
         self._max_graph_scroll_x: int = 0
+        self._three_column_mode: bool = False
 
         self._model = CommitTableModel(self)
         self.setModel(self._model)
@@ -737,6 +809,77 @@ class CommitGraphWidget(QTableView):
             return
         if key == "performance.graph_page_size":
             self._batch_size = self._effective_page_size()
+        elif key == "ui.history_three_column_layout":
+            self.set_three_column_mode(bool(_value))
+        elif key == "graph.show_wip_row":
+            self.reload_commits()
+
+    def set_three_column_mode(self, enabled: bool) -> None:
+        """Toggles between 6-column GitKraken layout and legacy 5-column layout."""
+        if getattr(self, "_three_column_mode", False) == enabled:
+            return
+        self._three_column_mode = enabled
+        self._model.set_three_column_mode(enabled)
+        header = self.horizontalHeader()
+        if enabled:
+            from wrench.ui.history_view import CommitGraphRowDelegate
+
+            if not hasattr(self, "_three_col_delegate"):
+                self._three_col_delegate = CommitGraphRowDelegate(self)
+            self.setItemDelegateForColumn(0, self._three_col_delegate)
+            self.setItemDelegateForColumn(1, self._three_col_delegate)
+            self.setItemDelegateForColumn(2, None)
+            self.setItemDelegateForColumn(3, None)
+            self.setItemDelegateForColumn(4, None)
+            self.setItemDelegateForColumn(5, None)
+
+            header.resizeSection(0, 175)
+            header.setSectionResizeMode(0, QHeaderView.Interactive)
+            header.resizeSection(1, 140)
+            header.setSectionResizeMode(1, QHeaderView.Interactive)
+            header.resizeSection(2, 350)
+            header.setSectionResizeMode(2, QHeaderView.Stretch)
+            header.resizeSection(3, 140)
+            header.setSectionResizeMode(3, QHeaderView.Interactive)
+            header.resizeSection(4, 130)
+            header.setSectionResizeMode(4, QHeaderView.Interactive)
+            header.resizeSection(5, 85)
+            header.setSectionResizeMode(5, QHeaderView.Interactive)
+            header.setStretchLastSection(False)
+        else:
+            self.setItemDelegateForColumn(0, self._graph_delegate)
+            self.setItemDelegateForColumn(1, self._ref_delegate)
+            self.setItemDelegateForColumn(2, None)
+            self.setItemDelegateForColumn(3, None)
+            self.setItemDelegateForColumn(4, None)
+            header.resizeSection(0, 100)
+            header.setSectionResizeMode(0, QHeaderView.Interactive)
+            header.resizeSection(1, 300)
+            header.setSectionResizeMode(1, QHeaderView.Interactive)
+            header.resizeSection(2, 140)
+            header.setSectionResizeMode(2, QHeaderView.Interactive)
+            header.resizeSection(3, 140)
+            header.setSectionResizeMode(3, QHeaderView.Interactive)
+            header.resizeSection(4, 90)
+            header.setSectionResizeMode(4, QHeaderView.Interactive)
+            header.setStretchLastSection(False)
+        self._update_scrollbar_range()
+
+    def select_and_scroll_to_commit(self, sha: str) -> bool:
+        """Finds row index for commit sha, selects it, and scrolls into view."""
+        if not sha:
+            return False
+        for i, row in enumerate(self._model._rows):
+            if row.commit and (
+                row.commit.sha == sha
+                or row.commit.sha.startswith(sha)
+                or sha.startswith(row.commit.sha)
+            ):
+                self.selectRow(i)
+                index = self._model.index(i, 0)
+                self.scrollTo(index, QAbstractItemView.ScrollHint.PositionAtCenter)
+                return True
+        return False
 
     def set_settings_registry(self, registry: SettingsRegistry | None) -> None:
         """Bind or update the SettingsRegistry driving commit-graph page size."""
@@ -897,8 +1040,9 @@ class CommitGraphWidget(QTableView):
         if not hasattr(self, "_graph_scrollbar") or not self._graph_scrollbar:
             return
         header = self.horizontalHeader()
-        col_0_width = header.sectionSize(0)
-        col_0_x = self.viewport().x() + header.sectionViewportPosition(0)
+        graph_col = 1 if self._three_column_mode else 0
+        col_0_width = header.sectionSize(graph_col)
+        col_0_x = self.viewport().x() + header.sectionViewportPosition(graph_col)
         col_0_right = col_0_x + col_0_width
 
         viewport_left = self.viewport().x()
@@ -935,12 +1079,14 @@ class CommitGraphWidget(QTableView):
             self.graph_scroll_changed.emit(self._graph_scroll_x, self._max_graph_scroll_x)
 
     def _on_section_resized(self, logical_index: int, old_size: int, new_size: int) -> None:
-        if logical_index == 0:
+        graph_col = 1 if self._three_column_mode else 0
+        if logical_index == graph_col:
             self._update_scrollbar_range()
         self._update_graph_scrollbar_geom()
 
     def _update_scrollbar_range(self) -> None:
-        col_0_width = self.horizontalHeader().sectionSize(0)
+        graph_col = 1 if self._three_column_mode else 0
+        col_0_width = self.horizontalHeader().sectionSize(graph_col)
         if not self._model._rows:
             self._max_graph_scroll_x = 0
         else:
@@ -962,7 +1108,8 @@ class CommitGraphWidget(QTableView):
 
     def _auto_scroll_to_node(self, lane_index: int) -> None:
         """Pans the graph horizontally with hysteresis deadzone to make node visible."""
-        col_width = self.horizontalHeader().sectionSize(0)
+        graph_col = 1 if self._three_column_mode else 0
+        col_width = self.horizontalHeader().sectionSize(graph_col)
         node_x = 10 + lane_index * LANE_WIDTH
         screen_x = node_x - self._graph_scroll_x
 
@@ -1111,6 +1258,47 @@ class CommitGraphWidget(QTableView):
                 ref_labels=ref_labels,
                 state=GraphLayoutState(),
             )
+            reg = self._settings_registry or peek_settings_registry()
+            repo_str = str(self._repo.path) if self._repo else None
+            show_wip = False
+            if getattr(self, "_three_column_mode", False):
+                if reg is not None:
+                    try:
+                        show_wip = bool(reg.is_enabled("graph.show_wip_row", repo_str))
+                    except Exception:
+                        show_wip = True
+                else:
+                    show_wip = True
+            if show_wip and self._filter is None:
+                try:
+                    status = engine.get_status(self._repo)
+                    if status.staged or status.unstaged or status.untracked:
+                        head_sha = commits[0].sha if commits else ""
+                        wip_commit = Commit(
+                            sha="0000000000000000000000000000000000000000",
+                            message="// WIP: Uncommitted changes",
+                            author_name="Working Tree",
+                            author_email="",
+                            author_date="",
+                            parent_shas=[head_sha] if head_sha else [],
+                            refs=[RefName("// WIP")],
+                        )
+                        wip_row = GraphRow(
+                            commit=wip_commit,
+                            lane_index=0,
+                            active_lanes=[0],
+                            active_lane_colors=[(0, GRAPH_COLORS[0])],
+                            node_color=GRAPH_COLORS[0],
+                            has_top_rail=False,
+                            connectors=[],
+                            ref_labels=[RefLabel(name="// WIP", kind="head")],
+                        )
+                        rows.insert(0, wip_row)
+                        if page_size > 0 and len(rows) > page_size:
+                            rows = rows[:page_size]
+                except Exception as exc:
+                    logger.debug("Failed computing WIP row: %s", exc)
+
             self._layout_state = next_state
             self._model.set_rows(rows)
             self._update_scrollbar_range()
@@ -1236,9 +1424,10 @@ class CommitGraphWidget(QTableView):
             self._request_next_page_async()
 
     def wheelEvent(self, event):
-        """Allows horizontal Shift+Wheel or trackpad horizontal pan over Column 0."""
+        """Allows horizontal Shift+Wheel or trackpad horizontal pan over the graph column."""
         cursor_col = self.columnAt(int(event.position().x()))
-        is_over_graph = cursor_col == 0
+        graph_col = 1 if self._three_column_mode else 0
+        is_over_graph = cursor_col == graph_col
 
         is_shift = bool(event.modifiers() & Qt.ShiftModifier)
         h_delta = event.pixelDelta().x() if event.pixelDelta().x() != 0 else event.angleDelta().x()

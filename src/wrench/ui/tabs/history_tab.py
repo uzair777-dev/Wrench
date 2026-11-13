@@ -29,9 +29,12 @@ from PySide6.QtWidgets import (
 
 from wrench.core import engine
 from wrench.core.engine import Commit, LogFilter, RepoHandle
-from wrench.storage.settings_registry import SettingsRegistry
+from wrench.storage.settings_registry import SettingsRegistry, peek_settings_registry
 from wrench.ui.commit_graph.detail_panel import CommitDetailPanel
 from wrench.ui.commit_graph.graph_widget import CommitGraphWidget
+from wrench.ui.history_view import (
+    RefsSidebarWidget,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -129,12 +132,24 @@ class HistoryTab(QWidget):
         main_layout.addWidget(line)
 
         # -------------------------------------------------------------
-        # 2. Main Content Splitter (Vertical: Graph on top, Detail on bottom)
+        # 2. Main Content Splitter (3-Column Horizontal or 2-Pane Vertical)
         # -------------------------------------------------------------
-        self.content_splitter = QSplitter(Qt.Vertical, self)
+        reg = self._settings_registry or peek_settings_registry()
+        use_3col = reg.is_enabled("ui.history_three_column_layout") if reg else True
+
+        self.content_splitter = QSplitter(
+            Qt.Orientation.Horizontal if use_3col else Qt.Orientation.Vertical, self
+        )
         main_layout.addWidget(self.content_splitter, 1)
 
-        # Graph Container
+        # Col 1: Refs Sidebar (230px)
+        self.sidebar = RefsSidebarWidget(self.content_splitter)
+        self.sidebar.ref_selected.connect(self._on_sidebar_ref_selected)
+        self.sidebar.branch_checkout_requested.connect(self._on_sidebar_branch_checkout)
+        self.sidebar.setVisible(use_3col)
+        self.content_splitter.addWidget(self.sidebar)
+
+        # Col 2: Graph Container
         self.graph_container = QWidget(self)
         self.graph_layout = QVBoxLayout(self.graph_container)
         self.graph_layout.setContentsMargins(0, 0, 0, 0)
@@ -176,12 +191,18 @@ class HistoryTab(QWidget):
 
         self.content_splitter.addWidget(self.graph_container)
 
-        # Detail panel
+        # Col 3: Detail panel
         self.detail_panel = CommitDetailPanel(self)
         self.content_splitter.addWidget(self.detail_panel)
 
-        self.content_splitter.setStretchFactor(0, 3)
-        self.content_splitter.setStretchFactor(1, 2)
+        if use_3col:
+            self.content_splitter.setSizes([230, 600, 380])
+            self.content_splitter.setStretchFactor(0, 0)
+            self.content_splitter.setStretchFactor(1, 1)
+            self.content_splitter.setStretchFactor(2, 0)
+        else:
+            self.content_splitter.setStretchFactor(0, 3)
+            self.content_splitter.setStretchFactor(1, 2)
 
     def set_repo(self, repo: RepoHandle | None) -> None:
         self._repo = repo
@@ -228,8 +249,31 @@ class HistoryTab(QWidget):
 
             self._populate_authors()
             self._last_refs_signature = sig
+
+            if self._repo and hasattr(self, "sidebar"):
+                try:
+                    tree = engine.GitEngine(settings=self._settings_registry).get_ref_sidebar_tree(
+                        self._repo
+                    )
+                    self.sidebar.set_tree_data(tree)
+                except Exception as exc:
+                    logger.debug("Failed refreshing ref sidebar tree: %s", exc)
         except Exception as e:
             logger.error("Failed to refresh history tab: %s", e)
+
+    def _on_sidebar_ref_selected(self, name: str, oid: str) -> None:
+        self.graph_widget.select_and_scroll_to_commit(oid)
+
+    def _on_sidebar_branch_checkout(self, branch_name: str) -> None:
+        if self._repo:
+            try:
+                engine.checkout_branch(self._repo, branch_name)
+                win = self.window()
+                if hasattr(win, "_on_checkout_branch"):
+                    win._on_checkout_branch(branch_name)
+                self.refresh(force=True)
+            except Exception as exc:
+                logger.debug("Checkout from sidebar failed: %s", exc)
 
     def _show_no_repo_state(self) -> None:
         self.graph_widget.setVisible(False)

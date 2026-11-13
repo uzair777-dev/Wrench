@@ -20,6 +20,12 @@ from wrench.core import engine
 from wrench.core.engine import Diff, RepoHandle
 from wrench.storage.settings_registry import SettingsRegistry, peek_settings_registry
 from wrench.ui.theme import (
+    DIFF_ADD_BAR,
+    DIFF_DEL_BAR,
+    DIFF_GUTTER_BG_DARK,
+    DIFF_GUTTER_BG_LIGHT,
+    DIFF_GUTTER_TEXT_DARK,
+    DIFF_GUTTER_TEXT_LIGHT,
     DIFF_STYLES,
     DIFF_TEXT_COLOR,
     SECONDARY_TEXT,
@@ -310,6 +316,12 @@ class DiffWidget(QWidget):
             self.stage_hunk_btn.setText("Unstage Hunk" if self._staged else "Stage Hunk")
             self.stage_hunk_btn.setVisible(True)
 
+        # Gutter tokens
+        gutter_bg = DIFF_GUTTER_BG_DARK if is_dark else DIFF_GUTTER_BG_LIGHT
+        gutter_text = DIFF_GUTTER_TEXT_DARK if is_dark else DIFF_GUTTER_TEXT_LIGHT
+        add_bar = DIFF_ADD_BAR
+        del_bar = DIFF_DEL_BAR
+
         # Build colored diff HTML with viewport-safe line cap unless full diff forced
         text_color = DIFF_TEXT_COLOR["dark" if is_dark else "light"]
         pre_tag = (
@@ -325,6 +337,10 @@ class DiffWidget(QWidget):
             html_lines = [
                 "<html><head><style>"
                 f".h{{{hunk_style}}}.a{{{add_style}}}.d{{{del_style}}}.c{{{ctx_style}}}"
+                f".g{{color:{gutter_text};background-color:{gutter_bg};padding:0 4px;margin-right:6px;user-select:none;}}"
+                f".ba{{border-left:3px solid {add_bar};padding-left:4px;}}"
+                f".bd{{border-left:3px solid {del_bar};padding-left:4px;}}"
+                f".bc{{border-left:3px solid transparent;padding-left:4px;}}"
                 "</style></head><body>",
                 pre_tag,
             ]
@@ -340,25 +356,54 @@ class DiffWidget(QWidget):
             hunk_hdr = (
                 f"@@ -{hunk.old_start},{hunk.old_count} +{hunk.new_start},{hunk.new_count} @@"
             )
+            hdr_gutter = f"<span style='color: {gutter_text}; background-color: {gutter_bg}; padding: 0 4px; margin-right: 6px;'>    ...     </span>"
             if use_compact_css:
-                html_lines.append(f"<span class='h'>{html.escape(hunk_hdr)}</span>\n")
+                html_lines.append(
+                    f"<span class='g'>    ...     </span><span class='h'>{html.escape(hunk_hdr)}</span>\n"
+                )
             else:
-                html_lines.append(f"<div style='{hunk_style}'>{html.escape(hunk_hdr)}</div>")
+                html_lines.append(
+                    f"<div style='{hunk_style}'>{hdr_gutter}{html.escape(hunk_hdr)}</div>"
+                )
             for line in hunk.lines:
                 if cap is not None and rendered_lines >= cap:
                     was_view_capped = True
                     break
+                old_str = (
+                    f"{line.old_lineno:>4}"
+                    if getattr(line, "old_lineno", None) is not None
+                    else "    "
+                )
+                new_str = (
+                    f"{line.new_lineno:>4}"
+                    if getattr(line, "new_lineno", None) is not None
+                    else "    "
+                )
+                gutter_txt = f"{old_str} {new_str} "
                 escaped = html.escape(f"{line.origin} {line.content}")
                 if use_compact_css:
                     cls = "a" if line.origin == "+" else ("d" if line.origin == "-" else "c")
-                    html_lines.append(f"<span class='{cls}'>{escaped}</span>\n")
+                    bar_cls = "ba" if line.origin == "+" else ("bd" if line.origin == "-" else "bc")
+                    html_lines.append(
+                        f"<span class='g'>{gutter_txt}</span><span class='{bar_cls} {cls}'>{escaped}</span>\n"
+                    )
                 else:
+                    gutter_span = f"<span style='color: {gutter_text}; background-color: {gutter_bg}; padding: 0 4px; margin-right: 6px;'>{gutter_txt}</span>"
                     if line.origin == "+":
-                        html_lines.append(f"<div style='{add_style}'>{escaped}</div>")
+                        bar_css = f"border-left: 3px solid {add_bar}; padding-left: 4px;"
+                        html_lines.append(
+                            f"<div style='{add_style}; {bar_css}'>{gutter_span}{escaped}</div>"
+                        )
                     elif line.origin == "-":
-                        html_lines.append(f"<div style='{del_style}'>{escaped}</div>")
+                        bar_css = f"border-left: 3px solid {del_bar}; padding-left: 4px;"
+                        html_lines.append(
+                            f"<div style='{del_style}; {bar_css}'>{gutter_span}{escaped}</div>"
+                        )
                     else:
-                        html_lines.append(f"<div style='{ctx_style}'>{escaped}</div>")
+                        bar_css = "border-left: 3px solid transparent; padding-left: 4px;"
+                        html_lines.append(
+                            f"<div style='{ctx_style}; {bar_css}'>{gutter_span}{escaped}</div>"
+                        )
                 rendered_lines += 1
 
         if use_compact_css:

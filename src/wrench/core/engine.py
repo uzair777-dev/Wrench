@@ -22,12 +22,15 @@ from .exceptions import (
     WrenchRepoNotFoundError,
 )
 from .models import (
+    BranchSyncStatus,
     BundleInfo,
     CommitGraphStats,
     LfsFileStatus,
     LFSLock,
     LogPage,
     RebaseTodoEntry,
+    RefName,
+    RefSidebarTree,
     SparseCheckoutState,
     TreeDirectoryEntry,
     WatcherStatusInfo,  # noqa: F401
@@ -124,10 +127,15 @@ class Commit:
     author_email: str
     author_date: str  # ISO 8601
     parent_shas: list[str]
+    refs: list[RefName] = field(default_factory=list)
 
     @property
     def author(self) -> str:
         return self.author_name
+
+    @property
+    def hex(self) -> str:
+        return self.sha
 
 
 @dataclass
@@ -1720,6 +1728,146 @@ class GitEngine:
             autosquash=eff_autosquash,
             conn=conn,
         )
+
+    def get_branch_sync_status(
+        self, repo: RepoHandle | Path | str | None = None
+    ) -> BranchSyncStatus:
+        """Return ahead/behind sync status for the active branch (FR-3.16)."""
+        target = repo or self.repo
+        if target is None:
+            return BranchSyncStatus(branch_name="unknown", upstream_name=None)
+        target_path = target.path if isinstance(target, RepoHandle) else Path(target)
+        return read_ops.get_branch_sync_status(target_path)
+
+    def get_ref_sidebar_tree(self, repo: RepoHandle | Path | str | None = None) -> RefSidebarTree:
+        """Return structured local/remote/tag/stash inventory for sidebar (FR-3.16)."""
+        target = repo or self.repo
+        if target is None:
+            return RefSidebarTree()
+        target_path = target.path if isinstance(target, RepoHandle) else Path(target)
+        return read_ops.get_ref_sidebar_tree(target_path)
+
+    def get_commit(self, sha: str, repo: RepoHandle | Path | str | None = None) -> Commit | None:
+        """Return Commit model for sha or None."""
+        target = repo or self.repo
+        if target is None:
+            return None
+        target_path = target.path if isinstance(target, RepoHandle) else Path(target)
+        return read_ops.get_commit(target_path, sha)
+
+    def get_commit_details(
+        self, sha: str, repo: RepoHandle | Path | str | None = None
+    ) -> Commit | None:
+        """Return Commit model with diffstats, parent list, and touched files."""
+        target = repo or self.repo
+        if target is None:
+            return None
+        target_path = target.path if isinstance(target, RepoHandle) else Path(target)
+        return read_ops.get_commit_details(target_path, sha)
+
+    def run_terminal_command(
+        self, subcommand_args: list[str] | str, repo: RepoHandle | Path | str | None = None
+    ) -> tuple[int, str, str, float]:
+        """Execute non-interactive git CLI command safely under SEC-1..7."""
+        target = repo or self.repo
+        if target is None:
+            return (-1, "", "No active repository", 0.0)
+        target_path = target.path if isinstance(target, RepoHandle) else Path(target)
+        return run_git_terminal_command(target_path, subcommand_args)
+
+    def run_git_terminal_command(
+        self, subcommand_args: list[str] | str, repo: RepoHandle | Path | str | None = None
+    ) -> tuple[int, str, str, float]:
+        """Alias for run_terminal_command."""
+        return self.run_terminal_command(subcommand_args, repo)
+
+
+def run_git_terminal_command(
+    repo_path: Path | str,
+    subcommand_args: list[str] | str,
+    timeout: float = 15.0,
+) -> tuple[int, str, str, float]:
+    """Execute non-interactive git CLI command safely under SEC-1..7.
+
+    Returns (returncode, stdout, stderr, duration_ms).
+    """
+    import os
+    import shlex
+    import subprocess
+    import time
+
+    clean_path = Path(repo_path)
+    if not clean_path.is_dir():
+        return (-1, "", f"Directory not found: {clean_path}", 0.0)
+
+    # Filter out empty or whitespace-only args
+    if isinstance(subcommand_args, str):
+        try:
+            tokens = shlex.split(subcommand_args)
+        except ValueError as exc:
+            return (-1, "", f"Invalid command syntax: {exc}", 0.0)
+        if tokens and tokens[0] == "git":
+            tokens = tokens[1:]
+        args = tokens
+    else:
+        args = [arg for arg in subcommand_args if arg]
+        if args and args[0] == "git":
+            args = args[1:]
+
+    if not args:
+        return (0, "", "", 0.0)
+
+    cmd = ["git", *args]
+    env = {
+        **os.environ,
+        "GIT_TERMINAL_PROMPT": "0",
+        "GIT_OPTIONAL_LOCKS": "0",
+        "LC_ALL": "C",
+    }
+
+    start = time.perf_counter()
+    try:
+        res = subprocess.run(
+            cmd,
+            cwd=str(clean_path),
+            capture_output=True,
+            text=True,
+            shell=False,
+            timeout=timeout,
+            env=env,
+        )
+        duration_ms = (time.perf_counter() - start) * 1000.0
+        return (res.returncode, res.stdout, res.stderr, duration_ms)
+    except subprocess.TimeoutExpired:
+        duration_ms = (time.perf_counter() - start) * 1000.0
+        return (-1, "", f"Command timed out after {timeout:.1f}s: {' '.join(cmd)}", duration_ms)
+    except Exception as exc:
+        duration_ms = (time.perf_counter() - start) * 1000.0
+        return (-1, "", f"Command failed: {exc}", duration_ms)
+
+
+def get_branch_sync_status(repo: RepoHandle | Path | str) -> BranchSyncStatus:
+    """Module-level entry point for active branch ahead/behind status."""
+    target_path = repo.path if isinstance(repo, RepoHandle) else Path(repo)
+    return read_ops.get_branch_sync_status(target_path)
+
+
+def get_ref_sidebar_tree(repo: RepoHandle | Path | str) -> RefSidebarTree:
+    """Module-level entry point for ref sidebar tree."""
+    target_path = repo.path if isinstance(repo, RepoHandle) else Path(repo)
+    return read_ops.get_ref_sidebar_tree(target_path)
+
+
+def get_commit(repo: RepoHandle | Path | str, sha: str) -> Commit | None:
+    """Module-level entry point for get_commit."""
+    target_path = repo.path if isinstance(repo, RepoHandle) else Path(repo)
+    return read_ops.get_commit(target_path, sha)
+
+
+def get_commit_details(repo: RepoHandle | Path | str, sha: str) -> Commit | None:
+    """Module-level entry point for get_commit_details."""
+    target_path = repo.path if isinstance(repo, RepoHandle) else Path(repo)
+    return read_ops.get_commit_details(target_path, sha)
 
 
 def is_unborn_repo(repo_path: Path | str) -> bool:

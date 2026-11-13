@@ -946,6 +946,47 @@ DEFAULT_SETTING_SPECS: dict[str, SettingSpec] = {
         setting_type=SettingType.BOOL,
         default=True,
     ),
+    # VP-2.5 Signature Visual Identity & Graph IDE Settings
+    "graph.include_remote_branches": SettingSpec(
+        key="graph.include_remote_branches",
+        category="Commit Graph",
+        label="Include Remote Branch Tips & Tags",
+        description="Walk remote tracking branches (up to 150 newest) and peeled tags in graph.",
+        setting_type=SettingType.BOOL,
+        default=True,
+    ),
+    "graph.show_wip_row": SettingSpec(
+        key="graph.show_wip_row",
+        category="Commit Graph",
+        label="Show // WIP Virtual Row",
+        description="Prepend virtual row 0 with dashed connector to HEAD when uncommitted changes exist.",
+        setting_type=SettingType.BOOL,
+        default=True,
+    ),
+    "ui.history_three_column_layout": SettingSpec(
+        key="ui.history_three_column_layout",
+        category="General & UI",
+        label="3-Column History IDE Layout",
+        description="Displays RefsSidebarWidget, Center Neon Commit Graph with dedicated Branch/Tag column, and CommitInspectorDock.",
+        setting_type=SettingType.BOOL,
+        default=True,
+    ),
+    "ui.show_context_header_bar": SettingSpec(
+        key="ui.show_context_header_bar",
+        category="General & UI",
+        label="4-Cell Context Header Bar",
+        description="Displays top context header bar with repository switcher, branch switcher, smart sync button, and quick actions.",
+        setting_type=SettingType.BOOL,
+        default=True,
+    ),
+    "ui.show_empty_state_launchpad": SettingSpec(
+        key="ui.show_empty_state_launchpad",
+        category="General & UI",
+        label="Empty State Action Launchpad",
+        description="Shows 4 action cards and Linus quote in Changes view when working tree has zero changes.",
+        setting_type=SettingType.BOOL,
+        default=True,
+    ),
 }
 
 CATEGORIES_ORDER = (

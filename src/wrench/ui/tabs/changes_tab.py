@@ -18,8 +18,8 @@ from pathlib import Path
 from typing import Any
 
 import shiboken6
-from PySide6.QtCore import QByteArray, QEvent, QPoint, QSignalBlocker, QSize, Qt, Signal, Slot
-from PySide6.QtGui import QIcon, QKeySequence, QShortcut
+from PySide6.QtCore import QByteArray, QEvent, QPoint, QSignalBlocker, QSize, Qt, QUrl, Signal, Slot
+from PySide6.QtGui import QDesktopServices, QIcon, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -48,6 +48,7 @@ from wrench.core.engine import RepoHandle, RepoStatus
 from wrench.core.exceptions import NothingToCommitError
 from wrench.storage import forge_accounts, repo_registry, settings
 from wrench.storage.settings_registry import get_settings_registry, peek_settings_registry
+from wrench.ui.changes_view import ZeroChangesLaunchpadWidget
 from wrench.ui.diff_view.diff_widget import DiffView
 from wrench.ui.merge_tool.merge_dialog import MergeDialog
 from wrench.ui.quotes import CLEAN_STATE_QUOTES, random_quote
@@ -273,31 +274,38 @@ class ChangesTab(QWidget):
         # -------------------------------------------------------------
         left_widget = QWidget(self)
         left_layout = QVBoxLayout(left_widget)
-        left_layout.setContentsMargins(8, 8, 8, 8)
-        left_layout.setSpacing(6)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        left_layout.setSpacing(0)
 
-        # Top: Repo dropdown & Forge button
+        # Top: Repo dropdown & Forge button container
+        self.header_container = QWidget(left_widget)
+        header_container_layout = QVBoxLayout(self.header_container)
+        header_container_layout.setContentsMargins(6, 6, 6, 0)
+        header_container_layout.setSpacing(4)
+
         repo_bar = QHBoxLayout()
         repo_bar.setSpacing(4)
 
-        self.repo_combo = QComboBox(self)
+        self.repo_combo = QComboBox(self.header_container)
         self._update_repo_combo_theme()
         self.repo_combo.currentIndexChanged.connect(self._on_repo_combo_changed)
         repo_bar.addWidget(self.repo_combo, 1)
 
-        self.forge_btn = QToolButton(self)
+        self.forge_btn = QToolButton(self.header_container)
         self.forge_btn.setText("🌐")
         self.forge_btn.setToolTip(self.tr("Forge accounts and linked remotes"))
         self.forge_btn.clicked.connect(self._show_forge_menu)
         repo_bar.addWidget(self.forge_btn)
 
-        left_layout.addLayout(repo_bar)
+        header_container_layout.addLayout(repo_bar)
 
         # Branch switcher widget
-        self.branch_switcher = BranchSwitcherWidget(self)
+        self.branch_switcher = BranchSwitcherWidget(self.header_container)
         self.branch_switcher.branch_switched.connect(self._on_branch_switched)
         self.branch_switcher.branch_operation_completed.connect(self.refresh)
-        left_layout.addWidget(self.branch_switcher)
+        header_container_layout.addWidget(self.branch_switcher)
+
+        left_layout.addWidget(self.header_container)
 
         # Conflict alert banner (hidden by default)
         self.conflict_banner = QFrame(self)
@@ -368,9 +376,12 @@ class ChangesTab(QWidget):
 
         # Commit section
         commit_group = QGroupBox(self.tr("Commit"), self)
+        commit_group.setStyleSheet(
+            "QGroupBox { border: none; margin-top: 0px; padding: 0px; font-weight: bold; }"
+        )
         commit_layout = QVBoxLayout(commit_group)
-        commit_layout.setContentsMargins(6, 6, 6, 6)
-        commit_layout.setSpacing(4)
+        commit_layout.setContentsMargins(8, 8, 8, 8)
+        commit_layout.setSpacing(6)
 
         # Message row (Account Icon + Subject line)
         msg_row = QHBoxLayout()
@@ -405,6 +416,7 @@ class ChangesTab(QWidget):
         btn_row.addStretch()
 
         self.commit_btn = QPushButton(self.tr("Commit"), commit_group)
+        self.commit_btn.setFixedHeight(36)
         self._update_commit_btn_theme()
         self.commit_btn.setEnabled(False)
         self.commit_btn.clicked.connect(self._on_commit_clicked)
@@ -440,21 +452,18 @@ class ChangesTab(QWidget):
         self.clean_title.setAlignment(Qt.AlignCenter)
         clean_layout.addWidget(self.clean_title)
 
-        self.clean_quote = QLabel("", self.clean_state_widget)
-        self.clean_quote.setStyleSheet(
-            "font-size: 12px; font-style: italic; color: palette(placeholder-text);"
-        )
-        self.clean_quote.setAlignment(Qt.AlignCenter)
-        self.clean_quote.setWordWrap(True)
-        clean_layout.addWidget(self.clean_quote)
+        # Launchpad widget (VP-2.5)
+        self.launchpad_widget = ZeroChangesLaunchpadWidget(right_widget)
+        self.launchpad_widget.sync_clicked.connect(self._on_launchpad_sync_clicked)
+        self.launchpad_widget.terminal_clicked.connect(self._on_launchpad_terminal_clicked)
+        self.launchpad_widget.file_manager_clicked.connect(self._on_launchpad_file_manager_clicked)
+        self.launchpad_widget.history_clicked.connect(self._on_launchpad_history_clicked)
+        self.launchpad_widget.setVisible(False)
+        right_layout.addWidget(self.launchpad_widget)
 
-        self.clean_author = QLabel("", self.clean_state_widget)
-        self.clean_author.setStyleSheet("font-size: 11px; color: palette(placeholder-text);")
-        self.clean_author.setAlignment(Qt.AlignCenter)
-        clean_layout.addWidget(self.clean_author)
-
-        self.clean_state_widget.setVisible(False)
-        right_layout.addWidget(self.clean_state_widget)
+        # Wire clean_quote and clean_author to the launchpad's quote labels
+        self.clean_quote = self.launchpad_widget.quote_lbl
+        self.clean_author = self.launchpad_widget._quote_author_lbl
 
         self.splitter.addWidget(right_widget)
         self.splitter.setStretchFactor(0, 4)
@@ -1028,6 +1037,8 @@ class ChangesTab(QWidget):
             self._show_clean_state()
             return
 
+        if hasattr(self, "launchpad_widget"):
+            self.launchpad_widget.setVisible(False)
         self.clean_state_widget.setVisible(False)
         self.diff_view.setVisible(True)
 
@@ -1099,36 +1110,95 @@ class ChangesTab(QWidget):
         return True
 
     def refresh_humor_setting(self) -> None:
-        if self._repo is not None and not self.clean_state_widget.isHidden():
+        if self._repo is not None and (
+            (hasattr(self, "launchpad_widget") and self.launchpad_widget.isVisible())
+            or not self.clean_state_widget.isHidden()
+        ):
             self._show_clean_state()
 
     def _show_clean_state(self) -> None:
         self.diff_view.setVisible(False)
-        self.clean_state_widget.setVisible(True)
-        self.clean_title.setText(self.tr("No changes"))
-        if self._is_humor_lines_enabled():
-            quote, author = random_quote(CLEAN_STATE_QUOTES)
-            self.clean_quote.setText(f'"{self.tr(quote)}"')
-            self.clean_author.setText(f"— {author}")
-            self.clean_quote.setVisible(True)
-            self.clean_author.setVisible(True)
+        reg = (
+            get_settings_registry(self._conn)
+            if self._conn is not None
+            else peek_settings_registry()
+        )
+        use_launchpad = reg.is_enabled("ui.show_empty_state_launchpad") if reg is not None else True
+        humor_enabled = self._is_humor_lines_enabled()
+        if use_launchpad and hasattr(self, "launchpad_widget"):
+            self.clean_state_widget.setVisible(False)
+            self.launchpad_widget.setVisible(True)
+            if humor_enabled:
+                self.launchpad_widget.refresh_quote()
+                self.clean_quote.setVisible(True)
+                if hasattr(self, "clean_author") and shiboken6.isValid(self.clean_author):
+                    self.clean_author.setVisible(True)
+            else:
+                self.clean_quote.setText("")
+                self.clean_quote.setVisible(False)
+                if hasattr(self, "clean_author") and shiboken6.isValid(self.clean_author):
+                    self.clean_author.setText("")
+                    self.clean_author.setVisible(False)
+            if self._repo:
+                try:
+                    sync = engine.GitEngine(settings=reg).get_branch_sync_status(self._repo)
+                    self.launchpad_widget.update_sync_status(
+                        sync.ahead, sync.behind, sync.upstream_name
+                    )
+                except Exception as exc:
+                    logger.debug("Launchpad sync check skipped: %s", exc)
         else:
-            self.clean_quote.setText("")
-            self.clean_author.setText("")
-            self.clean_quote.setVisible(False)
-            self.clean_author.setVisible(False)
+            if hasattr(self, "launchpad_widget"):
+                self.launchpad_widget.setVisible(False)
+            self.clean_state_widget.setVisible(True)
+            self.clean_title.setText(self.tr("No changes"))
+            if humor_enabled:
+                quote, author = random_quote(CLEAN_STATE_QUOTES)
+                self.clean_quote.setText(f'"{self.tr(quote)}"')
+                self.clean_author.setText(f"— {author}")
+                self.clean_quote.setVisible(True)
+                self.clean_author.setVisible(True)
+            else:
+                self.clean_quote.setText("")
+                self.clean_author.setText("")
+                self.clean_quote.setVisible(False)
+                self.clean_author.setVisible(False)
 
     def _show_zero_repos_state(self) -> None:
         self._clear_files_list()
         self.large_list_notice_label.setVisible(False)
         self.files_count_label.setText(self.tr("No repository open"))
         self.diff_view.setVisible(False)
+        if hasattr(self, "launchpad_widget"):
+            self.launchpad_widget.setVisible(False)
         self.clean_state_widget.setVisible(True)
         self.clean_title.setText(self.tr("No repository open"))
         self.clean_quote.setText(self.tr("Open or clone a repository to get started."))
         self.clean_quote.setVisible(True)
         self.clean_author.setText("")
         self.clean_author.setVisible(False)
+
+    def _on_launchpad_sync_clicked(self) -> None:
+        win = self.window()
+        if hasattr(win, "_on_sync_requested"):
+            win._on_sync_requested()
+
+    def _on_launchpad_terminal_clicked(self) -> None:
+        win = self.window()
+        if hasattr(win, "_toggle_terminal_drawer"):
+            win._toggle_terminal_drawer()
+
+    def _on_launchpad_file_manager_clicked(self) -> None:
+        if self._repo:
+            try:
+                QDesktopServices.openUrl(QUrl.fromLocalFile(str(self._repo.path)))
+            except Exception as exc:
+                logger.debug("Failed opening file manager: %s", exc)
+
+    def _on_launchpad_history_clicked(self) -> None:
+        win = self.window()
+        if hasattr(win, "tab_container"):
+            win.tab_container.set_current_index(1)
         self._update_account_btn()
 
     def _show_file_diff(self, path: str) -> None:

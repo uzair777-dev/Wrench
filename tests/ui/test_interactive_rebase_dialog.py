@@ -24,8 +24,6 @@ from wrench.ui.theme import (
     PRIMARY_BUTTON_STYLES,
     REBASE_ACTION_COLORS,
     TREE_WIDGET_STYLES,
-    create_pastel_dark_palette,
-    create_pastel_light_palette,
     get_banner_style,
     is_dark_theme,
 )
@@ -412,10 +410,10 @@ def test_feature_toggle_context_menu_mainwindow_and_themes(
         app.processEvents()
 
         # Verify Catppuccin Light vs Dark styling switch cleanly on InteractiveRebaseDialog
-        app.setPalette(create_pastel_light_palette())
+        win.act_theme_light.trigger()
         app.processEvents()
         assert idlg.start_btn.styleSheet() == PRIMARY_BUTTON_STYLES["light"]
-        app.setPalette(create_pastel_dark_palette())
+        win.act_theme_dark.trigger()
         app.processEvents()
         assert idlg.start_btn.styleSheet() == PRIMARY_BUTTON_STYLES["dark"]
 

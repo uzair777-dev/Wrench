@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING
 import shiboken6
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QPalette
-from PySide6.QtWidgets import QApplication, QDialog, QMainWindow, QWidget
+from PySide6.QtWidgets import QApplication, QWidget
 
 if TYPE_CHECKING:
     pass
@@ -261,6 +261,28 @@ def get_global_catppuccin_qss(theme_name: str = "mocha") -> str:
         scrollbar_hover = "rgba(30, 102, 245, 0.6)"
 
     return f"""
+    QMainWindow, QDialog {{
+        background-color: {bg_window};
+        color: {fg_text};
+    }}
+    QTableView, QListWidget, QTreeWidget {{
+        background-color: {bg_crust};
+        alternate-background-color: {bg_window};
+        color: {fg_text};
+        border: none;
+        selection-background-color: {border_col};
+        selection-color: {accent_blue};
+    }}
+    QLineEdit, QTextEdit, QPlainTextEdit {{
+        background-color: {bg_crust};
+        color: {fg_text};
+        border: 1px solid {border_col};
+        border-radius: 4px;
+        padding: 4px 6px;
+    }}
+    QLineEdit:focus, QTextEdit:focus, QPlainTextEdit:focus {{
+        border: 1px solid {accent_blue};
+    }}
     QHeaderView::section {{
         background-color: {bg_crust};
         color: {fg_subtext0};
@@ -351,8 +373,12 @@ def repolish_widget(widget: QWidget | None) -> None:
         logger.debug("Skipping repolish on deleted widget: %s", exc)
 
 
+_last_applied_theme_mode: str | None = None
+
+
 def apply_theme(app: QApplication, mode: str) -> None:
     """Applies a theme mode ('auto', 'system', 'light', 'dark') to the application."""
+    global _last_applied_theme_mode
     norm_mode = normalize_theme_mode(mode, target="legacy")
     hints = app.styleHints() if hasattr(app, "styleHints") else None
     if hints is not None:
@@ -369,14 +395,10 @@ def apply_theme(app: QApplication, mode: str) -> None:
         except Exception as exc:
             logger.debug("Failed setting Fusion style: %s", exc)
 
-    if norm_mode in ("mocha", "latte", "catppuccin", "catppuccin_mocha", "catppuccin_latte"):
-        palette = build_catppuccin_palette(norm_mode)
-    elif norm_mode == "light":
-        palette = create_pastel_light_palette()
-    elif norm_mode == "dark":
-        palette = create_pastel_dark_palette()
-    else:  # 'auto' / system
-        palette = app.style().standardPalette()
+    if norm_mode == "light" or str(mode).strip().lower() in ("latte", "catppuccin_latte"):
+        palette = build_catppuccin_palette("light")
+    else:
+        palette = build_catppuccin_palette("dark")
 
     def _is_active_window(w: QWidget) -> bool:
         if not shiboken6.isValid(w):
@@ -384,11 +406,8 @@ def apply_theme(app: QApplication, mode: str) -> None:
         try:
             if getattr(w, "_is_closing", False):
                 return False
-            # Skip already-closed windows/dialogs retained in QApplication.topLevelWidgets()
-            if w.testAttribute(Qt.WidgetAttribute.WA_WState_ExplicitShowHide) and w.isHidden():
-                return False
-            # Skip unshown popup/container helpers (e.g. orphaned QMenu/QFrame)
-            if not w.isVisible() and not isinstance(w, (QMainWindow, QDialog)):
+            # Skip hidden, closed, or invisible windows/dialogs
+            if w.isHidden() or not w.isVisible():
                 return False
         except RuntimeError as exc:
             logger.debug("Skipping deleted top-level widget during theme apply: %s", exc)
@@ -427,9 +446,10 @@ def apply_theme(app: QApplication, mode: str) -> None:
     app.setPalette(palette)
 
     global_qss = get_global_catppuccin_qss(norm_mode)
-    if hasattr(app, "setStyleSheet") and global_qss:
+    if hasattr(app, "setStyleSheet") and global_qss and _last_applied_theme_mode != norm_mode:
         try:
             app.setStyleSheet(global_qss)
+            _last_applied_theme_mode = norm_mode
         except Exception as exc:
             logger.debug("Failed setting global Catppuccin QSS: %s", exc)
 

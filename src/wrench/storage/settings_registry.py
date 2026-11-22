@@ -1,3 +1,4 @@
+# ruff: noqa: E501
 """Universal settings registry with SQLite persistence, live Qt signals, and undo stack.
 
 Implements VP-0: Total User Configurability.
@@ -1055,8 +1056,16 @@ class SettingsRegistry(QObject):
 
     def _get_conn(self) -> sqlite3.Connection:
         if self._conn is not None:
-            return self._conn
-        return get_connection()
+            try:
+                # Verify connection is still usable
+                self._conn.execute("SELECT 1")
+                return self._conn
+            except (sqlite3.ProgrammingError, sqlite3.OperationalError):
+                # Connection was closed; get a fresh one and store it
+                self._conn = get_connection()
+                return self._conn
+        self._conn = get_connection()
+        return self._conn
 
     def _init_storage(self) -> None:
         """Create tables if missing and run initial migration from legacy v1 tables."""

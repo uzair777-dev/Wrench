@@ -1,3 +1,4 @@
+# ruff: noqa: E501
 """FR-2.2: Commit graph table widget with custom QStyledItemDelegate."""
 
 from __future__ import annotations
@@ -252,7 +253,12 @@ class RefLabelDelegate(QStyledItemDelegate):
 
         # Draw ref labels using DPR-scaled QPixmapCache
         for label in row_data.ref_labels:
-            text = label.name
+            raw_t = str(label.name)
+            for pfx in ("local:", "remote:", "tag:"):
+                if raw_t.startswith(pfx):
+                    raw_t = raw_t[len(pfx) :]
+                    break
+            text = raw_t
             cache_key = (
                 f"wrench:refpill:{label.kind}:{text}:{int(is_dark)}:"
                 f"{font_sz_key}:{dpr:.2f}:{epoch}"
@@ -826,12 +832,9 @@ class CommitGraphWidget(QTableView):
 
             if not hasattr(self, "_three_col_delegate"):
                 self._three_col_delegate = CommitGraphRowDelegate(self)
-            self.setItemDelegateForColumn(0, self._three_col_delegate)
-            self.setItemDelegateForColumn(1, self._three_col_delegate)
-            self.setItemDelegateForColumn(2, None)
-            self.setItemDelegateForColumn(3, None)
-            self.setItemDelegateForColumn(4, None)
-            self.setItemDelegateForColumn(5, None)
+            self.verticalHeader().setDefaultSectionSize(32)
+            for col_i in range(6):
+                self.setItemDelegateForColumn(col_i, self._three_col_delegate)
 
             header.resizeSection(0, 175)
             header.setSectionResizeMode(0, QHeaderView.Interactive)
@@ -1037,6 +1040,7 @@ class CommitGraphWidget(QTableView):
         self._update_graph_scrollbar_geom()
 
     def _update_graph_scrollbar_geom(self, *args, **kwargs) -> None:
+        graph_col = 1 if getattr(self, "_three_column_mode", False) else 0
         if not hasattr(self, "_graph_scrollbar") or not self._graph_scrollbar:
             return
         header = self.horizontalHeader()
@@ -1085,6 +1089,7 @@ class CommitGraphWidget(QTableView):
         self._update_graph_scrollbar_geom()
 
     def _update_scrollbar_range(self) -> None:
+        graph_col = 1 if getattr(self, "_three_column_mode", False) else 0
         graph_col = 1 if self._three_column_mode else 0
         col_0_width = self.horizontalHeader().sectionSize(graph_col)
         if not self._model._rows:

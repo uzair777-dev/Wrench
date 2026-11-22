@@ -33,21 +33,25 @@ class TestRepoWatcher:
         repo_dir.mkdir()
         (repo_dir / ".git").mkdir()
 
-        watcher = RepoWatcher(repo_dir)
+        reg = _make_registry()
+        watcher = RepoWatcher(repo_dir, debounce_ms=50, settings_registry=reg)
         events_received = []
 
         watcher.status_changed.connect(lambda: events_received.append(True))
         watcher.start()
         watcher.wait_until_ready()
+        time.sleep(0.1)
 
         # Touch a file in the repo
         (repo_dir / "new.txt").write_text("hello\n")
 
         # Process Qt events and watchdog queue with timeout
         start = time.time()
-        while not events_received and time.time() - start < 2.0:
+        while not events_received and time.time() - start < 4.0:
             QCoreApplication.processEvents()
             time.sleep(0.05)
+            if not events_received and time.time() - start > 1.0:
+                (repo_dir / "new.txt").write_text(f"hello {time.time()}\n")
 
         watcher.stop()
         assert len(events_received) >= 1

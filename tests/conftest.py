@@ -32,7 +32,7 @@ def _cleanup_qt_after_test():
     """Safety-net teardown preventing Qt widget, timer, and worker leaks across tests."""
     yield
     import shiboken6
-    from PySide6.QtCore import QThreadPool, QTimer
+    from PySide6.QtCore import QCoreApplication, QEvent, QThreadPool, QTimer
     from PySide6.QtWidgets import QApplication
 
     app = QApplication.instance()
@@ -40,23 +40,37 @@ def _cleanup_qt_after_test():
         return
 
     from wrench.ui import workers
+    from wrench.watcher.inotify_watcher import stop_all_active_watchers
 
-    for widget in list(app.topLevelWidgets()):
-        if shiboken6.isValid(widget):
-            widget.close()
+    stop_all_active_watchers()
 
-    app.processEvents()
-    QThreadPool.globalInstance().waitForDone(2000)
-    workers.wait_for_active_workers(2.0)
-    app.processEvents()
-
-    for widget in list(app.topLevelWidgets()):
+    top_levels = list(app.topLevelWidgets())
+    for widget in top_levels:
         if shiboken6.isValid(widget):
-            widget.close()
-        if shiboken6.isValid(widget):
+            watcher = getattr(widget, "_watcher", None)
+            if watcher is not None:
+                try:
+                    widget._watcher = None
+                    watcher.stop()
+                except Exception:
+                    pass
             for timer in list(widget.findChildren(QTimer)):
                 if shiboken6.isValid(timer) and timer.isActive():
                     timer.stop()
+            widget.close()
+            widget.deleteLater()
+
+    app.processEvents()
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    app.processEvents()
+
+    pool = QThreadPool.globalInstance()
+    if pool.activeThreadCount() > 0:
+        pool.waitForDone(150)
+    if workers._active_workers:
+        workers.wait_for_active_workers(0.15)
 
     workers.clear_activity_log()
+    app.processEvents()
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
     app.processEvents()

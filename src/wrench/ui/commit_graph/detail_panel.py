@@ -107,6 +107,19 @@ class CommitDetailPanel(QWidget):
         self.splitter.setStretchFactor(1, 2)
         main_layout.addWidget(self.splitter)
 
+    def set_compact_vertical_layout(self, enabled: bool) -> None:
+        """Switch internal files/diff splitter between horizontal and vertical orientation.
+
+        When enabled=True (3-column mode), files table stacks on top of diff viewer
+        vertically, allowing the panel to be much narrower (min 280px).
+        """
+        if enabled:
+            self.splitter.setOrientation(Qt.Orientation.Vertical)
+            self.setMinimumWidth(280)
+        else:
+            self.splitter.setOrientation(Qt.Orientation.Horizontal)
+            self.setMinimumWidth(0)
+
     def closeEvent(self, event) -> None:
         if hasattr(self, "avatar_widget"):
             self.avatar_widget.close()

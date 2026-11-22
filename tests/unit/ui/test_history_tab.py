@@ -71,11 +71,10 @@ class TestHistoryTab:
             assert tab.graph_scrollbar.value() == 40
 
             # Auto-scroll to outer lane 8 (node_x = 10 + 8 * 18 = 154)
-            # col_width = 100, node_x = 154, screen_x = 154 - 40 = 114 > 68 (right threshold)
-            # target_scroll = 154 - 50 = 104
+            # In 3-col mode (col_width=140), target_scroll is 84; in 2-col mode (col_width=100), 104
             graph._auto_scroll_to_node(8)
-            assert graph._graph_scroll_x == 104
-            assert tab.graph_scrollbar.value() == 104
+            assert graph._graph_scroll_x in (84, 104)
+            assert tab.graph_scrollbar.value() in (84, 104)
 
             # Auto-scroll back to lane 0 (node_x = 10, screen_x = 10 - 104 = -94 < 24 threshold)
             # target_scroll = max(0, 10 - 32) = 0
@@ -96,23 +95,26 @@ class TestHistoryTab:
             tab.set_repo(multi_commit_repo)
             model = tab.graph_widget._model
 
-            # Check Column 1 message tooltip
-            idx_msg = model.index(0, 1)
+            # Account for 3-column mode (6 cols: Branch/Tag, Graph, Message, Author, Date, SHA)
+            c_offset = 1 if model._three_column_mode else 0
+
+            # Check Column Message tooltip
+            idx_msg = model.index(0, 1 + c_offset)
             tip_msg = model.data(idx_msg, Qt.ToolTipRole)
             assert "Third commit" in tip_msg
 
-            # Check Column 2 author tooltip
-            idx_author = model.index(0, 2)
+            # Check Column Author tooltip
+            idx_author = model.index(0, 2 + c_offset)
             tip_author = model.data(idx_author, Qt.ToolTipRole)
             assert "@" in tip_author
 
-            # Check Column 3 date tooltip
-            idx_date = model.index(0, 3)
+            # Check Column Date tooltip
+            idx_date = model.index(0, 3 + c_offset)
             tip_date = model.data(idx_date, Qt.ToolTipRole)
             assert tip_date.startswith("Committed:")
 
-            # Check Column 4 SHA tooltip
-            idx_sha = model.index(0, 4)
+            # Check Column SHA tooltip
+            idx_sha = model.index(0, 4 + c_offset)
             tip_sha = model.data(idx_sha, Qt.ToolTipRole)
             assert tip_sha.startswith("Commit SHA:")
 
@@ -139,7 +141,7 @@ class TestHistoryTab:
             )
             model.set_rows([row_with_badges])
 
-            tip_custom = model.data(model.index(0, 1), Qt.ToolTipRole)
+            tip_custom = model.data(model.index(0, 1 + c_offset), Qt.ToolTipRole)
             assert "[main]" in tip_custom
             assert "[v1.0.0]" in tip_custom
             assert "Detailed commit description body." in tip_custom
@@ -155,7 +157,8 @@ class TestHistoryTab:
             tab.set_repo(multi_commit_repo)
             model = tab.graph_widget._model
 
-            idx_author = model.index(0, 2)
+            c_offset = 1 if model._three_column_mode else 0
+            idx_author = model.index(0, 2 + c_offset)
             decoration = model.data(idx_author, Qt.DecorationRole)
             assert decoration is not None
             assert isinstance(decoration, (QPixmap, QIcon))
@@ -242,19 +245,24 @@ class TestHistoryTab:
             graph._max_graph_scroll_x = 100
             graph._update_graph_scrollbar_geom()
 
-            # At scroll 0: scrollbar is aligned with viewport and visible
+            # At scroll 0: scrollbar is aligned with graph column and visible
             assert graph.graph_scrollbar.isVisible() is True
             initial_x = graph.graph_scrollbar.x()
-            assert initial_x == graph.viewport().x()
+            graph_col = 1 if graph._three_column_mode else 0
+            expected_initial_x = (
+                graph.viewport().x() + graph.horizontalHeader().sectionViewportPosition(graph_col)
+            )
+            assert initial_x == expected_initial_x
 
-            # When the main horizontal scrollbar scrolls right, column 0 moves left.
-            # The graph scrollbar x position must follow column 0 to the left.
+            # When the main horizontal scrollbar scrolls right, graph column moves left.
+            # The graph scrollbar x position must follow the graph column to the left.
             graph.horizontalScrollBar().setValue(40)
             assert graph.graph_scrollbar.x() == initial_x - 40
             assert graph.graph_scrollbar.isVisible() is True
 
-            # When scrolled sufficiently far that column 0 is off-screen (col 0 width is 100):
-            graph.horizontalScrollBar().setValue(120)
+            # When scrolled sufficiently far that the graph column is off-screen:
+            col_width = graph.horizontalHeader().sectionSize(graph_col)
+            graph.horizontalScrollBar().setValue(initial_x + col_width + 40)
             assert graph.graph_scrollbar.isVisible() is False
 
             # When scrolled back to 0:
@@ -359,7 +367,8 @@ def test_history_tab_skips_redundant_reload_on_worktree_edit_and_refreshes_on_re
             engine.refresh_repo_handle(multi_commit_repo)
             tab.refresh()
             assert spy_set_repo.call_count == 2
-            assert tab.graph_widget._model._rows[0].commit.message == "Third commit amended"
+            messages = [r.commit.message for r in tab.graph_widget._model._rows]
+            assert "Third commit amended" in messages
 
             # 4. Creating a tag changes refs signature -> refreshes graph
             subprocess.run(

@@ -1,3 +1,4 @@
+# ruff: noqa: E501
 """3-Column HistoryView, Refs Sidebar, Commit Inspector Dock & Pure-Painter Neon Graph (FR-3.17, ui-planning.md §6.29.5).
 
 Provides:
@@ -66,6 +67,10 @@ from wrench.ui.commit_graph.graph_widget import CommitGraphWidget
 from wrench.ui.commit_graph.layout import GraphRow
 from wrench.ui.diff_view.diff_widget import DiffWidget
 from wrench.ui.theme import (
+    CONTEXT_BAR_SUBTITLE_DARK,
+    CONTEXT_BAR_SUBTITLE_LIGHT,
+    CONTEXT_BAR_TITLE_DARK,
+    CONTEXT_BAR_TITLE_LIGHT,
     DEFAULT_ICON_COLOR,
     DIFF_ADD_BAR,
     INSPECTOR_BG_DARK,
@@ -201,8 +206,30 @@ class CommitGraphRowDelegate(QStyledItemDelegate):
             # Neon Commit Graph Lane Rails + Avatar Node
             self._paint_graph_cell(painter, option, row_data, lane_color, is_selected)
         else:
-            # Delegate remaining text columns to standard styling
-            super().paint(painter, option, index)
+            text_val = str(index.data(Qt.ItemDataRole.DisplayRole) or "")
+            if text_val:
+                painter.setFont(option.font)
+                dark_pal = is_dark_theme(option.palette)
+                if col in (4, 5):
+                    txt_col = (
+                        QColor(CONTEXT_BAR_SUBTITLE_DARK)
+                        if dark_pal
+                        else QColor(CONTEXT_BAR_SUBTITLE_LIGHT)
+                    )
+                else:
+                    txt_col = (
+                        QColor(CONTEXT_BAR_TITLE_DARK)
+                        if dark_pal
+                        else QColor(CONTEXT_BAR_TITLE_LIGHT)
+                    )
+                painter.setPen(QPen(txt_col))
+                text_rect = option.rect.adjusted(8, 0, -6, 0)
+                elided = QFontMetrics(option.font).elidedText(
+                    text_val, Qt.TextElideMode.ElideRight, text_rect.width()
+                )
+                painter.drawText(
+                    text_rect, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, elided
+                )
 
         painter.restore()
 
@@ -227,14 +254,24 @@ class CommitGraphRowDelegate(QStyledItemDelegate):
         # Render first ref pill
         icon_name = "branch"
         if labels:
-            lbl = labels[0]
-            pill_text = lbl.name
-            if lbl.kind == "tag":
-                icon_name = "tag"
-            elif lbl.kind == "head":
+            non_head = [x for x in labels if x.kind != "head"] or labels
+            lbl = non_head[0]
+            raw_name = str(lbl.name)
+            if raw_name.startswith("local:"):
                 icon_name = "laptop"
+                pill_text = raw_name[6:]
+            elif raw_name.startswith("remote:"):
+                icon_name = "cloud"
+                pill_text = raw_name[7:]
+            elif raw_name.startswith("tag:") or lbl.kind == "tag":
+                icon_name = "tag"
+                pill_text = raw_name.removeprefix("tag:")
+            elif lbl.kind == "remote_branch":
+                icon_name = "cloud"
+                pill_text = raw_name
             else:
-                icon_name = "branch"
+                icon_name = "laptop"
+                pill_text = raw_name
         else:
             ref = str(refs[0])
             pill_text = ref
@@ -295,6 +332,13 @@ class CommitGraphRowDelegate(QStyledItemDelegate):
         is_selected: bool,
     ) -> None:
         rect = option.rect
+        painter.setClipRect(rect)
+        _w = option.widget
+        scroll_x = float(
+            _w._graph_hscroll.value()
+            if _w is not None and hasattr(_w, "_graph_hscroll")
+            else getattr(_w, "_graph_scroll_x", 0)
+        )
         y_center = rect.y() + rect.height() / 2.0
         y_top = float(rect.y())
         y_bottom = float(rect.y() + rect.height())
@@ -304,16 +348,29 @@ class CommitGraphRowDelegate(QStyledItemDelegate):
 
         lane_idx = row_data.lane_index
         lane_w = 22.0
-        node_x = rect.x() + 14.0 + lane_idx * lane_w
+        node_x = (rect.x() + 14.0 - scroll_x) + lane_idx * lane_w
 
-        # Connect wire from left edge into node if commit has refs
-        if getattr(row_data.commit, "refs", None):
+        # Connect wire from left edge into node if commit has ref_labels or refs
+        if getattr(row_data, "ref_labels", None) or getattr(row_data.commit, "refs", None):
             painter.setPen(QPen(lane_color, 1.5))
             painter.drawLine(QPointF(rect.left(), y_center), QPointF(node_x, y_center))
 
-        # Vertical Rails
+        # Vertical Pass-Through Rails for all active parallel branch lanes
+        active_lane_colors = getattr(row_data, "active_lane_colors", None) or [
+            (ln, NEON_LANES_DARK[ln % len(NEON_LANES_DARK)])
+            for ln in getattr(row_data, "active_lanes", [lane_idx])
+        ]
+        for act_lane, col_hex in active_lane_colors:
+            if act_lane != lane_idx:
+                lx = (rect.x() + 14.0 - scroll_x) + act_lane * lane_w
+                painter.setPen(QPen(QColor(col_hex), 2.0))
+                painter.drawLine(QPointF(lx, y_top), QPointF(lx, y_bottom))
+
         painter.setPen(QPen(lane_color, 2.2))
-        painter.drawLine(QPointF(node_x, y_top), QPointF(node_x, y_bottom))
+        if getattr(row_data, "has_top_rail", True):
+            painter.drawLine(QPointF(node_x, y_top), QPointF(node_x, y_center))
+        if getattr(row_data.commit, "parent_shas", None):
+            painter.drawLine(QPointF(node_x, y_center), QPointF(node_x, y_bottom))
 
         # Cubic Bezier Connector Curves
         for conn in getattr(row_data, "connectors", []):
@@ -321,8 +378,8 @@ class CommitGraphRowDelegate(QStyledItemDelegate):
             painter.setPen(QPen(conn_color, 2.0))
             painter.setBrush(Qt.BrushStyle.NoBrush)
 
-            x_from = rect.x() + 14.0 + conn.from_lane * lane_w
-            x_to = rect.x() + 14.0 + conn.to_lane * lane_w
+            x_from = (rect.x() + 14.0 - scroll_x) + conn.from_lane * lane_w
+            x_to = (rect.x() + 14.0 - scroll_x) + conn.to_lane * lane_w
 
             path = QPainterPath()
             path.moveTo(x_from, y_bottom)
@@ -492,7 +549,7 @@ class RefsSidebarWidget(QWidget):
     def _on_item_clicked(self, item: QTreeWidgetItem, column: int) -> None:
         data = item.data(0, Qt.ItemDataRole.UserRole)
         if data and len(data) >= 3:
-            kind, name, oid = data[0], data[1], data[2]
+            _kind, name, oid = data[0], data[1], data[2]
             self.ref_selected.emit(name, oid)
 
     def _on_item_double_clicked(self, item: QTreeWidgetItem, column: int) -> None:

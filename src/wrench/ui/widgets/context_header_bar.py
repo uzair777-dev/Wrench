@@ -1,3 +1,4 @@
+# ruff: noqa: E501
 """Segmented 4-Cell Top Context Bar & Collapsible Git Terminal Drawer (FR-11.9).
 
 Provides:
@@ -14,6 +15,7 @@ import shlex
 from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 from PySide6.QtCore import Qt, Signal, Slot
 from PySide6.QtGui import QMouseEvent
@@ -206,18 +208,31 @@ class SyncActionCell(QFrame):
         self.sync_btn = self.btn
         self.fetch_btn = self.btn
 
-        btn_layout = QVBoxLayout(self.btn)
-        btn_layout.setContentsMargins(10, 2, 10, 2)
+        btn_outer = QHBoxLayout(self.btn)
+        btn_outer.setContentsMargins(10, 2, 12, 2)
+        btn_outer.setSpacing(8)
+
+        self.icon_label = QLabel(self.btn)
+        self.icon_label.setFixedSize(18, 18)
+        self.icon_label.setStyleSheet("background: transparent; border: none;")
+        self.icon_label.setPixmap(get_pixmap("fetch", size=16))
+        btn_outer.addWidget(self.icon_label)
+
+        btn_layout = QVBoxLayout()
+        btn_layout.setContentsMargins(0, 0, 0, 0)
         btn_layout.setSpacing(0)
 
         self.title_label = QLabel(self.tr("Fetch origin"), self.btn)
-        self.title_label.setStyleSheet("font-size: 12px; font-weight: bold;")
+        self.title_label.setStyleSheet(
+            "font-size: 12px; font-weight: bold; background: transparent; border: none;"
+        )
         self.btn.text = lambda: self.title_label.text()  # type: ignore[method-assign]
-        btn_layout.addWidget(self.title_label, alignment=Qt.AlignmentFlag.AlignHCenter)
+        btn_layout.addWidget(self.title_label, alignment=Qt.AlignmentFlag.AlignLeft)
 
         self.subtitle_label = QLabel(self.tr("Check for remote changes"), self.btn)
-        self.subtitle_label.setStyleSheet("font-size: 10px;")
-        btn_layout.addWidget(self.subtitle_label, alignment=Qt.AlignmentFlag.AlignHCenter)
+        self.subtitle_label.setStyleSheet("font-size: 10px; background: transparent; border: none;")
+        btn_layout.addWidget(self.subtitle_label, alignment=Qt.AlignmentFlag.AlignLeft)
+        btn_outer.addLayout(btn_layout, 1)
 
         layout.addWidget(self.btn)
         self._refresh_styles()
@@ -228,37 +243,61 @@ class SyncActionCell(QFrame):
             self.title_label.setText(self.tr("Detached HEAD"))
             self.subtitle_label.setText(self.tr("Checkout branch to sync"))
             self.btn.setEnabled(False)
-            self.btn.setIcon(get_icon("warning", size=16))
+            (
+                self.icon_label.setPixmap(get_pixmap("warning", size=16))
+                if hasattr(self, "icon_label")
+                else None
+            )
         elif status.upstream_name is None:
             self._action_kind = "publish"
             self.title_label.setText(self.tr("Publish branch"))
             self.subtitle_label.setText(self.tr("Push branch to origin"))
             self.btn.setEnabled(True)
-            self.btn.setIcon(get_icon("cloud", size=16))
+            (
+                self.icon_label.setPixmap(get_pixmap("cloud", size=16))
+                if hasattr(self, "icon_label")
+                else None
+            )
         elif status.ahead > 0 and status.behind > 0:
             self._action_kind = "sync"
             self.title_label.setText(self.tr(f"Sync branch ({status.ahead}↑ {status.behind}↓)"))
             self.subtitle_label.setText(self.tr("Pull & push remote changes"))
             self.btn.setEnabled(True)
-            self.btn.setIcon(get_icon("merge", size=16))
+            (
+                self.icon_label.setPixmap(get_pixmap("merge", size=16))
+                if hasattr(self, "icon_label")
+                else None
+            )
         elif status.behind > 0:
             self._action_kind = "pull"
             self.title_label.setText(self.tr(f"Pull origin ({status.behind}↓)"))
             self.subtitle_label.setText(self.tr(f"{status.behind} commit(s) on origin"))
             self.btn.setEnabled(True)
-            self.btn.setIcon(get_icon("pull", size=16))
+            (
+                self.icon_label.setPixmap(get_pixmap("pull", size=16))
+                if hasattr(self, "icon_label")
+                else None
+            )
         elif status.ahead > 0:
             self._action_kind = "push"
             self.title_label.setText(self.tr(f"Push origin ({status.ahead}↑)"))
             self.subtitle_label.setText(self.tr(f"{status.ahead} commit(s) ready"))
             self.btn.setEnabled(True)
-            self.btn.setIcon(get_icon("push", size=16))
+            (
+                self.icon_label.setPixmap(get_pixmap("push", size=16))
+                if hasattr(self, "icon_label")
+                else None
+            )
         else:
             self._action_kind = "fetch"
             self.title_label.setText(self.tr("Fetch origin"))
             self.subtitle_label.setText(self.tr("Last fetched just now"))
             self.btn.setEnabled(True)
-            self.btn.setIcon(get_icon("fetch", size=16))
+            (
+                self.icon_label.setPixmap(get_pixmap("fetch", size=16))
+                if hasattr(self, "icon_label")
+                else None
+            )
 
     @Slot()
     def _on_button_clicked(self) -> None:
@@ -344,6 +383,18 @@ class QuickActionsStrip(QWidget):
                 f"border-radius: 6px; padding: 2px; }} "
                 f"QToolButton:hover {{ background-color: palette(button); border-color: palette(highlight); }}"
             )
+
+    def set_terminal_active(self, active: bool) -> None:
+        """Update the terminal toggle button's checked state and visual accent."""
+        self.btn_terminal.setCheckable(True)
+        self.btn_terminal.setChecked(active)
+        if active:
+            self.btn_terminal.setStyleSheet(
+                self.btn_terminal.styleSheet()
+                + " QToolButton { border: 2px solid palette(highlight); }"
+            )
+        else:
+            self._refresh_styles()
 
 
 class ContextHeaderBar(QFrame):
@@ -488,13 +539,15 @@ class ContextHeaderBar(QFrame):
             self.cell_branch.set_branch_sync(status_or_ahead)
             self.cell_sync.set_sync_status(status_or_ahead)
         else:
+            b_name = (self.cell_branch.branch_btn.text() or "main").replace(" ▾", "").strip()
             status = BranchSyncStatus(
-                branch_name=self.cell_branch.branch_btn.text() or "main",
-                upstream_name=None,
+                branch_name=b_name,
+                upstream_name=f"origin/{b_name}",
                 ahead=int(status_or_ahead),
                 behind=behind,
                 is_detached=False,
             )
+            self.cell_branch.set_branch_sync(status)
             self.cell_sync.set_sync_status(status)
 
     def _refresh_styles(self) -> None:

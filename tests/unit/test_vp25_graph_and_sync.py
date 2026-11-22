@@ -1,3 +1,4 @@
+# ruff: noqa: E501
 """Unit tests for Phase VP-2.5 graph DAG walking, 150-remote cap, and sync execution (FR-3.16)."""
 
 from pathlib import Path
@@ -24,7 +25,7 @@ def test_detached_head_sync_status(tmp_path: Path):
     blob_id2 = repo.create_blob(b"detached commit 2\n")
     tree_bld.insert("file2.txt", blob_id2, pygit2.GIT_FILEMODE_BLOB)
     tree_oid2 = tree_bld.write()
-    c2 = repo.create_commit("refs/heads/main", sig, sig, "Second commit", tree_oid2, [c1])
+    _c2 = repo.create_commit("refs/heads/main", sig, sig, "Second commit", tree_oid2, [c1])
 
     # Detach HEAD to c1
     repo.set_head(c1)
@@ -101,3 +102,56 @@ def test_run_git_terminal_command(tmp_path: Path):
     # Empty command returns 0 without executing
     rc_empty, stdout_empty, stderr_empty, dur_empty = engine.run_git_terminal_command("")
     assert rc_empty == 0
+
+
+def test_list_branches_accepts_remote_kwarg(tmp_path: Path):
+    """Bug 3: list_branches must accept remote=False without TypeError."""
+    repo = pygit2.init_repository(str(tmp_path))
+    sig = pygit2.Signature("Dev", "dev@example.com", 1700000000, 0)
+    tree_bld = repo.TreeBuilder()
+    blob_id = repo.create_blob(b"branch test\n")
+    tree_bld.insert("file.txt", blob_id, pygit2.GIT_FILEMODE_BLOB)
+    tree_oid = tree_bld.write()
+    repo.create_commit("refs/heads/main", sig, sig, "Initial commit", tree_oid, [])
+    repo.set_head("refs/heads/main")
+
+    from wrench.core.engine import list_branches
+
+    handle = open_repo(tmp_path)
+
+    # Must not raise TypeError
+    local_only = list_branches(handle, local=True, remote=False)
+    assert isinstance(local_only, list)
+    assert "main" in local_only
+
+    # GitEngine instance method must also accept remote=False
+    eng = GitEngine(handle)
+    assert hasattr(eng, "list_branches")
+    local_via_engine = eng.list_branches(local=True, remote=False)
+    assert isinstance(local_via_engine, list)
+    assert "main" in local_via_engine
+
+    # include_remote also works
+    both = list_branches(handle, include_remote=True)
+    assert isinstance(both, list)
+    assert "main" in both
+
+
+def test_settings_registry_closed_db_fallback(tmp_path: Path):
+    """Bug 6b: SettingsRegistry must not crash when connection is closed."""
+    import sqlite3
+
+    from wrench.storage.settings_registry import SettingsRegistry
+
+    conn = sqlite3.connect(str(tmp_path / "test.db"))
+    reg = SettingsRegistry(conn=conn)
+
+    # Set a value then close the connection
+    reg.set("ui.humor_lines", True)
+    assert reg.get_bool("ui.humor_lines") is True
+
+    conn.close()
+
+    # After close, get_bool should still return cached/default without raising
+    result = reg.get_bool("ui.humor_lines")
+    assert isinstance(result, bool)

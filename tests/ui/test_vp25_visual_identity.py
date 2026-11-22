@@ -1,3 +1,4 @@
+# ruff: noqa: E501
 """Automated UI verification suite for Phase VP-2.5 (FR-3.16, FR-3.17, FR-11.7-11.10)."""
 
 from pathlib import Path
@@ -232,7 +233,7 @@ def test_graph_widget_wip_virtual_row(qapp, tmp_path: Path):
     blob_id = repo.create_blob(b"wip row test\n")
     tree_bld.insert("tracked.txt", blob_id, pygit2.GIT_FILEMODE_BLOB)
     tree_oid = tree_bld.write()
-    c1 = repo.create_commit("refs/heads/main", sig, sig, "Base commit", tree_oid, [])
+    _c1 = repo.create_commit("refs/heads/main", sig, sig, "Base commit", tree_oid, [])
     repo.set_head("refs/heads/main")
 
     # Modify file to create unstaged dirty changes
@@ -257,3 +258,37 @@ def test_graph_widget_wip_virtual_row(qapp, tmp_path: Path):
     assert graph._model.headerData(2, Qt.Orientation.Horizontal) == "Message"
 
     graph.close()
+
+
+def test_quick_actions_set_terminal_active(qapp):
+    """Bug 4a: QuickActionsStrip must have set_terminal_active method."""
+    from wrench.ui.widgets.context_header_bar import QuickActionsStrip
+
+    strip = QuickActionsStrip()
+    # Method must exist
+    assert hasattr(strip, "set_terminal_active")
+
+    # Must not raise
+    strip.set_terminal_active(True)
+    assert strip.btn_terminal.isCheckable()
+    assert strip.btn_terminal.isChecked()
+
+    strip.set_terminal_active(False)
+    assert not strip.btn_terminal.isChecked()
+    strip.close()
+
+
+def test_commit_detail_panel_compact_vertical(qapp):
+    """Bug 1a: CommitDetailPanel must support vertical compact layout."""
+    from wrench.ui.commit_graph.detail_panel import CommitDetailPanel
+
+    panel = CommitDetailPanel()
+    assert hasattr(panel, "set_compact_vertical_layout")
+
+    panel.set_compact_vertical_layout(True)
+    assert panel.splitter.orientation() == Qt.Orientation.Vertical
+    assert panel.minimumWidth() >= 280
+
+    panel.set_compact_vertical_layout(False)
+    assert panel.splitter.orientation() == Qt.Orientation.Horizontal
+    panel.close()

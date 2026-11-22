@@ -1,3 +1,4 @@
+# ruff: noqa: E501
 """Built-In Tintable SVG Vector Icon Registry (FR-11.8).
 
 Provides high-DPI vector icons rendered cleanly via PySide6.QtSvg.QSvgRenderer

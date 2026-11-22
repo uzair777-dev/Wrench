@@ -208,6 +208,19 @@ def _is_watch_limit_error(exc: BaseException) -> bool:
     return "inotify" in str(exc).lower()
 
 
+_active_watchers: set["RepoWatcher"] = set()
+
+
+def stop_all_active_watchers() -> None:
+    """Stops all active RepoWatcher observers to release inotify instances."""
+    for w in list(_active_watchers):
+        try:
+            w.stop()
+        except Exception as exc:
+            logger.debug("stop_all_active_watchers encountered error: %s", exc)
+    _active_watchers.clear()
+
+
 class RepoWatcher(QObject):
     """Watches a repository worktree for changes with 3-tier monorepo fallback."""
 
@@ -226,6 +239,7 @@ class RepoWatcher(QObject):
         settings_registry: SettingsRegistry | None = None,
     ):
         super().__init__(parent)
+        _active_watchers.add(self)
         self._repo_path = Path(repo_path)
         self._settings_registry = settings_registry
         self._settings_connected = False
@@ -642,6 +656,7 @@ class RepoWatcher(QObject):
 
     @Slot()
     def stop(self) -> None:
+        _active_watchers.discard(self)
         with self._lock:
             self._is_stopped = True
             self._event_pending = False

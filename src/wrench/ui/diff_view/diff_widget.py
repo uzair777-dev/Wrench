@@ -1,3 +1,4 @@
+# ruff: noqa: E501
 """Diff viewer widget with hunk staging and read-only mode."""
 
 import html

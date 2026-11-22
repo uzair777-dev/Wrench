@@ -1,3 +1,4 @@
+# ruff: noqa: E501
 """Unit tests for Phase VP-2.5 multi-branch DAG walk and sync metadata (FR-3.16)."""
 
 from pathlib import Path

@@ -1,3 +1,4 @@
+# ruff: noqa: E501
 """Changes Tab Component (ui-planning.md §3, SRS FR-1.x, FR-2.1).
 
 Provides:
@@ -55,6 +56,7 @@ from wrench.ui.quotes import CLEAN_STATE_QUOTES, random_quote
 from wrench.ui.theme import (
     ACCENT_COLORS,
     CONFLICT_BANNER_STYLES,
+    CONTEXT_BAR_BORDER_DARK,
     FORGE_LINK_STYLES,
     PRIMARY_BUTTON_STYLES,
     get_badge_colors,
@@ -305,6 +307,14 @@ class ChangesTab(QWidget):
         self.branch_switcher.branch_operation_completed.connect(self.refresh)
         header_container_layout.addWidget(self.branch_switcher)
 
+        _reg = (
+            get_settings_registry(self._conn)
+            if self._conn is not None
+            else peek_settings_registry()
+        )
+        self.header_container.setVisible(
+            not (_reg.is_enabled("ui.show_context_header_bar") if _reg else True)
+        )
         left_layout.addWidget(self.header_container)
 
         # Conflict alert banner (hidden by default)
@@ -374,10 +384,10 @@ class ChangesTab(QWidget):
         self.files_list.itemChanged.connect(self._on_files_list_item_changed)
         left_layout.addWidget(self.files_list, 1)
 
-        # Commit section
-        commit_group = QGroupBox(self.tr("Commit"), self)
+        # Commit section (no title text so avatar never overlaps 'Commit')
+        commit_group = QGroupBox("", self)
         commit_group.setStyleSheet(
-            "QGroupBox { border: none; margin-top: 0px; padding: 0px; font-weight: bold; }"
+            f"QGroupBox {{ border: none; border-top: 1px solid {CONTEXT_BAR_BORDER_DARK}; margin-top: 0px; padding-top: 4px; }}"
         )
         commit_layout = QVBoxLayout(commit_group)
         commit_layout.setContentsMargins(8, 8, 8, 8)
@@ -407,21 +417,20 @@ class ChangesTab(QWidget):
         self.commit_desc_input.textChanged.connect(self._on_commit_text_changed)
         commit_layout.addWidget(self.commit_desc_input)
 
-        # Commit button row (Amend + Commit Button)
+        # Amend row + Full-width Commit button
         btn_row = QHBoxLayout()
-        self.amend_cb = QCheckBox(self.tr("Amend"), commit_group)
+        self.amend_cb = QCheckBox(self.tr("Amend last commit"), commit_group)
         self.amend_cb.toggled.connect(self._on_amend_toggled)
         btn_row.addWidget(self.amend_cb)
-
         btn_row.addStretch()
+        commit_layout.addLayout(btn_row)
 
         self.commit_btn = QPushButton(self.tr("Commit"), commit_group)
-        self.commit_btn.setFixedHeight(36)
+        self.commit_btn.setFixedHeight(34)
         self._update_commit_btn_theme()
         self.commit_btn.setEnabled(False)
         self.commit_btn.clicked.connect(self._on_commit_clicked)
-        btn_row.addWidget(self.commit_btn)
-        commit_layout.addLayout(btn_row)
+        commit_layout.addWidget(self.commit_btn)
 
         left_widget.setMinimumWidth(220)
         left_layout.addWidget(commit_group)

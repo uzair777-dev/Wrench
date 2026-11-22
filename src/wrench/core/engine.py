@@ -608,8 +608,37 @@ def commit(repo: RepoHandle, message: str, *, amend: bool = False) -> str:
     return sha
 
 
-def list_branches(repo: RepoHandle) -> list[str]:
-    return list(repo.pygit2_repo.branches.local)
+def list_branches(
+    repo: RepoHandle,
+    *,
+    local: bool | None = None,
+    remote: bool | None = None,
+    include_remote: bool = False,
+) -> list[str]:
+    # Determine which sets to include based on parameters
+    want_local = True
+    want_remote = include_remote
+
+    if remote is True and local is False:
+        # Caller explicitly wants only remote branches
+        want_local = False
+        want_remote = True
+    elif remote is True and local is True:
+        # Caller wants both
+        want_remote = True
+    elif remote is False:
+        # Caller explicitly excludes remote
+        want_remote = False
+    elif local is True:
+        # Only local
+        want_remote = False
+
+    result: list[str] = []
+    if want_local:
+        result.extend(repo.pygit2_repo.branches.local)
+    if want_remote:
+        result.extend(repo.pygit2_repo.branches.remote)
+    return result
 
 
 def create_branch(repo: RepoHandle, name: str, *, from_ref: str = "HEAD") -> None:
@@ -1348,6 +1377,24 @@ class GitEngine:
             all_refs=all_refs,
         )
 
+    def list_branches(
+        self,
+        *,
+        local: bool | None = None,
+        remote: bool | None = None,
+        include_remote: bool = False,
+        repo: RepoHandle | None = None,
+    ) -> list[str]:
+        target = repo or self.repo
+        if not target:
+            raise ValueError("No repository provided")
+        return list_branches(
+            target,
+            local=local,
+            remote=remote,
+            include_remote=include_remote,
+        )
+
     def create_branch(
         self,
         name: str,
@@ -1730,7 +1777,7 @@ class GitEngine:
         )
 
     def get_branch_sync_status(
-        self, repo: RepoHandle | Path | str | None = None
+        self, repo: RepoHandle | Path | str | None = None, branch_name: str | None = None
     ) -> BranchSyncStatus:
         """Return ahead/behind sync status for the active branch (FR-3.16)."""
         target = repo or self.repo

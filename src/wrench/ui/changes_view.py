@@ -1,3 +1,4 @@
+# ruff: noqa: E501
 """Edge-to-Edge ChangesView and ZeroChangesLaunchpadWidget (FR-11.10, ui-planning.md §6.29.4).
 
 Provides:
@@ -18,6 +19,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
@@ -76,10 +78,14 @@ class _LaunchpadActionCard(QFrame):
         self._button_text = button_text
         self._shortcut_text = shortcut_text
 
+        self.setObjectName("LaunchpadActionCard")
         self.setFrameShape(QFrame.Shape.StyledPanel)
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(14, 12, 14, 12)
-        layout.setSpacing(14)
+        self.setMinimumHeight(96)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
+        card_layout = QHBoxLayout(self)
+        card_layout.setContentsMargins(16, 12, 16, 12)
+        card_layout.setSpacing(14)
+        layout = card_layout
 
         # Icon
         self._icon_lbl = QLabel(self)
@@ -90,7 +96,7 @@ class _LaunchpadActionCard(QFrame):
         # Text column
         text_col = QVBoxLayout()
         text_col.setContentsMargins(0, 0, 0, 0)
-        text_col.setSpacing(3)
+        text_col.setSpacing(4)
 
         self._title_lbl = QLabel(title, self)
         self._title_lbl.setStyleSheet("font-size: 13px; font-weight: bold;")
@@ -99,6 +105,9 @@ class _LaunchpadActionCard(QFrame):
         self._sub_lbl = QLabel(subtitle, self)
         self._sub_lbl.setStyleSheet("font-size: 11px;")
         self._sub_lbl.setWordWrap(True)
+        self._sub_lbl.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.MinimumExpanding
+        )
         text_col.addWidget(self._sub_lbl)
 
         if shortcut_text:
@@ -154,7 +163,7 @@ class _LaunchpadActionCard(QFrame):
             icon_color = DEFAULT_ICON_COLOR if dark else title_color
 
             self.setStyleSheet(
-                f"QFrame {{ background-color: {card_bg}; border: 1px solid {card_border}; "
+                f"QFrame#LaunchpadActionCard {{ background-color: {card_bg}; border: 1px solid {card_border}; "
                 f"border-radius: 8px; }}"
             )
             self._title_lbl.setStyleSheet(

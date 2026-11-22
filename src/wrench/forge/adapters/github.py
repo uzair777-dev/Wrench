@@ -52,6 +52,7 @@ class GitHubAdapter(ForgeAdapter):
         raw_items = self._paged_get(
             f"/repos/{owner}/{repo}/pulls",
             params={"state": query_state, "per_page": 50},
+            max_pages=2,
         )
 
         prs: list[PullRequest] = []
@@ -189,6 +190,7 @@ class GitHubAdapter(ForgeAdapter):
         raw_items = self._paged_get(
             f"/repos/{owner}/{repo}/issues",
             params={"state": query_state, "per_page": 50},
+            max_pages=2,
         )
 
         issues: list[Issue] = []

@@ -47,8 +47,22 @@ def save_emergency_session(
     if _active_window and hasattr(_active_window, "changes_tab"):
         try:
             tab = _active_window.changes_tab
-            data["commit_summary"] = tab.summary_input.text()
-            data["commit_description"] = tab.desc_input.toPlainText()
+            summary_widget = getattr(tab, "summary_edit", None) or getattr(
+                tab, "summary_input", None
+            )
+            desc_widget = getattr(tab, "description_edit", None) or getattr(tab, "desc_input", None)
+            if summary_widget is not None:
+                data["commit_summary"] = (
+                    summary_widget.text()
+                    if hasattr(summary_widget, "text")
+                    else str(summary_widget.toPlainText())
+                )
+            if desc_widget is not None:
+                data["commit_description"] = (
+                    desc_widget.toPlainText()
+                    if hasattr(desc_widget, "toPlainText")
+                    else str(desc_widget.text())
+                )
         except Exception as e:
             logger.debug("Failed reading draft from active window: %s", e)
 

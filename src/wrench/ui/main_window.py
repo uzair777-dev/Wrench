@@ -37,7 +37,14 @@ from PySide6.QtCore import (
     Signal,
     Slot,
 )
-from PySide6.QtGui import QActionGroup, QGuiApplication, QKeySequence, QPixmapCache, QShortcut
+from PySide6.QtGui import (
+    QActionGroup,
+    QCursor,
+    QGuiApplication,
+    QKeySequence,
+    QPixmapCache,
+    QShortcut,
+)
 from PySide6.QtWidgets import (
     QApplication,
     QDialog,
@@ -45,6 +52,7 @@ from PySide6.QtWidgets import (
     QInputDialog,
     QLabel,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QToolButton,
     QVBoxLayout,
@@ -280,7 +288,7 @@ class MainWindow(QMainWindow):
 
         # Context Header Bar (VP-2.5)
         self.context_header_bar = ContextHeaderBar(self)
-        self.context_header_bar.repo_selector_clicked.connect(self._on_open_repo)
+        self.context_header_bar.repo_selector_clicked.connect(self._on_repo_selector_menu)
         self.context_header_bar.branch_selector_clicked.connect(self._on_branch_selector_clicked)
         self.context_header_bar.sync_requested.connect(self._on_sync_requested)
         self.context_header_bar.terminal_toggled.connect(self._toggle_terminal_drawer)
@@ -364,6 +372,7 @@ class MainWindow(QMainWindow):
 
         # Status bar (always reuse QMainWindow's single built-in bar)
         self.status_bar = self.statusBar()
+        self.status_bar.setVisible(False)
         self.status_label = QLabel(self.tr("Ready"), self.status_bar)
         self.status_bar.addWidget(self.status_label)
 
@@ -1154,6 +1163,9 @@ class MainWindow(QMainWindow):
         clear_activity_log(getattr(self, "_activity_log", None))
         close_avatar_http_client()
 
+        if hasattr(self, "terminal_drawer") and self.terminal_drawer is not None:
+            self.terminal_drawer.set_command_runner(None)
+
         super().closeEvent(event)
 
     def _reload_active_repo_handles(self) -> None:
@@ -1633,6 +1645,48 @@ class MainWindow(QMainWindow):
 
         self._start_directory_discovery(Path(dir_path))
 
+    def _on_repo_selector_menu(self) -> None:
+        """Show a dropdown menu of known repositories below the repo context cell."""
+        menu = QMenu(self)
+
+        repos = repo_registry.list_repos(self._conn)
+        current_path = str(self._current_repo.path) if self._current_repo else None
+
+        for rec in repos:
+            if rec.is_missing:
+                continue
+            action = menu.addAction(
+                getattr(rec, "display_name", None)
+                or getattr(rec, "name", None)
+                or Path(rec.path).name
+            )
+            action.setCheckable(True)
+            if current_path and str(Path(rec.path).resolve()) == str(Path(current_path).resolve()):
+                action.setChecked(True)
+            repo_path = rec.path
+            action.triggered.connect(lambda checked, p=repo_path: self._switch_to_repo(p))
+
+        menu.addSeparator()
+        act_open = menu.addAction(self.tr("Open Folder…"))
+        act_open.triggered.connect(self._on_open_repo)
+        act_clone = menu.addAction(self.tr("Clone Repository…"))
+        act_clone.triggered.connect(self._on_clone_repo)
+
+        cell = getattr(self.context_header_bar, "cell_repo", None)
+        if cell is not None:
+            pos = cell.mapToGlobal(cell.rect().bottomLeft())
+            menu.exec(pos)
+        else:
+            menu.exec(QCursor.pos())
+
+    def _switch_to_repo(self, path: str) -> None:
+        """Switch the active repository to the given path."""
+        try:
+            opened_repo = engine.open_repo(path)
+            self.changes_tab.load_repos(select_path=path, opened_repo=opened_repo)
+        except Exception as exc:
+            logger.debug("Failed switching to repo %s: %s", path, exc)
+
     def _start_directory_discovery(self, root_path: Path) -> None:
         self._discovery_cancel_event = threading.Event()
         self.statusBar().showMessage(
@@ -1979,34 +2033,64 @@ class MainWindow(QMainWindow):
             return
         try:
             branches = engine.list_branches(self._current_repo, local=True, remote=False)
-            branch_names = [b.name for b in branches]
+            branch_names = list(branches)
         except Exception as exc:
             logger.debug("Failed listing local branches: %s", exc)
             branch_names = []
 
-        if not branch_names:
-            return
-
         current_branch = self._get_current_branch() or ""
-        curr_idx = branch_names.index(current_branch) if current_branch in branch_names else 0
-        chosen, ok = QInputDialog.getItem(
+        menu = QMenu(self)
+
+        act_new = menu.addAction(self.tr("New Branch…"))
+        act_new.triggered.connect(self._on_context_new_branch)
+        menu.addSeparator()
+
+        for name in branch_names:
+            action = menu.addAction(name)
+            action.setCheckable(True)
+            if name == current_branch:
+                action.setChecked(True)
+            action.triggered.connect(lambda checked, b=name: self._checkout_selected_branch(b))
+
+        cell = getattr(self.context_header_bar, "cell_branch", None)
+        if cell is not None:
+            pos = cell.mapToGlobal(cell.rect().bottomLeft())
+            menu.exec(pos)
+        else:
+            menu.exec(QCursor.pos())
+
+    def _checkout_selected_branch(self, branch_name: str) -> None:
+        current_branch = self._get_current_branch() or ""
+        if branch_name == current_branch:
+            return
+        try:
+            self._engine.checkout_branch(branch_name, repo=self._current_repo)
+            self._on_checkout_branch(branch_name)
+        except Exception as e:
+            QMessageBox.critical(
+                self,
+                self.tr("Checkout Failed"),
+                self.tr(f"Could not switch to branch '{branch_name}': {e}"),
+            )
+
+    def _on_context_new_branch(self) -> None:
+        if not self._current_repo:
+            return
+        name, ok = QInputDialog.getText(
             self,
-            self.tr("Switch Branch"),
-            self.tr("Select branch to checkout:"),
-            branch_names,
-            curr_idx,
-            False,
+            self.tr("New Branch"),
+            self.tr("Branch name:"),
         )
-        if ok and chosen and chosen != current_branch:
-            try:
-                engine.checkout_branch(self._current_repo, chosen)
-                self._on_checkout_branch(chosen)
-            except Exception as e:
-                QMessageBox.critical(
-                    self,
-                    self.tr("Checkout Failed"),
-                    self.tr(f"Could not switch to branch '{chosen}': {e}"),
-                )
+        if not ok or not name.strip():
+            return
+        branch_name = name.strip()
+        try:
+            self._engine.create_branch(branch_name, repo=self._current_repo)
+            self._engine.checkout_branch(branch_name, repo=self._current_repo)
+            self._on_checkout_branch(branch_name)
+        except Exception as e:
+            logger.exception("Create branch failed: %s", e)
+            QMessageBox.critical(self, self.tr("Create Branch Failed"), str(e))
 
     def _on_sync_requested(self, kind: str = "") -> None:
         """Handle click on SyncActionCell in ContextHeaderBar."""
@@ -3453,6 +3537,7 @@ class MainWindow(QMainWindow):
 
     def _on_checkout_branch(self, branch_name: str) -> None:
         self.status_label.setText(self.tr(f"Switched to branch: {branch_name}"))
+        self._update_context_header_bar()
         self.changes_tab.refresh()
         self.history_tab.refresh()
 

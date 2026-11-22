@@ -1,3 +1,4 @@
+# ruff: noqa: E501
 """Data models and dataclasses for Wrench core."""
 
 from dataclasses import dataclass, field

@@ -20,11 +20,20 @@
 
 ## Why Wrench?
 
-- **Sublime Merge Speed, 100% Open Source:** Hybrid `pygit2` C-speed reads + conflict-aware `git` CLI writes, a 4-stage zero-copy `array('I')` virtualized diff engine (`< 3 ms` indexing for 50,000 lines), and 60 FPS commit graph virtualization on 100k+ commit monorepos.
-- **Lazygit Keyboard Velocity in a Native Qt6 GUI:** Modal single-key chord engine (`j`/`k` navigate, `[`/`]` jump hunks, `s`/`u`/`Space` stage/unstage, `d` discard, `c` commit, `a` amend) plus a `< 10 ms` Fuzzy Command Palette (`Ctrl+K`).
-- **GitButler / Jujutsu Safety on Standard Git:** Pre-operation rolling snapshots (`git stash create` + untracked `.tar.gz`), an atomic **Op-Log Time Machine (`Ctrl+Alt+Z` Undo Last Git Operation)**, and **Live Pre-Merge Conflict Prediction (`git merge-tree --write-tree` in `< 15 ms`)**.
-- **Total User Sovereignty (`SettingsRegistry`):** Every feature, daemon, and UI surface can be tweaked or toggled off in Settings (`Ctrl+,`) with **zero runtime, memory, or CPU overhead**—including a 1-click *Minimalist Local-Only Mode*.
-- **11-Forge Ecosystem & 5-Stage Mirror DAG:** First-class support for GitHub, GitLab, Forgejo/Gitea, Codeberg, Bitbucket, Azure Repos, Radicle, Gerrit, SourceHut, Tangled, and SourceForge.
+> **The open-source, Linux-native Git GUI with Sublime-class speed and undo that stays plain Git.**
+
+### Built & Working Today
+- **Hybrid Speed + 100% Real Git Fidelity:** In-process `pygit2` (`libgit2`) reads paired with real system `git` CLI writes—so your custom hooks, `.gitconfig` rules, and merge strategies behave identically to terminal Git.
+- **Granular Staging & History Editing:** Whole-file, synthetic hunk, single-line, and intent-aware partial staging, a visual Interactive Rebase builder (`VP-2`), and an in-app 3-way merge resolver.
+- **Git-Native Safety (Zero Custom Metadata):** Automatic pre-operation rolling snapshots (`git stash create` + untracked working-tree `.tar.gz` archives), reflog recovery, and stale `index.lock` cleanup—all while leaving your repository 100% plain standard Git.
+- **4-Host Forge Workflows Built In:** Native PRs, issues, in-app reviews, and CI status cards across **GitHub, GitLab, Forgejo/Gitea, and Bitbucket**—plus a FreeDesktop D-Bus Secret Service credential helper (`git-credential-wrench`).
+- **Monorepo & Minimalist Ready:** Partial clone + sparse checkout (`VP-16`), and a 13-category `SettingsRegistry` (`VP-0`) with a 1-click *Minimalist Local-Only Mode*.
+
+### Active v2.0 Launch Roadmap (In Progress)
+- **Op-Log Time Machine (`Ctrl+Alt+Z`) & Live Conflict Prediction:** Deterministic one-click undo/redo for Wrench operations and in-memory `git merge-tree --write-tree` pre-merge previews—staying 100% plain Git.
+- **Keyboard-First Velocity:** Modal single-key chord engine (`j`/`k`/`s`/`u`/`c`) and `< 10 ms` Fuzzy Command Palette (`Ctrl+K`).
+- **Essential Pro Workflows & Distribution:** GPG/SSH commit signing (`VP-18`), multi-worktree management (`VP-3`), reproducible large-repo benchmarks on `git/git`, and self-contained Flatpak/AppImage bundles shipping a standalone Python 3.15 runtime.
+- **Post-v2.0 Ecosystem (`v2.5+`):** Extended forge plugins (Codeberg, Azure, Radicle, Gerrit, SourceHut, Tangled, SourceForge) and the 5-Stage Multi-Mirror DAG.
 
 ---
 

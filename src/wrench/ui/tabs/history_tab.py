@@ -1,3 +1,4 @@
+# ruff: noqa: E501
 """History Tab Component (ui-planning.md §4, Phase 2).
 
 Provides:
@@ -156,6 +157,7 @@ class HistoryTab(QWidget):
 
         # Commit Graph Widget
         self.graph_widget = CommitGraphWidget(self.graph_container)
+        self.graph_widget.set_three_column_mode(use_3col)
         self.graph_placeholder = self.graph_widget  # Backwards-compatible alias
         self.graph_widget.commit_selected.connect(self._on_commit_selected)
         self.graph_widget.rebase_requested.connect(self.rebase_requested)
@@ -196,7 +198,9 @@ class HistoryTab(QWidget):
         self.content_splitter.addWidget(self.detail_panel)
 
         if use_3col:
-            self.content_splitter.setSizes([230, 600, 380])
+            self.graph_container.setMinimumWidth(420)
+            self.detail_panel.set_compact_vertical_layout(True)
+            self.content_splitter.setSizes([220, 680, 380])
             self.content_splitter.setStretchFactor(0, 0)
             self.content_splitter.setStretchFactor(1, 1)
             self.content_splitter.setStretchFactor(2, 0)
@@ -347,7 +351,7 @@ class HistoryTab(QWidget):
         return self.graph_widget.horizontalHeader().saveState().toHex().data().decode("utf-8")
 
     def restore_header_state(self, hex_str: str) -> None:
-        """Restores commit graph column sizes and header state from hex string."""
+        """Restores commit graph column sizes while guarding 6-column 3-col layout."""
         if hex_str:
             try:
                 byte_array = QByteArray.fromHex(hex_str.encode("utf-8"))
@@ -362,13 +366,25 @@ class HistoryTab(QWidget):
         return self.content_splitter.saveState().toHex().data().decode("utf-8")
 
     def restore_splitter_state(self, hex_str: str) -> None:
-        """Restores history content splitter position from hex string."""
+        """Restores history content splitter position while preserving 3-column Horizontal orientation."""
+        reg = self._settings_registry or peek_settings_registry()
+        use_3col = reg.is_enabled("ui.history_three_column_layout") if reg else True
         if hex_str:
             try:
                 byte_array = QByteArray.fromHex(hex_str.encode("utf-8"))
                 self.content_splitter.restoreState(byte_array)
             except Exception as e:
                 logger.warning("Could not restore history splitter state: %s", e)
+        if use_3col:
+            self.content_splitter.setOrientation(Qt.Orientation.Horizontal)
+            self.graph_container.setMinimumWidth(420)
+            self.detail_panel.set_compact_vertical_layout(True)
+            self.content_splitter.setStretchFactor(0, 0)
+            self.content_splitter.setStretchFactor(1, 1)
+            self.content_splitter.setStretchFactor(2, 0)
+            sizes = self.content_splitter.sizes()
+            if len(sizes) == 3 and (sizes[1] < 350 or sizes[2] < 150 or sum(sizes) < 400):
+                self.content_splitter.setSizes([220, 680, 380])
 
     def closeEvent(self, event) -> None:
         if hasattr(self, "_debounce_timer"):

@@ -1,3 +1,4 @@
+# ruff: noqa: E501
 """Git read operations — pygit2-backed.
 
 All read operations (status, diff, log, blame) go through this module.
@@ -1728,7 +1729,7 @@ def get_ref_sidebar_tree(repo_path: Path | str) -> RefSidebarTree:
             def _stash_cb(index: int, message: str, oid: pygit2.Oid) -> None:
                 stashes.append(StashEntry(index=index, message=message, oid=str(oid)))
 
-            r.listall_stashes(_stash_cb)
+            r.listall_stashes()
         except Exception as exc:
             logger.debug("Failed listing stashes: %s", exc)
 

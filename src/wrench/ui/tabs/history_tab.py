@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
     QComboBox,
     QFrame,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
     QLineEdit,
     QScrollBar,
@@ -355,7 +356,14 @@ class HistoryTab(QWidget):
         if hex_str:
             try:
                 byte_array = QByteArray.fromHex(hex_str.encode("utf-8"))
-                self.graph_widget.horizontalHeader().restoreState(byte_array)
+                hdr = self.graph_widget.horizontalHeader()
+                hdr.restoreState(byte_array)
+                hdr.setStretchLastSection(False)
+                for _col in range(hdr.count()):
+                    hdr.setSectionResizeMode(_col, QHeaderView.ResizeMode.Interactive)
+                if hdr.count() == 6 and hdr.sectionSize(2) < 120:
+                    for _c, _w in ((0, 130), (1, 110), (2, 300), (3, 115), (4, 135), (5, 75)):
+                        self.graph_widget.setColumnWidth(_c, _w)
                 self.graph_widget._update_scrollbar_range()
                 self.graph_widget._update_graph_scrollbar_geom()
             except Exception as e:

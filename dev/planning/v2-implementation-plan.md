@@ -6,7 +6,7 @@
 
 ## 0\. Mandatory Execution Protocol for Coding Models (Read Before Writing Any Code)
 
-Every executor (human or AI model) MUST obey the following 12 rules verbatim. **Do not improvise, do not skip steps, and do not invent your own architecture:**
+Every executor (human or AI model) MUST obey the following 11 numbered rules verbatim, PLUS section 0.F (Repo Reality Addendum) and `dev/REPO_MAP_CORE.md`, which override every other section wherever they disagree. **Do not improvise, do not skip steps, and do not invent your own architecture:**
 
 1. **Strict Phase Sequence (`VP-0` \-\> `VP-1` \-\> ... \-\> `VP-23`):** Never start Phase `VP-N` until Phase `VP-(N-1)`'s completion gates and acceptance checks pass 100%. `VP-0` MUST be completed first because every phase `VP-1`..`VP-26` registers its settings keys into `VP-0`'s `SettingsRegistry` and reuses `VP-0`'s UI infrastructure (`UndoToastWidget`, `LazyTabContainer`, `SettingsDialog`).  
 2. **Mandatory `ui-planning.md` Cross-Check Before Writing Any UI Code:**  
@@ -101,7 +101,7 @@ Every single phase (`VP-0` through `VP-26`) MUST be executed by following this e
 | **Gate G5** | **Mandatory Component Optimizations (`OPT-1`–`OPT-8`)** | Implement every optimization listed in the phase's `Mandatory Optimizations Reminder` block (lazy instantiation `OPT-1`, `150ms` debounce `OPT-2`, delta undo `OPT-3`, SQLite `WAL` `OPT-4`, `5000`\-line ring buffer `OPT-5`, `request_id` generation tokens `OPT-6`, `blake2b` mirror cache `OPT-7`, or virtualized diff array `OPT-8`). |
 | **Gate G6** | **PySide6 UI Widget, `⚙` Jump & `?` Help Wiring** | Build the UI widget/dialog in `src/wrench/ui/` (never importing `pygit2`, `subprocess`, `sqlite3`, or `httpx`), connect `settings.setting_changed` for instant runtime show/hide, add the header `⚙` Settings jump button, and call `attach_help_topic(widget, "<topic_id>")`. |
 | **Gate G7** | **Phase Unit & UI Pytest Gate** | Run the phase's `pytest` completion gates (`tests/core/...` and `tests/ui/...`). Fix any failures in implementation code without weakening tests. |
-| **Gate G8** | **Automated Anti-Shortcut Security & Optimization Audit** | Run `pytest tests/meta/test_no_shortcuts_guard.py` (defined in `§0.C` below) to statically verify zero security shortcuts, zero layer violations, and zero stubbed functions. |
+| **Gate G8** | **Automated Anti-Shortcut Security & Optimization Audit** | Run `pytest tests/unit/test_no_shortcuts_guard.py` (defined in `§0.C` below) to statically verify zero security shortcuts, zero layer violations, and zero stubbed functions. |
 
 &nbsp;
 
@@ -117,12 +117,12 @@ Every single phase (`VP-0` through `VP-26`) MUST be executed by following this e
 6. **`SEC-6` (Allowlist-Validated `wrench://` Help URIs):** `HelpCenterDialog` (`VP-24`) MUST validate `wrench://open-setting/<key>` and `wrench://highlight-ui/<widget_id>` against `SettingsRegistry.has_key(key)` and registered widget IDs; never pass URL paths to `subprocess` or `os.system`.  
 7. **`SEC-7` (Zero Stubs, Zero `time.sleep` Hacks, Zero Skipped Optimizations):** Never use `pass`, `TODO`, `FIXME`, `NotImplementedError`, or `time.sleep()` in production code.
 
-### Mandatory Automated Guard Test (`tests/meta/test_no_shortcuts_guard.py` — Create in `VP-0 Step 1`)
+### Mandatory Automated Guard Test (`tests/unit/test_no_shortcuts_guard.py` — Create in `VP-0 Step 1`)
 
-In `VP-0 Step 1`, create `src/wrench/core/security_sanitizer.py` and `tests/meta/test_no_shortcuts_guard.py` with the following exact verification logic, and run `pytest tests/meta/test_no_shortcuts_guard.py` at the end of **every phase**:
+In `VP-0 Step 1`, create `src/wrench/core/security_sanitizer.py` and `tests/unit/test_no_shortcuts_guard.py` with the following exact verification logic, and run `pytest tests/unit/test_no_shortcuts_guard.py` at the end of **every phase**:
 
 ```py
-# tests/meta/test_no_shortcuts_guard.py
+# tests/unit/test_no_shortcuts_guard.py
 import ast
 import pathlib
 import re
@@ -251,33 +251,33 @@ def test_no_silent_exception_pass_in_src():
 
 | Phase & Stage | `srs.md` & `ui-planning.md` Refs | Target Source Files (`src/wrench/...`) | Optimizations & Security Guards | Verification Gate Command |
 | :---- | :---- | :---- | :---- | :---- |
-| **VP-0** (Stage 1\) | `FR-13.1`–`13.4`, `NFR-5`, `NFR-6`, `DEC-5`, `DEC-6` · `§1.3`, `§1.4`, `§2.2`, `§5.5`, `§6.11`, `Steps 26–27` | `storage/settings_registry.py`, `core/security_sanitizer.py`, `ui/dialogs/settings_dialog.py`, `ui/widgets/undo_toast.py` | `OPT-1` (Lazy Pages/Tabs), `OPT-2` (`150ms` Auto-Save), `OPT-3` (Delta Undo Stack), `OPT-4` (`WAL`), `SEC-1`–`SEC-7` | `pytest tests/storage/test_settings_registry.py tests/ui/test_settings_dialog.py tests/meta/test_no_shortcuts_guard.py` |
-| **VP-1** (Stage 2\) | `FR-2.4`, `FR-3.4` · `§1.4`, `§5.3`, `§6.15`, `Step 28` | `core/read_ops.py`, `core/write_ops.py`, `ui/widgets/cli_preview_bar.py`, `ui/dialogs/reset_dialog.py` | Cached worktree `gitdir`, `SEC-1` `--` delimiters, `SEC-3` CLI preview redaction | `pytest tests/core/test_cherry_pick_revert.py tests/ui/test_reset_and_sequencer_ui.py tests/meta/test_no_shortcuts_guard.py` |
-| **VP-2** (Stage 2\) | `FR-3.5`, `FR-10.1` · `§6.16`, `Step 29` | `core/rebase_sequencer.py`, `core/rebase_editor_helper.py`, `ui/dialogs/interactive_rebase_dialog.py` | Bounded `1000`\-commit walk, `SEC-4` `0o600` temp sequence files | `pytest tests/core/test_interactive_rebase.py tests/ui/test_interactive_rebase_dialog.py tests/meta/test_no_shortcuts_guard.py` |
-| **VP-3** (Stage 2\) | `FR-1.13`, `FR-1.15`, `FR-1.17` · `§2.1`, `§6.17`, `Step 30` | `core/worktrees.py`, `ui/widgets/worktree_panel.py` | `OPT-6` worker tokens, shared parent ODB cache across worktrees | `pytest tests/core/test_worktrees.py tests/ui/test_worktree_ui.py tests/meta/test_no_shortcuts_guard.py` |
-| **VP-4** (Stage 2\) | `FR-1.14` · `§6.3`, `Step 31` | `core/submodules.py`, `ui/widgets/submodule_panel.py` | `< 0.1ms` `.gitmodules` existence check before subprocess spawn | `pytest tests/core/test_submodules.py tests/ui/test_submodule_panel.py tests/meta/test_no_shortcuts_guard.py` |
-| **VP-5** (Stage 2\) | `FR-2.5`, `FR-2.6` · `§3.1`, `Step 32` | `core/commit_helpers.py`, `ui/widgets/coauthor_input.py` | `HEAD`\-OID-cached contributor list in memory | `pytest tests/core/test_commit_helpers.py tests/ui/test_commit_templates_coauthors.py tests/meta/test_no_shortcuts_guard.py` |
-| **VP-6** (Stage 3\) | `FR-5.10`, `FR-5.13` · `§6.18`, `Step 33` | `forge/capability.py`, `ui/widgets/pr_review_overlay.py` | `OPT-5` (`5000`\-line ring buffer \+ `50ms` flush), HTTP `ETag` caching, `SEC-3` log redaction | `pytest tests/forge/test_pr_inline_review.py tests/ui/test_pr_review_and_ci_logs_ui.py tests/meta/test_no_shortcuts_guard.py` |
-| **VP-7** (Stage 3\) | `FR-5.11` · `§2.1`, `§3.1`, `Step 34` | `ui/tabs/issue_list_tab.py`, `ui/widgets/issue_completer.py` | `OPT-1` lazy tab, `OPT-4` batched SQLite issue cache (`< 1ms` `#` lookup) | `pytest tests/forge/test_issues_capability.py tests/ui/test_issues_tab.py tests/meta/test_no_shortcuts_guard.py` |
-| **VP-8** (Stage 3\) | `FR-5.12` · `§6.19`, `Step 35` | `credentials/account_router.py`, `ui/dialogs/account_rules_dialog.py` | Prefix-sorted in-memory routing table, `NFR-3` keyring-only tokens | `pytest tests/credentials/test_multi_account.py tests/ui/test_account_rules_dialog.py tests/meta/test_no_shortcuts_guard.py` |
-| **VP-9** (Stage 3\) | `FR-6.3`, `FR-6.4` · `§6.11`, `Step 36` | `forge/adapters/sourceforge.py`, `forge/registry.py` | Lazy entry-point loading, `SEC-2` HTTPS enforcement | `pytest tests/forge/test_sourceforge_adapter.py tests/ui/test_custom_forge_domains_ui.py tests/meta/test_no_shortcuts_guard.py` |
-| **VP-10** (Stage 3\) | `FR-8.3`, `FR-8.4`, `FR-8.14`, `DEC-9` · `§3.2`, `§3.3`, `Step 37` | `core/external_tools.py`, `ui/diff_view/diff_widget.py` | `OPT-8` (`PatchByteIndex` `array('I')` \+ `DiffLineModel` \+ `512`\-line LRU cache \+ `35ms` coalescer) | `pytest tests/core/test_external_tools_and_diff.py tests/ui/test_diff_enhancements.py tests/meta/test_no_shortcuts_guard.py` |
-| **VP-11** (Stage 3\) | `FR-9.1`–`9.3` · `§4.1`, `§6.7`, `Step 38` | `core/reflog_ops.py`, `ui/dialogs/reflog_dialog.py` | `200ms` search debounce \+ `OPT-6` generation tokens, `pygit2` native reflog | `pytest tests/core/test_reflog_and_search.py tests/ui/test_reflog_and_search_ui.py tests/meta/test_no_shortcuts_guard.py` |
-| **VP-12** (Stage 3\) | `FR-4.5` · `§6.3`, `Step 39` | `core/lfs_ops.py`, `ui/dialogs/lfs_locks_dialog.py` | Mtime-cached `.gitattributes` `filter=lfs` pre-check | `pytest tests/core/test_lfs_locks.py tests/ui/test_lfs_locks_dialog.py tests/meta/test_no_shortcuts_guard.py` |
-| **VP-13** (Stage 4\) | `FR-12.1` · `§1.1`, `§1.3`, `Step 40` | `ui/tray_manager.py`, `ui/main_window.py` | Zero `QSystemTrayIcon` allocation when `desktop.system_tray.enabled == False` | `pytest tests/ui/test_system_tray.py tests/meta/test_no_shortcuts_guard.py` |
-| **VP-14** (Stage 4\) | `FR-8.5` · `§6.4`, `Step 41` | `core/snapshots.py`, `ui/snapshots_panel/__init__.py` | `.git/index` mtime \+ OID deduplication before running `git stash create` | `pytest tests/core/test_scheduled_backups.py tests/ui/test_snapshots_dialog.py tests/meta/test_no_shortcuts_guard.py` |
-| **VP-15** (Stage 4\) | `FR-12.4` · `§6.11`, `Step 42` | `credentials/portal_secret.py`, `packaging/aur/PKGBUILD`, `packaging/debian/` | Session-cached D-Bus secrets, `NFR-3` no plaintext fallback | `pytest tests/packaging/test_portal_secret.py tests/packaging/test_distro_manifests.py tests/meta/test_no_shortcuts_guard.py` |
-| **VP-16** (Stage 5\) | `FR-1.16`, `FR-1.18`, `FR-7.4`, `FR-11.3` · `§4.3`, `§6.2`, `§6.20`, `Step 43` | `core/sparse_checkout.py`, `ui/dialogs/sparse_checkout_dialog.py`, `ui/commit_graph/graph_widget.py` | Viewport-only painting \+ `QPixmapCache` badges \+ lazy tree expansion \+ `.git`\-only watch fallback | `pytest tests/core/test_sparse_checkout.py tests/ui/test_large_graph_virtualization.py tests/meta/test_no_shortcuts_guard.py` |
-| **VP-17** (Stage 5\) | `FR-2.7`, `FR-2.8` · `§3.1`, `Step 44` | `core/hook_env.py`, `ui/widgets/hook_output_drawer.py` | Startup-cached shell `PATH`, `OPT-5` `5000`\-line ring buffer, `SEC-3` log redaction | `pytest tests/core/test_hook_env.py tests/ui/test_hook_runner_ui.py tests/meta/test_no_shortcuts_guard.py` |
-| **VP-18** (Stage 5\) | `FR-2.9`, `FR-2.10` · `§4.2`, `§6.5`, `Step 45` | `core/signing_ops.py`, `credentials/signing_askpass.py`, `ui/commit_graph/graph_widget.py` | Viewport-batched `git log --no-walk` verification \+ `10000`\-entry LRU cache, `SEC-4` `0o600` socket | `pytest tests/core/test_commit_signing.py tests/ui/test_signing_badges_ui.py tests/meta/test_no_shortcuts_guard.py` |
-| **VP-19** (Stage 5\) | `FR-3.6` · `§6.21`, `Step 46` | `core/bisect_ops.py`, `ui/widgets/bisect_banner.py` | $O(1)$ `frozenset` candidate lookup in `paintEvent`, `OPT-6` worker tokens | `pytest tests/core/test_bisect_ops.py tests/ui/test_bisect_wizard.py tests/meta/test_no_shortcuts_guard.py` |
-| **VP-20** (Stage 5\) | `FR-3.7`, `FR-3.8`, `FR-5.13` · `§6.22`, `Step 47` | `core/stacks.py`, `ui/widgets/stack_panel.py` | Single-pass `git rebase --update-refs`, non-invasive SQLite stack metadata | `pytest tests/core/test_stacked_branches.py tests/ui/test_stacked_branches_ui.py tests/meta/test_no_shortcuts_guard.py` |
-| **VP-21** (Stage 6\) | `FR-9.4`, `FR-9.5` · `§6.23`, `Step 48` | `core/blame_ops.py`, `ui/widgets/blame_viewer.py` | `(repo, path, oid)` blame cache \+ empty-email guard \+ viewport-only gutter painting | `pytest tests/core/test_blame_and_line_history.py tests/ui/test_blame_and_line_history_ui.py tests/meta/test_no_shortcuts_guard.py` |
-| **VP-22** (Stage 6\) | `FR-10.5`, `FR-10.6`, `DEC-4` · `§3.1`, `§6.1`, `Step 49` | `core/stash_ops.py`, `ui/widgets/skip_worktree_panel.py` | Explicit `refs/stash@{n}` addressing \+ `.git/index` mtime guard on `ls-files -v` | `pytest tests/core/test_granular_stash_and_skip_worktree.py tests/ui/test_granular_stash_ui.py tests/meta/test_no_shortcuts_guard.py` |
-| **VP-23** (Stage 6\) | `FR-3.9`, `FR-8.6`, `FR-8.7` · `§6.6`, `§6.24`, `Step 49` | `core/custom_actions.py`, `ui/dialogs/command_palette.py` | Pre-indexed `< 5ms` `Ctrl+K` palette, `SEC-1` `shlex.quote()` on custom action variables | `pytest tests/core/test_rerere_patches_custom_actions.py tests/ui/test_command_palette.py tests/meta/test_no_shortcuts_guard.py` |
-| **VP-24** (Stage 6\) | `FR-8.13`, `FR-14.4`, `DEC-7` · `§5.6`, `§6.25`, `Step 50` | `ui/help_topics.py`, `ui/widgets/rich_help_tooltip.py`, `ui/dialogs/help_center_dialog.py` | Singleton tooltip (`0 KB` per-widget overhead), `OPT-1` lazy topic index, `SEC-6` URI allowlist | `pytest tests/ui/test_rich_help_tooltip.py tests/ui/test_help_center_dialog.py tests/meta/test_no_shortcuts_guard.py` |
-| **VP-25** (Stage 3\) | `FR-3.10`, `FR-4.6`, `FR-4.7`, `DEC-8` · `§4.2.5`, `§5.5 OPT-7`, `§6.26`, `Step 51` | `core/mirror_ops.py`, `forge/mirror_resolver.py`, `ui/dialogs/mirror_manager_dialog.py`, `ui/commit_graph/graph_widget.py` | `OPT-7` (`blake2b` ref-digest cache `< 0.5ms`, root-OID fingerprinting, parallel `ls-remote`, `120s` circuit breaker), `SEC-2` URL guard | `pytest tests/core/test_mirror_resolution_and_dag.py tests/ui/test_mirror_manager_ui.py tests/meta/test_no_shortcuts_guard.py` |
-| **VP-26** (Stage 3\) | `FR-6.5`–`6.10`, `DEC-10` · `§6.18`, `§6.27`, `Step 52` | `forge/adapters/codeberg.py`, `azure_repos.py`, `radicle.py`, `gerrit.py`, `sourcehut.py`, `tangled.py`, `ui/dialogs/forge_review_push_dialog.py` | Gerrit zero-copy `)]}'` slice, SourceHut batched GraphQL, Radicle local COB ref cache, Tangled DID-\>Knot LRU cache, `SEC-1`/`SEC-2` | `pytest tests/forge/test_extended_forges_vp26.py tests/ui/test_forge_review_push_ui.py tests/meta/test_no_shortcuts_guard.py` |
+| **VP-0** (Stage 1\) | `FR-13.1`–`13.4`, `NFR-5`, `NFR-6`, `DEC-5`, `DEC-6` · `§1.3`, `§1.4`, `§2.2`, `§5.5`, `§6.11`, `Steps 26–27` | `storage/settings_registry.py`, `core/security_sanitizer.py`, `ui/dialogs/settings_dialog.py`, `ui/widgets/undo_toast.py` | `OPT-1` (Lazy Pages/Tabs), `OPT-2` (`150ms` Auto-Save), `OPT-3` (Delta Undo Stack), `OPT-4` (`WAL`), `SEC-1`–`SEC-7` | `pytest tests/unit/test_settings_registry.py tests/ui/test_settings_dialog.py tests/unit/test_no_shortcuts_guard.py` |
+| **VP-1** (Stage 2\) | `FR-2.4`, `FR-3.4` · `§1.4`, `§5.3`, `§6.15`, `Step 28` | `core/read_ops.py`, `core/write_ops.py`, `ui/widgets/cli_preview_bar.py`, `ui/dialogs/reset_dialog.py` | Cached worktree `gitdir`, `SEC-1` `--` delimiters, `SEC-3` CLI preview redaction | `pytest tests/core/test_cherry_pick_revert.py tests/ui/test_reset_and_sequencer_ui.py tests/unit/test_no_shortcuts_guard.py` |
+| **VP-2** (Stage 2\) | `FR-3.5`, `FR-10.1` · `§6.16`, `Step 29` | `core/rebase_sequencer.py`, `core/rebase_editor_helper.py`, `ui/dialogs/interactive_rebase_dialog.py` | Bounded `1000`\-commit walk, `SEC-4` `0o600` temp sequence files | `pytest tests/core/test_interactive_rebase.py tests/ui/test_interactive_rebase_dialog.py tests/unit/test_no_shortcuts_guard.py` |
+| **VP-3** (Stage 2\) | `FR-1.13`, `FR-1.15`, `FR-1.17` · `§2.1`, `§6.17`, `Step 30` | `core/worktrees.py`, `ui/widgets/worktree_panel.py` | `OPT-6` worker tokens, shared parent ODB cache across worktrees | `pytest tests/core/test_worktrees.py tests/ui/test_worktree_ui.py tests/unit/test_no_shortcuts_guard.py` |
+| **VP-4** (Stage 2\) | `FR-1.14` · `§6.3`, `Step 31` | `core/submodules.py`, `ui/widgets/submodule_panel.py` | `< 0.1ms` `.gitmodules` existence check before subprocess spawn | `pytest tests/unit/test_submodules.py tests/ui/test_submodule_panel.py tests/unit/test_no_shortcuts_guard.py` |
+| **VP-5** (Stage 2\) | `FR-2.5`, `FR-2.6` · `§3.1`, `Step 32` | `core/commit_helpers.py`, `ui/widgets/coauthor_input.py` | `HEAD`\-OID-cached contributor list in memory | `pytest tests/core/test_commit_helpers.py tests/ui/test_commit_templates_coauthors.py tests/unit/test_no_shortcuts_guard.py` |
+| **VP-6** (Stage 3\) | `FR-5.10`, `FR-5.13` · `§6.18`, `Step 33` | `forge/capability.py`, `ui/widgets/pr_review_overlay.py` | `OPT-5` (`5000`\-line ring buffer \+ `50ms` flush), HTTP `ETag` caching, `SEC-3` log redaction | `pytest tests/unit/forge/test_pr_inline_review.py tests/ui/test_pr_review_and_ci_logs_ui.py tests/unit/test_no_shortcuts_guard.py` |
+| **VP-7** (Stage 3\) | `FR-5.11` · `§2.1`, `§3.1`, `Step 34` | `ui/tabs/issue_list_tab.py`, `ui/widgets/issue_completer.py` | `OPT-1` lazy tab, `OPT-4` batched SQLite issue cache (`< 1ms` `#` lookup) | `pytest tests/unit/forge/test_issues_capability.py tests/ui/test_issues_tab.py tests/unit/test_no_shortcuts_guard.py` |
+| **VP-8** (Stage 3\) | `FR-5.12` · `§6.19`, `Step 35` | `credentials/account_router.py`, `ui/dialogs/account_rules_dialog.py` | Prefix-sorted in-memory routing table, `NFR-3` keyring-only tokens | `pytest tests/unit/credentials/test_multi_account.py tests/ui/test_account_rules_dialog.py tests/unit/test_no_shortcuts_guard.py` |
+| **VP-9** (Stage 3\) | `FR-6.3`, `FR-6.4` · `§6.11`, `Step 36` | `forge/adapters/sourceforge.py`, `forge/registry.py` | Lazy entry-point loading, `SEC-2` HTTPS enforcement | `pytest tests/unit/forge/test_sourceforge_adapter.py tests/ui/test_custom_forge_domains_ui.py tests/unit/test_no_shortcuts_guard.py` |
+| **VP-10** (Stage 3\) | `FR-8.3`, `FR-8.4`, `FR-8.14`, `DEC-9` · `§3.2`, `§3.3`, `Step 37` | `core/external_tools.py`, `ui/diff_view/diff_widget.py` | `OPT-8` (`PatchByteIndex` `array('I')` \+ `DiffLineModel` \+ `512`\-line LRU cache \+ `35ms` coalescer) | `pytest tests/core/test_external_tools_and_diff.py tests/ui/test_diff_enhancements.py tests/unit/test_no_shortcuts_guard.py` |
+| **VP-11** (Stage 3\) | `FR-9.1`–`9.3` · `§4.1`, `§6.7`, `Step 38` | `core/reflog_ops.py`, `ui/dialogs/reflog_dialog.py` | `200ms` search debounce \+ `OPT-6` generation tokens, `pygit2` native reflog | `pytest tests/core/test_reflog_and_search.py tests/ui/test_reflog_and_search_ui.py tests/unit/test_no_shortcuts_guard.py` |
+| **VP-12** (Stage 3\) | `FR-4.5` · `§6.3`, `Step 39` | `core/lfs_ops.py`, `ui/dialogs/lfs_locks_dialog.py` | Mtime-cached `.gitattributes` `filter=lfs` pre-check | `pytest tests/core/test_lfs_locks.py tests/ui/test_lfs_locks_dialog.py tests/unit/test_no_shortcuts_guard.py` |
+| **VP-13** (Stage 4\) | `FR-12.1` · `§1.1`, `§1.3`, `Step 40` | `ui/tray_manager.py`, `ui/main_window.py` | Zero `QSystemTrayIcon` allocation when `desktop.system_tray.enabled == False` | `pytest tests/ui/test_system_tray.py tests/unit/test_no_shortcuts_guard.py` |
+| **VP-14** (Stage 4\) | `FR-8.5` · `§6.4`, `Step 41` | `core/snapshots.py`, `ui/snapshots_panel/__init__.py` | `.git/index` mtime \+ OID deduplication before running `git stash create` | `pytest tests/core/test_scheduled_backups.py tests/ui/test_snapshots_dialog.py tests/unit/test_no_shortcuts_guard.py` |
+| **VP-15** (Stage 4\) | `FR-12.4` · `§6.11`, `Step 42` | `credentials/portal_secret.py`, `packaging/aur/PKGBUILD`, `packaging/debian/` | Session-cached D-Bus secrets, `NFR-3` no plaintext fallback | `pytest tests/unit/packaging/test_portal_secret.py tests/unit/packaging/test_distro_manifests.py tests/unit/test_no_shortcuts_guard.py` |
+| **VP-16** (Stage 5\) | `FR-1.16`, `FR-1.18`, `FR-7.4`, `FR-11.3` · `§4.3`, `§6.2`, `§6.20`, `Step 43` | `core/sparse_checkout.py`, `ui/dialogs/sparse_checkout_dialog.py`, `ui/commit_graph/graph_widget.py` | Viewport-only painting \+ `QPixmapCache` badges \+ lazy tree expansion \+ `.git`\-only watch fallback | `pytest tests/core/test_sparse_checkout.py tests/ui/test_large_graph_virtualization.py tests/unit/test_no_shortcuts_guard.py` |
+| **VP-17** (Stage 5\) | `FR-2.7`, `FR-2.8` · `§3.1`, `Step 44` | `core/hook_env.py`, `ui/widgets/hook_output_drawer.py` | Startup-cached shell `PATH`, `OPT-5` `5000`\-line ring buffer, `SEC-3` log redaction | `pytest tests/core/test_hook_env.py tests/ui/test_hook_runner_ui.py tests/unit/test_no_shortcuts_guard.py` |
+| **VP-18** (Stage 5\) | `FR-2.9`, `FR-2.10` · `§4.2`, `§6.5`, `Step 45` | `core/signing_ops.py`, `credentials/signing_askpass.py`, `ui/commit_graph/graph_widget.py` | Viewport-batched `git log --no-walk` verification \+ `10000`\-entry LRU cache, `SEC-4` `0o600` socket | `pytest tests/core/test_commit_signing.py tests/ui/test_signing_badges_ui.py tests/unit/test_no_shortcuts_guard.py` |
+| **VP-19** (Stage 5\) | `FR-3.6` · `§6.21`, `Step 46` | `core/bisect_ops.py`, `ui/widgets/bisect_banner.py` | $O(1)$ `frozenset` candidate lookup in `paintEvent`, `OPT-6` worker tokens | `pytest tests/core/test_bisect_ops.py tests/ui/test_bisect_wizard.py tests/unit/test_no_shortcuts_guard.py` |
+| **VP-20** (Stage 5\) | `FR-3.7`, `FR-3.8`, `FR-5.13` · `§6.22`, `Step 47` | `core/stacks.py`, `ui/widgets/stack_panel.py` | Single-pass `git rebase --update-refs`, non-invasive SQLite stack metadata | `pytest tests/core/test_stacked_branches.py tests/ui/test_stacked_branches_ui.py tests/unit/test_no_shortcuts_guard.py` |
+| **VP-21** (Stage 6\) | `FR-9.4`, `FR-9.5` · `§6.23`, `Step 48` | `core/blame_ops.py`, `ui/widgets/blame_viewer.py` | `(repo, path, oid)` blame cache \+ empty-email guard \+ viewport-only gutter painting | `pytest tests/core/test_blame_and_line_history.py tests/ui/test_blame_and_line_history_ui.py tests/unit/test_no_shortcuts_guard.py` |
+| **VP-22** (Stage 6\) | `FR-10.5`, `FR-10.6`, `DEC-4` · `§3.1`, `§6.1`, `Step 49` | `core/stash_ops.py`, `ui/widgets/skip_worktree_panel.py` | Explicit `refs/stash@{n}` addressing \+ `.git/index` mtime guard on `ls-files -v` | `pytest tests/core/test_granular_stash_and_skip_worktree.py tests/ui/test_granular_stash_ui.py tests/unit/test_no_shortcuts_guard.py` |
+| **VP-23** (Stage 6\) | `FR-3.9`, `FR-8.6`, `FR-8.7` · `§6.6`, `§6.24`, `Step 49` | `core/custom_actions.py`, `ui/dialogs/command_palette.py` | Pre-indexed `< 5ms` `Ctrl+K` palette, `SEC-1` `shlex.quote()` on custom action variables | `pytest tests/core/test_rerere_patches_custom_actions.py tests/ui/test_command_palette.py tests/unit/test_no_shortcuts_guard.py` |
+| **VP-24** (Stage 6\) | `FR-8.13`, `FR-14.4`, `DEC-7` · `§5.6`, `§6.25`, `Step 50` | `ui/help_topics.py`, `ui/widgets/rich_help_tooltip.py`, `ui/dialogs/help_center_dialog.py` | Singleton tooltip (`0 KB` per-widget overhead), `OPT-1` lazy topic index, `SEC-6` URI allowlist | `pytest tests/ui/test_rich_help_tooltip.py tests/ui/test_help_center_dialog.py tests/unit/test_no_shortcuts_guard.py` |
+| **VP-25** (Stage 3\) | `FR-3.10`, `FR-4.6`, `FR-4.7`, `DEC-8` · `§4.2.5`, `§5.5 OPT-7`, `§6.26`, `Step 51` | `core/mirror_ops.py`, `forge/mirror_resolver.py`, `ui/dialogs/mirror_manager_dialog.py`, `ui/commit_graph/graph_widget.py` | `OPT-7` (`blake2b` ref-digest cache `< 0.5ms`, root-OID fingerprinting, parallel `ls-remote`, `120s` circuit breaker), `SEC-2` URL guard | `pytest tests/core/test_mirror_resolution_and_dag.py tests/ui/test_mirror_manager_ui.py tests/unit/test_no_shortcuts_guard.py` |
+| **VP-26** (Stage 3\) | `FR-6.5`–`6.10`, `DEC-10` · `§6.18`, `§6.27`, `Step 52` | `forge/adapters/codeberg.py`, `azure_repos.py`, `radicle.py`, `gerrit.py`, `sourcehut.py`, `tangled.py`, `ui/dialogs/forge_review_push_dialog.py` | Gerrit zero-copy `)]}'` slice, SourceHut batched GraphQL, Radicle local COB ref cache, Tangled DID-\>Knot LRU cache, `SEC-1`/`SEC-2` | `pytest tests/unit/forge/test_extended_forges_vp26.py tests/ui/test_forge_review_push_ui.py tests/unit/test_no_shortcuts_guard.py` |
 
 &nbsp;
 
@@ -321,7 +321,7 @@ def test_no_silent_exception_pass_in_src():
 > Fast models fail on large PySide6 + `pygit2` codebases in 7 predictable ways. Every rule below is mechanically enforced by `tests/unit/test_no_shortcuts_guard.py`. Violating any of `FLASH-1`..`FLASH-7` will immediately fail the phase gate.
 
 1. **`FLASH-1` — Non-Destructive Shared File Edits (Zero Truncation Rule):**
-   * When editing shared files (`src/wrench/core/engine.py`, `read_ops.py`, `write_ops.py`, `models.py`, `src/wrench/ui/main_window.py`, `changes_view.py`, `history_view.py`, `settings_dialog.py`), **NEVER** delete existing methods, signals, dataclasses, or imports from earlier phases.
+   * When editing shared files (`src/wrench/core/engine.py`, `read_ops.py`, `write_ops.py`, `models.py`, `src/wrench/ui/main_window.py`, `src/wrench/ui/tabs/changes_tab.py`, `src/wrench/ui/tabs/history_tab.py`, `src/wrench/ui/dialogs/settings_dialog.py`), **NEVER** delete existing methods, signals, dataclasses, or imports from earlier phases.
    * **NEVER** write lazy truncation comments like `# ... existing code ...`, `# ... rest of class ...`, or `# unchanged`. Always preserve 100% of existing lines and run `git diff <file>` after every edit to verify only new/updated code was touched.
 2. **`FLASH-2` — Strict PySide6 (Qt 6.8+) API Rules (Zero PyQt5 / Qt5 Contamination):**
    * **Imports:** Always use `PySide6` (`from PySide6.QtCore import Qt, Signal, Slot, QTimer, QObject, QRunnable, QThreadPool`). **NEVER** import `PyQt5` or `PyQt6`, and **NEVER** use `pyqtSignal` or `pyqtSlot`.
@@ -352,6 +352,82 @@ def test_no_silent_exception_pass_in_src():
      2. Write the complete implementation for that single Step (zero `TODO`s, zero stubs).
      3. Run `./bin/wrench-test tests/unit/test_no_shortcuts_guard.py -v` + the phase's unit test file immediately.
      4. Run `git diff --stat` to confirm no unintended files or existing functions were deleted.
+
+---
+
+<!-- WRENCH-RECON-PATCH-V2-2026-11-23 -->
+## 0.F Repo Reality & v2.0 Launch Priority Addendum (verified against git HEAD `129475e`, 2026-11-23)
+
+**Priority order when sources disagree:**
+1. The live source tree + auto-generated **`dev/REPO_MAP_CORE.md`** (and `dev/REPO_MAP.md`)
+2. This Section **`0.F`**
+3. Per-phase **`Step 0b`** blocks below
+4. The rest of this document
+
+**Zero-Guessing Rule:** Always read `dev/REPO_MAP_CORE.md` first. Never invent a dataclass field, Qt `Signal`,
+`SettingsRegistry` key, or method argument that is not in `dev/REPO_MAP_CORE.md`. After completing any phase,
+run `python3 scripts/generate_repo_map.py` to keep both symbol maps 100% synced.
+
+### 0.F.1 Live Phase Status & Focused v2.0 Launch Priority Queue
+
+| Phase | Status | Action / Launch Tier |
+|---|---|---|
+| `VP-0` | **Completed** | Do not redo. Universal `SettingsRegistry` & 13-category UI live. |
+| `VP-2` | **Completed** | Do not touch `core/rebase_sequencer.py`, `core/rebase_editor_helper.py`, `ui/dialogs/interactive_rebase_dialog.py`. |
+| `VP-2.5` | **Completed** | Do not break `ui/icons.py`, `ui/theme.py`, `ui/widgets/context_header_bar.py`, `ui/changes_view.py`, `ui/history_view.py`, or 3-col `history_tab.py`. |
+| `VP-16` | **Completed** | Do not touch `core/sparse_checkout.py`, `ui/dialogs/sparse_checkout_dialog.py`. |
+| `VP-4`, `VP-7`, `VP-11`, `VP-12`, `VP-14`, `VP-21`, `VP-22` | **Partially Built in v1** | Read that phase's `Step 0b`. REUSE existing code; never create parallel duplicates. |
+| **v2.0 Launch Core (Build First!)** | **Priority Queue** | **`VP-1`** (Cherry-Pick/Revert/Reset + `UndoToastWidget`) -> **`VP-10` + `OPT-9`** (`Ctrl+K` Command Palette + Single-Key Chord Engine) -> **`VP-11` + `OPT-10`** (Reflog + **Op-Log Undo Time Machine "undo that stays plain Git"** + `merge-tree` Conflict Prediction) -> **`VP-18`** (GPG/SSH Commit Signing) -> **`VP-3`** (Worktrees) -> **`VP-7`** (Full Issue/PR Conversation Threads, Reactions & `#` Completer) -> **`VP-15`** (Flatpak w/ Bundled Python 3.15 + Reproducible `git/git` Benchmark). |
+| **v2.0 Remaining Polish** | **Second Wave** | `VP-4`, `VP-12`, `VP-17`, `VP-21`, `VP-22`, `VP-23`, `VP-13`, `VP-14`, `VP-5`, `VP-6`, `VP-8`, `VP-19`, `VP-20`, `VP-24`. |
+| **Post-v2.0 (`v2.5+` Ecosystem)** | **Deferred Until After v2.0 Launch** | `VP-9` (SourceForge), `VP-25` (5-Stage Multi-Mirror DAG), `VP-26` (6 Extended Forges). Four rock-solid hosts + signing + undo + Flatpak beats eleven hosts without signing. |
+
+### 0.F.2 Real Code Conventions (Verified at `129475e` — Overrides Older Snippets)
+
+1. **Argument conventions:**
+
+| Layer | File | First parameter |
+|---|---|---|
+| Reads | `src/wrench/core/read_ops.py` | `repo: RepoHandle` (use `repo.path` for the directory; note `get_branch_sync_status` & `get_ref_sidebar_tree` accept `Path \| str`) |
+| Writes | `src/wrench/core/write_ops.py` | `repo_path: Path \| str` |
+| Feature modules (`reflog_ops`, `submodules`, `lfs_ops`, `snapshots`) | `src/wrench/core/*.py` | `repo: RepoHandle` |
+| Engine module functions | `src/wrench/core/engine.py` | `repo: RepoHandle` |
+| Engine class methods | `class GitEngine` in `core/engine.py` | other args first, then `repo: RepoHandle \| None = None` last |
+
+2. **Running git:** Only `write_ops.run_git(repo_path, args, *, timeout=30, check=True, input_text=None)`. `args` EXCLUDES the word
+   `git` (write `["cherry-pick", "--no-commit", oid]`, NOT `["git", "-C", ...]`). With `check=True` a non-zero exit raises
+   `GitCommandError(args, returncode, stderr, stdout=)`. Use `check=False` when inspecting exit codes directly. For long ops use
+   `run_git_streaming(...)`. To prevent an editor opening, pass `["-c", "core.editor=true", ...]` first.
+3. **Dataclasses (`models.py` vs `engine.py`):** Put new dataclasses in `src/wrench/core/models.py` and import them into `engine.py`.
+   NOTE: `engine.py` and `models.py` currently contain DUPLICATE definitions of `RepoStatus`, `MergeResult`, `RebaseResult`, `ReflogEntry`,
+   `Submodule`, `SubmoduleStatus`, `LogFilter`. If adding a field to any of these, add the SAME field (with default) to BOTH copies.
+4. **Feature gating (`OPT-1`):** Check `self.is_feature_enabled("<key>", repo_path)` as the first statement of the `GitEngine` method.
+   Never write `self.settings.get_bool(...)`.
+5. **Safety snapshot:** Use `snapshots.maybe_create_safety_snapshot(repo, op_name, *, conn=..., repo_id=...)` in `src/wrench/core/snapshots.py`.
+6. **Background work in UI:** Use `from wrench.ui.workers import run_in_background`; UI never imports `subprocess`, `pygit2`, or `sqlite3`.
+7. **Migrations:** `src/wrench/storage/db.py::run_migrations` uses `PRAGMA user_version`. Add new tables to BOTH `storage/schema.sql` and a new
+   `if current_version < N:` block in `db.py`, bumping `PRAGMA user_version = N`.
+8. **Tests:**
+   - Locations: `tests/core/`, `tests/ui/`, `tests/unit/forge/`, `tests/unit/credentials/`, `tests/unit/storage/`, guard test is `tests/unit/test_no_shortcuts_guard.py` (never create `tests/meta/`).
+   - Never call blocking `dialog.exec()` in a test (`FLASH-4`); use `.show()` and drive slots/signals directly.
+   - Run targeted tests + `./bin/wrench-test tests/unit/test_no_shortcuts_guard.py -v` + `.venv/bin/ruff check src/ tests/`.
+
+### 0.F.3 Missing VP-0 Deliverables & Exact Assignment
+
+| Item | Status & Assignment |
+|---|---|
+| `UndoToastWidget` (`src/wrench/ui/widgets/undo_toast.py`) | Built in **`VP-1` Step 0c** (spec below). |
+| `ChordDispatcher` (`OPT-9`, `shortcuts.vim_mode_enabled`) | **IN SCOPE for v2.0 Launch!** Build in **`VP-10`** alongside the `Ctrl+K` Command Palette (`src/wrench/ui/widgets/chord_dispatcher.py`). |
+| `op_log_entries` & `Ctrl+Alt+Z` Op-Log Time Machine (`OPT-10`) + `git merge-tree --write-tree` Conflict Prediction | **IN SCOPE for v2.0 Launch!** Build in **`VP-11`** ("undo that stays plain Git" — core competitive differentiator vs. GitFourchette & Sublime Merge). |
+| `LazyTabContainer` | Implemented via factory support in `src/wrench/ui/tabs/tab_bar.py::TabContainer`. Use `TabContainer`. |
+| Settings class names | Delta class is `SettingDelta`; `SettingSpec` includes `tier` and `requires_restart` (see `dev/REPO_MAP_CORE.md`). |
+
+### 0.F.4 Micro-Protocol for Every Step
+
+1. Read `dev/REPO_MAP_CORE.md` and run the phase's `Step 0b` "Verify first" commands.
+2. Open every file you will edit; copy exact conventions from neighboring functions.
+3. Implement cleanly (zero `TODO`s, zero `NotImplementedError`, zero `# ... existing code ...` truncation per `FLASH-1`).
+4. Run targeted unit/UI tests + `./bin/wrench-test tests/unit/test_no_shortcuts_guard.py -v` + `.venv/bin/ruff check src/ tests/`.
+5. Run `python3 scripts/generate_repo_map.py` and `git diff --stat` before finishing.
 
 ---
 
@@ -462,7 +538,7 @@ class SettingSpec:
   - *Forges & CI*: `forge.enabled` (`True`), `forge.github.enabled` (`True`, parent `"forge.enabled"`), `forge.gitlab.enabled` (`True`, parent `"forge.enabled"`), `forge.forgejo.enabled` (`True`, parent `"forge.enabled"`), `forge.bitbucket.enabled` (`True`, parent `"forge.enabled"`), `forge.ci_badges.enabled` (`True`, parent `"forge.enabled"`), `forge.poll_interval_seconds` (`120`, min `30`, max `3600`, parent `"forge.enabled"`), `forge.allow_third_party_entrypoint_plugins` (`True`, parent `"forge.enabled"`).  
   - *Watcher & Performance*: `watcher.inotify.enabled` (`True`), `watcher.debounce_ms` (`300`, min `50`, max `5000`, parent `"watcher.inotify.enabled"`), `watcher.refresh_on_window_focus` (`True`), `watcher.lock_recovery_prompt.enabled` (`True`), `performance.worker_thread_count` (`4`, min `1`, max `16`), `performance.max_diff_file_size_kb` (`2048`, min `128`, max `32768`).  
   - *Safety & Backups*: `safety.pre_op_snapshot.enabled` (`True`), `stash.ui.enabled` (`True`), `stash.confirm_before_drop` (`True`), `safety.commit_partially_staged_mode` (`"prompt"`, choices `("prompt", "stage_all", "staged_only")`), `safety.auto_stage_hook_modifications` (`True`), `safety.precommit_tool_search_paths` (`True`).  
-- **Completion Gate:** `pytest tests/storage/test_settings_registry.py`
+- **Completion Gate:** `pytest tests/unit/test_settings_registry.py`
 
 ### Step 2 — Wire v1 modules to `SettingsRegistry` for immediate zero-impact disabling
 
@@ -503,6 +579,34 @@ Modify existing v1 modules to obey `SettingsRegistry`:
 ### Step 0 — Repo-state reconciliation
 
 - Inspect `src/wrench/core/write_ops.py`, `src/wrench/core/read_ops.py`, `src/wrench/core/engine.py`, and `src/wrench/ui/tabs/history_tab.py`.
+
+
+#### Step 0b: Verified Repo Reality (read BEFORE Step 1)
+
+**Verify first (run each; compare to Expected):**
+- `grep -rn "cherry" src/wrench --include=*.py | grep -v settings_registry` -> Expected: no output.
+- `test -f src/wrench/ui/dialogs/reset_dialog.py && echo EXISTS || echo MISSING` -> Expected: `MISSING`.
+- `grep -c '^\s*key="graph.cherry_pick_revert' src/wrench/storage/settings_registry.py` -> Expected: `3` (already registered; do NOT re-register).
+
+**Signature adaptations (override older snippets):**
+- `write_ops.cherry_pick_commits(repo_path: Path | str, oids: list[str], *, no_commit: bool = False, record_origin: bool = True, mainline_parent: int | None = None) -> SequencerResult`.
+- `write_ops.revert_commits(repo_path: Path | str, oids: list[str], *, no_commit: bool = False, mainline_parent: int | None = None) -> SequencerResult`.
+- `write_ops.sequencer_action(repo_path: Path | str, op: str, action: str) -> SequencerResult` (`op` in `cherry-pick|revert`, `action` in `continue|skip|abort`; raise `ValueError` otherwise).
+- `write_ops.reset_branch(repo_path: Path | str, target_oid: str, mode: str) -> None` (`mode` in `soft|mixed|hard`; raise `ValueError` otherwise).
+- Add `@dataclass class SequencerResult(status: str, conflicted_files: list[str] = field(default_factory=list), message: str = "")` to `core/models.py`, and add `cherry_pick_in_progress: bool = False` and `revert_in_progress: bool = False` to `RepoStatus` (BOTH copies: `models.py` and `engine.py`). Resolve `.git` dir via `core/paths.py::resolve_git_dir(repo.path)`.
+- Call `snapshots.maybe_create_safety_snapshot(repo, op_name, ...)` with `"cherry-pick"`, `"revert"`, `"reset"` inside `GitEngine` methods before writing.
+
+**Verified git 2.43 behavior:**
+- Conflict: exit 1 + `CHERRY_PICK_HEAD` / `REVERT_HEAD` exists -> use `check=False`, return `SequencerResult("conflict", unmerged_files)` via `git diff --name-only --diff-filter=U`.
+- Merge commit without `-m`: if commit has `> 1` parent and `mainline_parent is None`, raise `WrenchGitError("Select a mainline parent (1 or 2)")`; otherwise pass `["-m", str(mainline_parent)]`.
+- `--continue`: always run `["-c", "core.editor=true", op, "--continue"]` so no interactive editor spawns.
+- Empty pick: exit != 0, state file present, no unmerged files -> return `SequencerResult("empty")` (banner offers Skip).
+- `--abort` when idle: exit 128 (`no cherry-pick or revert in progress`) -> treat as success `SequencerResult("aborted")`.
+- Revert: always pass `--no-edit`.
+
+**Step 0c (Build `UndoToastWidget` in `src/wrench/ui/widgets/undo_toast.py`):**
+- `class UndoToastWidget(QFrame)` with `undo_requested = Signal()`, `dismissed = Signal()`, and `show_toast(self, message: str, *, can_undo: bool, timeout_ms: int = 8000) -> None`. Hide `Undo` button when `can_undo=False`; auto-hide via single-shot `QTimer`.
+- Anchor bottom-center on `MainWindow`'s central widget. Undo restores `old_head` (`reset_branch(..., "soft")` for cherry-pick/revert; `"mixed"` + `snapshots.restore_snapshot` for reset). No Undo for `--no-commit` or conflicts.
 
 ### Step 1 — Register `VP-1` settings & implement cherry-pick, revert, and sequencer state in `core`
 
@@ -693,6 +797,16 @@ class RebaseTodoEntry:
 
 - Inspect `src/wrench/core/read_ops.py` (locate the v1 Bare Repo check), `src/wrench/ui/tabs/tab_bar.py`, and `src/wrench/ui/main_window.py`.
 
+
+#### Step 0b: Verified Repo Reality (read BEFORE Step 1)
+
+**Verify first:** `grep -c '^\s*key="worktrees' src/wrench/storage/settings_registry.py` -> Expected: `2` (`worktrees.enabled`, `worktrees.bare_hub.enabled` already registered).
+**Verified git 2.43 behavior:**
+- `git worktree list --porcelain`: blank-line separated blocks (`worktree <path>`, `HEAD <sha>`, `branch refs/heads/<name>` or `detached`, optional `locked [reason]`, optional `prunable [reason]`).
+- Dirty worktree removal requires `--force`; LOCKED worktree removal requires `-f -f` (confirm with user first).
+- Branch already checked out elsewhere exits 128 (`already used by worktree at`) -> map to friendly `WrenchGitError`.
+- Always resolve linked worktree `.git` file via `core/paths.py::resolve_git_dir`.
+
 ### Step 1 — Register `VP-3` settings & create `src/wrench/core/worktrees.py`
 
 1. In `src/wrench/storage/settings_registry.py`, register:  
@@ -748,6 +862,12 @@ class WorktreeInfo:
 
 - Inspect `src/wrench/core/engine.py` and the repository sidebar in `src/wrench/ui/`.
 
+
+#### Step 0b: Verified Repo Reality (read BEFORE Step 1)
+
+**Verify first:** `src/wrench/core/submodules.py` ALREADY implements `list_submodules`, `submodule_status`, `init_submodule`, `update_submodules`, `sync_submodules`, `add_submodule` (plus `ui/dialogs/submodule_dialog.py`).
+**DO NOT create** duplicate `SubmoduleInfo` or `init_submodules`. Extend `Submodule` / `SubmoduleStatus` (BOTH `models.py` and `engine.py` copies) with optional defaulted fields if needed. `submodules.enabled` and `submodules.auto_init` are already registered.
+
 ### Step 1 — Register `VP-4` settings & create `src/wrench/core/submodules.py`
 
 1. In `src/wrench/storage/settings_registry.py`, register:  
@@ -771,7 +891,7 @@ class SubmoduleInfo:
    - `init_submodules(repo_path: str, paths: list[str] | None = None) -> None` (`git submodule update --init --recursive`).  
    - `sync_submodules(repo_path: str) -> None` (`git submodule sync --recursive`).  
    - `add_submodule(repo_path: str, url: str, relative_path: str, branch: str | None = None) -> None`.  
-- **Completion Gate:** `pytest tests/core/test_submodules.py`
+- **Completion Gate:** `pytest tests/unit/test_submodules.py`
 
 ### Step 2 — Build `src/wrench/ui/widgets/submodule_panel.py`
 
@@ -874,7 +994,7 @@ class SupportsCILogs(Protocol):
 
    Implement these methods across `github.py`, `gitlab.py`, `forgejo.py`, and `bitbucket.py`, plus `checkout_pr_branch(repo_path: str, remote_name: str, pr_number: int, local_branch_name: str)` in `src/wrench/core/write_ops.py` (`git fetch <remote> pull/<id>/head:<branch>` or `merge-requests/<id>/head:<branch>`).
 
-- **Completion Gate:** `pytest tests/forge/test_pr_inline_review.py`
+- **Completion Gate:** `pytest tests/unit/forge/test_pr_inline_review.py`
 
 ### Step 2 — Build `src/wrench/ui/widgets/pr_review_overlay.py` & CI Log Drawer
 
@@ -902,13 +1022,19 @@ class SupportsCILogs(Protocol):
 
 - Inspect `src/wrench/forge/capability.py` and `src/wrench/ui/tabs/`.
 
+
+#### Step 0b: Verified Repo Reality (read BEFORE Step 1)
+
+**Verify first:** `src/wrench/ui/tabs/issue_list_tab.py` (`IssueListTab`), `issue_detail_tab.py`, and `pr_detail_tab.py` ALREADY exist, and all 4 forge adapters implement `list_issues` / `get_issue`.
+**DO NOT create** a duplicate `issues_tab.py` or `IssueItem`. Extend `forge.models.Issue` with optional defaulted fields (`number`, `labels`, `assignees`) and build the missing conversation threads, emoji reactions, `create_issue`/`set_issue_state`, `cached_issues` SQLite table, and `#` `issue_completer.py` in `ChangesTab`.
+
 ### Step 1 — Register `VP-7` settings & implement Issue CRUD in forge adapters
 
 1. In `src/wrench/storage/settings_registry.py`, register:  
    - `forge.issues_tab.enabled` (`BOOL`, default `True`, category `"Forges & CI"`, label `"Show Issues tab in repository workspace"`, parent `"forge.enabled"`)  
    - `forge.commit_issue_autocomplete.enabled` (`BOOL`, default `True`, category `"Forges & CI"`, label `"Autocomplete #issue numbers in commit message box"`, parent `"forge.enabled"`)  
 2. In `src/wrench/forge/capability.py`, verify or add `IssueItem(number, title, state, labels, assignees, author, body, web_url)` and `list_issues`, `create_issue`, `set_issue_state` across GitHub, GitLab, Forgejo, and Bitbucket adapters, caching results in `wrench.db` (`cached_issues` table) for fast `#` autocomplete.  
-- **Completion Gate:** `pytest tests/forge/test_issues_capability.py`
+- **Completion Gate:** `pytest tests/unit/forge/test_issues_capability.py`
 
 ### Step 2 — Build `src/wrench/ui/tabs/issue_list_tab.py` & `src/wrench/ui/widgets/issue_completer.py`
 
@@ -954,7 +1080,7 @@ CREATE TABLE IF NOT EXISTS account_routing_rules (
 
 3. Create `src/wrench/credentials/account_router.py` with `resolve_account_for_repo(repo_path: str) -> AccountRoute | None` (matching longest `path_prefix` when `credentials.multi_account_rules.enabled` is `True`).  
 4. In `src/wrench/core/write_ops.py`, if `resolve_account_for_repo(repo_path)` returns an `ssh_key_path`, pass `GIT_SSH_COMMAND="ssh -i <ssh_key_path> -o IdentitiesOnly=yes"` in the subprocess environment for `fetch`, `pull`, `push`, and `clone`.  
-- **Completion Gate:** `pytest tests/credentials/test_multi_account.py`
+- **Completion Gate:** `pytest tests/unit/credentials/test_multi_account.py`
 
 ### Step 2 — Build `src/wrench/ui/dialogs/account_rules_dialog.py`
 
@@ -986,7 +1112,7 @@ CREATE TABLE IF NOT EXISTS account_routing_rules (
 2. Create SQLite table `custom_forge_domains(domain TEXT PRIMARY KEY, adapter_name TEXT NOT NULL, api_base_url TEXT NOT NULL)` in `wrench.db`.  
 3. Create `src/wrench/forge/adapters/sourceforge.py` implementing Allura REST API endpoints (`/rest/p/{project}/{mount}/merge-requests/` and `/rest/p/{project}/tickets/`) against `ForgeCapabilities`.  
 4. Update `src/wrench/forge/registry.py` to resolve self-hosted domains from `custom_forge_domains` before falling back to hostname heuristics.  
-- **Completion Gate:** `pytest tests/forge/test_sourceforge_adapter.py`
+- **Completion Gate:** `pytest tests/unit/forge/test_sourceforge_adapter.py`
 
 ### Step 2 — Add Custom Forge Domain & Plugin Inspector UI in Preferences
 
@@ -1048,7 +1174,7 @@ class PatchByteIndex:
 
    - Implement `DiffLineModel(QAbstractListModel)` \+ `QListView` (`setUniformItemSizes(True)`) and `DiffRowDelegate(QStyledItemDelegate)` that decodes and highlights **only** visible rows `[first_visible_row - 20 : last_visible_row + 20]`, storing computed `(intraline_spans, syntax_tokens)` in an `lru_cache(maxsize=512)` (`OPT-8`).  
    - Implement Split/Unified toggle (`Ctrl+D`), `DiffMinimapWidget` (`12px` right gutter downsampled to `<= 200` buckets), `StickyFunctionHeaderWidget` (`24px` top banner), `Alt+W` whitespace peek, and a `35ms` single-shot `QTimer` coalescing rapid file-selection changes (`ui-planning.md §3.2–§3.3`).  
-- **Completion Gate:** `pytest tests/ui/test_diff_enhancements.py tests/meta/test_no_shortcuts_guard.py`
+- **Completion Gate:** `pytest tests/ui/test_diff_enhancements.py tests/unit/test_no_shortcuts_guard.py`
 
 ### Forbidden Decisions for Lower-Tier Models
 
@@ -1068,10 +1194,16 @@ class PatchByteIndex:
 
 - Inspect `src/wrench/core/read_ops.py` and `src/wrench/ui/tabs/history_tab.py`.
 
+
+#### Step 0b: Verified Repo Reality (read BEFORE Step 1)
+
+**Verify first:** `src/wrench/core/reflog_ops.py` ALREADY implements `list_reflog`, `reset_to_reflog_entry`, `create_branch_from_reflog` (`core/reflog.py` also exists; leave intact).
+**Build here:** (1) `ui/dialogs/reflog_dialog.py` (`ReflogDrawer`) + pickaxe `-S` (literal) / `-G` (regex) fields on `LogFilter` (both copies), AND (2) **`OPT-10` Op-Log Time Machine (`op_log_entries` SQLite table + `Ctrl+Alt+Z` deterministic undo that stays plain Git) & `< 15 ms` `git merge-tree --write-tree` Live Conflict Prediction** (core v2.0 differentiator!).
+
 ### Step 1 — Register `VP-11` settings & create `src/wrench/core/reflog_ops.py`
 
 1. In `src/wrench/storage/settings_registry.py`, register:  
-   - `search.pickaxe_enabled` (`BOOL`, default `True`, category `"Blame & Search"`, label `"Enable code-change pickaxe search (-S / -G) in History"`)  
+   - `search.pickaxe.enabled` (`BOOL`, default `True`, category `"Blame & Search"`, label `"Enable code-change pickaxe search (-S / -G) in History"`)  
    - `reflog.inspector_ui.enabled` (`BOOL`, default `True`, category `"Safety & Backups"`, label `"Enable Visual Reflog Time-Travel Inspector"`)  
    - `reflog.max_entries` (`INT`, default `250`, min `50`, max `2000`, category `"Safety & Backups"`, label `"Maximum reflog entries to load"`, parent `"reflog.inspector_ui.enabled"`)  
 2. Create `src/wrench/core/reflog_ops.py`:
@@ -1118,6 +1250,12 @@ class ReflogRecord:
 ### Step 0 — Repo-state reconciliation
 
 - Inspect any existing v1 Phase 5 LFS code in `src/wrench/core/` and `src/wrench/ui/`.
+
+
+#### Step 0b: Verified Repo Reality (read BEFORE Step 1)
+
+**Verify first:** `src/wrench/core/lfs_ops.py` ALREADY implements `lfs_locks`, `lfs_lock`, `lfs_unlock`, `lfs_track`, `lfs_untrack`, `lfs_pull`, `lfs_push`, `lfs_status`, `is_lfs_installed`, `lfs_available`, `lfs_files`, and `LFSLock` exists in `core/models.py`.
+**DO NOT create** duplicate lock functions. Build only missing `lfs prune`, tracked patterns helper, `lfs.auto_fetch_locks`, and `ui/dialogs/lfs_locks_dialog.py`.
 
 ### Step 1 — Register `VP-12` settings & create `src/wrench/core/lfs_ops.py`
 
@@ -1166,6 +1304,11 @@ class LFSLock:
 
 - Inspect `src/wrench/ui/main_window.py` and `src/wrench/app.py`.
 
+
+#### Step 0b: Verified Repo Reality (read BEFORE Step 1)
+
+**Verify first:** `desktop.system_tray.enabled` is ALREADY registered in `settings_registry.py` (do not duplicate).
+
 ### Step 1 — Register `VP-13` settings & create `src/wrench/ui/tray_manager.py`
 
 1. In `src/wrench/storage/settings_registry.py`, register:  
@@ -1195,6 +1338,12 @@ class LFSLock:
 ### Step 0 — Repo-state reconciliation
 
 - Inspect `src/wrench/core/snapshots.py` and `src/wrench/storage/`.
+
+
+#### Step 0b: Verified Repo Reality (read BEFORE Step 1)
+
+**Verify first:** `MainWindow._snapshot_timer` (`restart_snapshot_timer`), `safety.scheduled_backups.enabled`, and `ui/snapshots_panel/snapshots_panel.py` (`SnapshotsPanel`) ALREADY exist.
+**DO NOT create** a second timer or `snapshots_dialog.py`. Refactor `_snapshot_timer` to read its interval from settings and extend `SnapshotsPanel`.
 
 ### Step 1 — Register `VP-14` settings & extend `src/wrench/core/snapshots.py`
 
@@ -1232,18 +1381,23 @@ class LFSLock:
 
 - Inspect `packaging/` and `src/wrench/credentials/`.
 
+
+#### Step 0b: Verified Repo Reality (read BEFORE Step 1)
+
+**Verify first:** `packaging/appimage/build-appimage.sh`, `packaging/build-all.sh`, and `packaging/flatpak/` exist; App ID is `io.github.uzair.Wrench`. Bundle a standalone Python 3.15 runtime in Flatpak/AppImage and add a reproducible `benchmarks/bench_git_repo.py` script against `git/git`.
+
 ### Step 1 — Register `VP-15` settings & implement `src/wrench/credentials/portal_secret.py` (`VP-15a`)
 
 1. In `src/wrench/storage/settings_registry.py`, register:  
    - `credentials.backend_mode` (`CHOICE`, default `"auto"`, choices `("auto", "secret_service", "xdg_portal", "memory_only_ephemeral")`, scope `SettingScope.GLOBAL_ONLY`, category `"General & UI"`, label `"Credential storage backend (memory_only never writes secrets to keyring)"`)  
    - `desktop.use_xdg_file_portal` (`BOOL`, default `True`, scope `SettingScope.GLOBAL_ONLY`, category `"General & UI"`, label `"Use native desktop portal file chooser dialogs"`)  
 2. Create `src/wrench/credentials/portal_secret.py` implementing the `org.freedesktop.portal.Secret` D-Bus call when running inside Flatpak (`/.flatpak-info` exists) or when `credentials.backend_mode == "xdg_portal"`, plus an in-memory session dict when `credentials.backend_mode == "memory_only_ephemeral"` (for users who do not want Wrench touching their system keyring at all).  
-- **Completion Gate:** `pytest tests/packaging/test_portal_secret.py`
+- **Completion Gate:** `pytest tests/unit/packaging/test_portal_secret.py`
 
 ### Step 2 — Add native Linux packaging manifests (`VP-15b–d`)
 
-- Create `packaging/aur/PKGBUILD` (`VP-15b`), `packaging/debian/control` \+  `packaging/debian/rules` (`VP-15c`), and `packaging/rpm/wrench.spec` (`VP-15d`), plus CI syntax validation in `tests/packaging/test_distro_manifests.py`.  
-- **Completion Gate:** `pytest tests/packaging/test_distro_manifests.py`
+- Create `packaging/aur/PKGBUILD` (`VP-15b`), `packaging/debian/control` \+  `packaging/debian/rules` (`VP-15c`), and `packaging/rpm/wrench.spec` (`VP-15d`), plus CI syntax validation in `tests/unit/packaging/test_distro_manifests.py`.  
+- **Completion Gate:** `pytest tests/unit/packaging/test_distro_manifests.py`
 
 ### Forbidden Decisions for Lower-Tier Models
 
@@ -1306,6 +1460,11 @@ class LFSLock:
 ### Step 0 — Repo-state reconciliation
 
 - Inspect `src/wrench/core/write_ops.py` and `src/wrench/ui/tabs/changes_tab.py`.
+
+
+#### Step 0b: Verified Repo Reality (read BEFORE Step 1)
+
+**Verify first:** `src/wrench/core/recovery/actions.py` already has `StageHookModificationsAndRetryAction` and `RunPreCommitFixAction` (`find_project_binary`). Unify PATH hydration across both hook runs and `RunPreCommitFixAction`.
 
 ### Step 1 — Register `VP-17` settings & create `src/wrench/core/hook_env.py`
 
@@ -1505,6 +1664,11 @@ CREATE TABLE IF NOT EXISTS branch_stacks (
 
 - Inspect `src/wrench/core/read_ops.py` and diff/file views in `src/wrench/ui/`.
 
+
+#### Step 0b: Verified Repo Reality (read BEFORE Step 1)
+
+**Verify first:** `read_ops.blame_file(repo: RepoHandle, path: str) -> list[BlameLine]` and `GitEngine.blame` ALREADY exist. Extend `blame_file` with optional keyword-only args rather than duplicating it, and build the missing UI.
+
 ### Step 1 — Register `VP-21` settings & create `src/wrench/core/blame_ops.py`
 
 1. In `src/wrench/storage/settings_registry.py`, register:  
@@ -1557,6 +1721,11 @@ class BlameLine:
 ### Step 0 — Repo-state reconciliation
 
 - Inspect stash functions in `src/wrench/core/write_ops.py` and `src/wrench/ui/tabs/changes_tab.py`.
+
+
+#### Step 0b: Verified Repo Reality (read BEFORE Step 1)
+
+**Verify first:** `write_ops.py` ALREADY has `stash_push`, `stash_pop`, `stash_apply`, `stash_drop`, and `stash.ui.enabled` / `stash.confirm_before_drop` are already registered. Make `stash_push` return the real top ref via `git rev-parse --verify refs/stash` and keep existing callers green.
 
 ### Step 1 — Register `VP-22` settings & create `src/wrench/core/stash_ops.py`
 
@@ -1667,6 +1836,11 @@ class BlameLine:
 
 - Inspect the 3-way merge tool in `src/wrench/ui/`, `src/wrench/core/write_ops.py`, and `src/wrench/ui/main_window.py`.
 
+
+#### Step 0b: Verified Repo Reality (read BEFORE Step 1)
+
+**Verified git 2.43 behavior:** `git am` on dirty tree exits 128 -> refuse early; conflicting `git am` leaves `.git/rebase-apply` -> detect via `get_sequencer_state` (`active_op == "am"`) and offer `--continue`/`--skip`/`--abort`; validate patches with `git apply --check` first.
+
 ### Step 1 — Register `VP-23` settings & create `src/wrench/core/custom_actions.py`
 
 1. In `src/wrench/storage/settings_registry.py`, register:  
@@ -1715,12 +1889,12 @@ class BlameLine:
 
 1. Create `src/wrench/ui/help_topics.py` defining `@dataclass(frozen=True) class HelpTopic(topic_id, title, category, short_summary, cli_equivalent, shortcut, markdown_body, related_setting_keys, highlight_widget_id)` and a lazy getter `get_help_topics() -> dict[str, HelpTopic]` covering all 25 core & v2 Git/Wrench concepts.  
 2. Create `src/wrench/ui/widgets/rich_help_tooltip.py` implementing `RichHelpTooltipManager` with a `500ms` hover trigger timer (`help.tooltip_delay_ms`), a `150ms` cursor-grace timer so users can move the mouse into the popover to click `[Read Full Guide (F1) →]` or `[Switch to Compact Tooltips]`, and automatic fallback to native compact tooltips when `help.tooltip_mode == "compact_shortcut_only"`.  
-- **Completion Gate:** `pytest tests/ui/test_rich_help_tooltip.py tests/meta/test_no_shortcuts_guard.py`
+- **Completion Gate:** `pytest tests/ui/test_rich_help_tooltip.py tests/unit/test_no_shortcuts_guard.py`
 
 ### Step 2 — Build `src/wrench/ui/dialogs/help_center_dialog.py` (`F1`) & `UIWidgetHighlighter`
 
 - Create `HelpCenterDialog(QDialog)` bound to `F1` with live keyword search, category tree, offline Markdown renderer, and `SEC-6` allowlist-checked `anchorClicked` handler for `wrench://open-setting/<key>` and `wrench://highlight-ui/<widget_id>`.  
-- **Completion Gate:** `pytest tests/ui/test_help_center_dialog.py tests/meta/test_no_shortcuts_guard.py`
+- **Completion Gate:** `pytest tests/ui/test_help_center_dialog.py tests/unit/test_no_shortcuts_guard.py`
 
 ### Forbidden Decisions for Lower-Tier Models
 
@@ -1894,7 +2068,7 @@ def push_to_all_mirrors_parallel(
 ) -> dict[str, tuple[bool, str]]: ...
 ```
 
-- **Completion Gate:** `pytest tests/core/test_mirror_resolution_and_dag.py tests/meta/test_no_shortcuts_guard.py`
+- **Completion Gate:** `pytest tests/core/test_mirror_resolution_and_dag.py tests/unit/test_no_shortcuts_guard.py`
 
 ### Step 2 — Render Combined Mirror DAG Pills & Drift Badges in `CommitGraphWidget` & Build `MirrorManagerDialog`
 
@@ -1904,7 +2078,7 @@ def push_to_all_mirrors_parallel(
    - When `mirrors.show_drift_warnings` is `True` and a mirror remote lags/diverges, draw an amber pill `[⚠ <provider>/<branch> ↓N]` with right-click action `Sync Mirror '<remote>/<branch>' Now`.  
    - When `mirrors.aggregate_cross_forge_ci` is `True`, merge CI status badges across all verified mirror forge adapters onto the commit row and Hover X-Ray card.  
 2. Create `src/wrench/ui/dialogs/mirror_manager_dialog.py` (`MirrorManagerDialog`, `ui-planning.md §6.26`) with the Mirror Sync Matrix table, root-OID lineage verification badge, circuit-breaker indicator, `Sync Now` / `Push All Mirrors` buttons, and `CliCommandPreviewBar`.  
-- **Completion Gate:** `pytest tests/ui/test_mirror_manager_ui.py tests/meta/test_no_shortcuts_guard.py`
+- **Completion Gate:** `pytest tests/ui/test_mirror_manager_ui.py tests/unit/test_no_shortcuts_guard.py`
 
 ### Forbidden Decisions for Lower-Tier Models
 
@@ -2207,7 +2381,7 @@ class TangledAdapter:
         ...
 ```
 
-- **Completion Gate:** `pytest tests/forge/test_extended_forges_vp26.py tests/meta/test_no_shortcuts_guard.py`
+- **Completion Gate:** `pytest tests/unit/forge/test_extended_forges_vp26.py tests/unit/test_no_shortcuts_guard.py`
 
 ### Step 2 — Build `src/wrench/ui/dialogs/forge_review_push_dialog.py` & Wire `ChangesTab`, `PRReviewOverlay`, and `CommitGraphWidget`
 
@@ -2223,7 +2397,7 @@ class TangledAdapter:
    - Render the Gerrit `Code-Review (-2..+2)` / `Verified (-1..+1)` voting bar and `Patchset PS1..PSN` selector when viewing a Gerrit change, or the Azure Repos 5-state vote selector when viewing an Azure PR.  
 4. In `src/wrench/ui/commit_graph/graph_widget.py` (`§4.2.5`):  
    - Support all 11 forge short codes (`GH`, `GL`, `CB`, `FG`, `BB`, `SF`, `AZ`, `RAD`, `GR`, `SRHT`, `TG`) in collapsed mirror pills (`[🌐 main · GH · CB · RAD · TG ✓]`).  
-- **Completion Gate:** `pytest tests/ui/test_forge_review_push_ui.py tests/meta/test_no_shortcuts_guard.py`
+- **Completion Gate:** `pytest tests/ui/test_forge_review_push_ui.py tests/unit/test_no_shortcuts_guard.py`
 
 ### Forbidden Decisions for Lower-Tier Models
 
@@ -2233,7 +2407,7 @@ class TangledAdapter:
 
 ### Acceptance Check
 
-- [ ] All 6 new platforms (`Codeberg`, `Azure Repos`, `Radicle`, `Gerrit`, `SourceHut`, `Tangled`) appear in `SettingsDialog -> Forges & CI` (`Ctrl+,`), can be individually toggled off with zero background/UI overhead, resolve cleanly in the 5-stage Mirror Resolver (`VP-25`), and pass `pytest tests/forge/test_extended_forges_vp26.py tests/ui/test_forge_review_push_ui.py tests/meta/test_no_shortcuts_guard.py`.
+- [ ] All 6 new platforms (`Codeberg`, `Azure Repos`, `Radicle`, `Gerrit`, `SourceHut`, `Tangled`) appear in `SettingsDialog -> Forges & CI` (`Ctrl+,`), can be individually toggled off with zero background/UI overhead, resolve cleanly in the 5-stage Mirror Resolver (`VP-25`), and pass `pytest tests/unit/forge/test_extended_forges_vp26.py tests/ui/test_forge_review_push_ui.py tests/unit/test_no_shortcuts_guard.py`.
 
 ## Master Sequential Checklist (`VP-0` – `VP-26`)
 
@@ -2243,8 +2417,8 @@ class TangledAdapter:
 - [x] **VP-0.4:** Implement Intent-Preserving Staging Resolver & Pre-Commit Hook Lifecycle Engine (`PartialStagingDialog`, `[MM]` composite badges, virtualenv binary discovery, and 1-click auto-stage formatter recovery).  
 - [ ] **VP-1.1:** Register `VP-1` settings and implement `cherry_pick_commits`, `revert_commits`, `sequencer_action`, and `reset_branch` in `core`.  
 - [ ] **VP-1.2:** Build `reset_dialog.py` visual file-impact preview and wire Cherry-Pick/Revert/Reset into `HistoryTab`.  
-- [ ] **VP-2.1:** Register `VP-2` settings and implement `rebase_sequencer.py` and `rebase_editor_helper.py`.  
-- [ ] **VP-2.2:** Build drag-and-drop `interactive_rebase_dialog.py` and wire into `HistoryTab`.  
+- [x] **VP-2.1:** Register `VP-2` settings and implement `rebase_sequencer.py` and `rebase_editor_helper.py`.  
+- [x] **VP-2.2:** Build drag-and-drop `interactive_rebase_dialog.py` and wire into `HistoryTab`.  
 - [ ] **VP-3.1:** Register `VP-3` settings and implement `worktrees.py`, path templates, cross-worktree cherry-pick, and Bare-Repo Worktree Hub mode.  
 - [ ] **VP-3.2:** Build `worktree_panel.py`, full-path hover tooltips, and named workspace sessions in `wrench.db`.  
 - [ ] **VP-4.1:** Register `VP-4` settings and implement `submodules.py` (`list`, `init`, `sync`, `add`).  
@@ -2254,7 +2428,7 @@ class TangledAdapter:
 - [ ] **VP-6.1:** Register `VP-6` settings and implement inline PR review comments, 1-click PR branch checkout, and CI log streaming in `forge`.  
 - [ ] **VP-6.2:** Build `pr_review_overlay.py` and `CILogDrawer` in `ui`.  
 - [ ] **VP-7.1:** Register `VP-7` settings and implement Issue CRUD \+ SQLite cache in `forge`.  
-- [ ] **VP-7.2:** Build `issues_tab.py` and `#` `issue_completer.py` in `ChangesTab`.  
+- [ ] **VP-7.2:** Extend the EXISTING `ui/tabs/issue_list_tab.py` (`IssueListTab`) and add `#` `issue_completer.py` in `ChangesTab`.  
 - [ ] **VP-8.1:** Register `VP-8` settings and implement `account_router.py` and `GIT_SSH_COMMAND` per-repo routing.  
 - [ ] **VP-8.2:** Build `account_rules_dialog.py` directory-prefix routing UI.  
 - [ ] **VP-9.1:** Register `VP-9` settings and implement `sourceforge.py` adapter and `custom_forge_domains` routing.  
@@ -2262,12 +2436,12 @@ class TangledAdapter:
 - [ ] **VP-10.1:** Register `VP-10` settings and implement `external_tools.py` and `diff_highlighter.py` (intra-line \+ `--color-moved`).  
 - [ ] **VP-10.2:** Wire external diff/merge buttons and live diff highlighter toggles into `ChangesTab` and `HistoryTab`.  
 - [ ] **VP-11.1:** Register `VP-11` settings and implement `reflog_ops.py` and pickaxe (`-S`/`-G`) commit search.  
-- [ ] **VP-11.2:** Build `reflog_drawer.py` and expandable search filters in `HistoryTab`.  
+- [ ] **VP-11.2:** Build `reflog_dialog.py` (class `ReflogDrawer`) and expandable search filters in `HistoryTab`.  
 - [ ] **VP-12.1:** Register `VP-12` settings and implement `lfs_ops.py` (`locks`, `lock`, `unlock`, `track`, `prune`).  
 - [ ] **VP-12.2:** Build `lfs_locks_dialog.py` and LFS file lock badges in `ChangesTab`.  
 - [ ] **VP-13.1:** Register `VP-13` settings and implement `tray_manager.py` (`QSystemTrayIcon` \+ close-to-tray toggle).  
 - [ ] **VP-14.1:** Register `VP-14` settings and implement `SnapshotScheduler` in `snapshots.py`.  
-- [ ] **VP-14.2:** Build `snapshots_dialog.py` visual snapshot browser and restore UI.  
+- [ ] **VP-14.2:** Extend the EXISTING `ui/snapshots_panel/snapshots_panel.py` (`SnapshotsPanel`) with the scheduler status and restore browser (do NOT create `snapshots_dialog.py`).  
 - [ ] **VP-15.1:** Register `VP-15` settings and implement `portal_secret.py` (XDG Secret Portal \+ ephemeral memory-only mode).  
 - [ ] **VP-15.2:** Create and validate Linux packaging manifests (`PKGBUILD`, `debian/`, `wrench.spec`).  
 - [x] **VP-16.1:** Register `VP-16` settings and implement `sparse_checkout.py` and partial clone (`--filter=blob:none`).  

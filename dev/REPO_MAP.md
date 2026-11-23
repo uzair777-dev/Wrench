@@ -1,6 +1,6 @@
 # Wrench Auto-Generated Full Repository Symbol Map (`dev/REPO_MAP.md`)
 
-> Generated from `src/wrench/` at git HEAD `552ab29` by
+> Generated from `src/wrench/` at git HEAD `129475e` by
 > `scripts/generate_repo_map.py`. Treat every dataclass field, `Signal`,
 > `SettingsRegistry` key, and signature below as live ground truth.
 

@@ -26,6 +26,7 @@ from PySide6.QtCore import (
     Slot,
 )
 from PySide6.QtGui import (
+    QAction,
     QBrush,
     QColor,
     QFont,
@@ -718,6 +719,7 @@ class CommitGraphWidget(QTableView):
     merge_requested = Signal(str)  # emits source sha/ref
     create_branch_requested = Signal(str)
     create_tag_requested = Signal(str)
+    cherry_pick_to_worktree_requested = Signal(str, str)
     graph_scroll_changed = Signal(int, int)  # emits (current_scroll_x, max_scroll_x)
 
     def __init__(
@@ -1481,6 +1483,26 @@ class CommitGraphWidget(QTableView):
         if reg is None or reg.is_enabled("rebase.interactive_ui.enabled", repo_str):
             interactive_rebase_act = menu.addAction(self.tr("Interactive Rebase from Here..."))
 
+        cherry_pick_wt_actions: dict[QAction, str] = {}
+        if (
+            reg is not None
+            and reg.is_enabled("worktrees.cross_cherry_pick.enabled", repo_str)
+            and self._repo
+        ):
+            try:
+                from wrench.core import engine
+
+                wt_list = engine.list_worktrees(self._repo)
+                linked_wts = [w for w in wt_list if not w.is_main and not w.is_bare]
+                if linked_wts:
+                    wt_menu = menu.addMenu(self.tr("Cherry-Pick to Worktree…"))
+                    for wt in linked_wts:
+                        branch_lbl = wt.branch_name or Path(wt.path).name
+                        wt_act = wt_menu.addAction(f"{branch_lbl} ({Path(wt.path).name})")
+                        cherry_pick_wt_actions[wt_act] = wt.path
+            except Exception as e:
+                logger.debug("Failed populating worktree cherry-pick menu: %s", e)
+
         action = menu.exec(self.viewport().mapToGlobal(pos))
         if action == copy_action:
             cb = QGuiApplication.clipboard()
@@ -1496,3 +1518,7 @@ class CommitGraphWidget(QTableView):
             self.rebase_requested.emit(commit.sha)
         elif interactive_rebase_act is not None and action == interactive_rebase_act:
             self.interactive_rebase_requested.emit(commit.sha)
+        elif action in cherry_pick_wt_actions:
+            self.cherry_pick_to_worktree_requested.emit(
+                commit.sha, cherry_pick_wt_actions[action]
+            )

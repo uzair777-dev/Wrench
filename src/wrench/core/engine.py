@@ -18,6 +18,7 @@ from .exceptions import (
     RemoteExistsError,
     RemoteNotFoundError,
     StaleLockDetectedError,  # noqa: F401
+    WorktreeAlreadyCheckedOutError,
     WrenchGitError,
     WrenchRepoNotFoundError,
 )
@@ -31,9 +32,13 @@ from .models import (
     RebaseTodoEntry,
     RefName,
     RefSidebarTree,
+    SignatureStatus,
+    SigningKey,
     SparseCheckoutState,
     TreeDirectoryEntry,
     WatcherStatusInfo,  # noqa: F401
+    WorkspaceSession,
+    WorktreeInfo,
 )
 
 logger = logging.getLogger(__name__)
@@ -87,6 +92,8 @@ class RepoStatus:
     merge_in_progress: bool = False
     rebase_in_progress: bool = False
     partially_staged: list[FileChange] = field(default_factory=list)
+    is_bare: bool = False
+    is_bare_hub: bool = False
 
     @property
     def branch_name(self) -> str | None:
@@ -272,7 +279,16 @@ class RepoHandle:
 
 
 # Import read_ops, write_ops, identity, reflog after all dataclasses are defined
-from . import identity, read_ops, rebase_sequencer, reflog, sparse_checkout, write_ops  # noqa: E402
+from . import (  # noqa: E402
+    identity,
+    read_ops,
+    rebase_sequencer,
+    reflog,
+    signing_ops,
+    sparse_checkout,
+    worktrees,
+    write_ops,
+)
 from .bundles import (  # noqa: E402
     create_bundle,
     get_bundle_info,
@@ -1892,6 +1908,142 @@ def run_git_terminal_command(
         duration_ms = (time.perf_counter() - start) * 1000.0
         return (-1, "", f"Command failed: {exc}", duration_ms)
 
+    def list_worktrees(self, repo: RepoHandle | Path | str | None = None) -> list[WorktreeInfo]:
+        """List active worktrees for the repository (VP-3, FR-1.13)."""
+        target = repo or self.repo
+        if target is None:
+            return []
+        repo_path = target.path if isinstance(target, RepoHandle) else Path(target)
+        if not self.is_feature_enabled("worktrees.enabled", str(repo_path)):
+            return []
+        return worktrees.list_worktrees(repo_path)
+
+    def format_worktree_path(
+        self,
+        branch_name: str,
+        template: str | None = None,
+        repo: RepoHandle | Path | str | None = None,
+    ) -> Path:
+        """Resolve destination worktree directory from template (VP-3, FR-1.17)."""
+        target = repo or self.repo
+        if target is None:
+            raise ValueError("No repository provided")
+        repo_path = target.path if isinstance(target, RepoHandle) else Path(target)
+        tmpl = (
+            template
+            or self.get_settings().get_str("worktrees.path_template", str(repo_path))
+            or "../{repo_name}-{branch_slug}"
+        )
+        return worktrees.format_worktree_path(repo_path, branch_name, tmpl)
+
+    def add_worktree(
+        self,
+        target_path: Path | str,
+        branch: str | None = None,
+        *,
+        branch_name: str | None = None,
+        create_branch: bool = False,
+        new_branch: bool = False,
+        commit: str | None = None,
+        repo: RepoHandle | Path | str | None = None,
+    ) -> WorktreeInfo:
+        """Add a linked worktree (VP-3, FR-1.13)."""
+        target = repo or self.repo
+        if target is None:
+            raise ValueError("No repository provided")
+        repo_path = target.path if isinstance(target, RepoHandle) else Path(target)
+        if not self.is_feature_enabled("worktrees.enabled", str(repo_path)):
+            raise WrenchGitError("Worktrees feature is disabled in Settings (worktrees.enabled).")
+        eff_branch = branch or branch_name or ""
+        eff_create = create_branch or new_branch
+        return worktrees.add_worktree(
+            repo_path,
+            target_path,
+            eff_branch,
+            create_branch=eff_create,
+            commit=commit,
+        )
+
+    def lock_worktree(
+        self,
+        worktree_path: Path | str,
+        reason: str = "",
+        repo: RepoHandle | Path | str | None = None,
+    ) -> None:
+        """Lock a worktree (VP-3, FR-1.13)."""
+        target = repo or self.repo
+        if target is None:
+            raise ValueError("No repository provided")
+        repo_path = target.path if isinstance(target, RepoHandle) else Path(target)
+        worktrees.lock_worktree(repo_path, worktree_path, reason=reason)
+
+    def unlock_worktree(
+        self,
+        worktree_path: Path | str,
+        repo: RepoHandle | Path | str | None = None,
+    ) -> None:
+        """Unlock a worktree (VP-3, FR-1.13)."""
+        target = repo or self.repo
+        if target is None:
+            raise ValueError("No repository provided")
+        repo_path = target.path if isinstance(target, RepoHandle) else Path(target)
+        worktrees.unlock_worktree(repo_path, worktree_path)
+
+    def remove_worktree(
+        self,
+        worktree_path: Path | str,
+        *,
+        force: bool = False,
+        repo: RepoHandle | Path | str | None = None,
+    ) -> None:
+        """Remove a worktree (VP-3, FR-1.13)."""
+        target = repo or self.repo
+        if target is None:
+            raise ValueError("No repository provided")
+        repo_path = target.path if isinstance(target, RepoHandle) else Path(target)
+        worktrees.remove_worktree(repo_path, worktree_path, force=force)
+
+    def prune_worktrees(self, repo: RepoHandle | Path | str | None = None) -> None:
+        """Prune stale worktree references (VP-3, FR-1.13)."""
+        target = repo or self.repo
+        if target is None:
+            raise ValueError("No repository provided")
+        repo_path = target.path if isinstance(target, RepoHandle) else Path(target)
+        worktrees.prune_worktrees(repo_path)
+
+    def cross_worktree_cherry_pick(
+        self,
+        target_worktree_path: Path | str,
+        commit_oid: str,
+        repo: RepoHandle | Path | str | None = None,
+    ) -> None:
+        """Cherry-pick a commit into another worktree (VP-3, FR-1.17)."""
+        target = repo or self.repo
+        repo_path = (
+            str(target.path if isinstance(target, RepoHandle) else target) if target else None
+        )
+        if repo_path and not self.is_feature_enabled(
+            "worktrees.cross_cherry_pick.enabled", repo_path
+        ):
+            raise WrenchGitError("Cross-worktree cherry-pick is disabled in Settings.")
+        worktrees.cross_worktree_cherry_pick(target_worktree_path, commit_oid)
+
+    def verify_commit_signatures(
+        self,
+        commit_oids: list[str],
+        repo: RepoHandle | Path | str | None = None,
+    ) -> dict[str, SignatureStatus]:
+        """Batch verify commit/tag signatures (VP-18, FR-2.9, FR-2.10)."""
+        target = repo or self.repo
+        if not target:
+            return {}
+        repo_path = target.path if isinstance(target, RepoHandle) else Path(target)
+        return signing_ops.verify_commit_signatures_batch(repo_path, commit_oids)
+
+    def list_signing_keys(self) -> list[SigningKey]:
+        """List local GPG, SSH, or X.509 keys for commit signing (FR-2.9)."""
+        return signing_ops.list_available_signing_keys()
+
 
 def get_branch_sync_status(repo: RepoHandle | Path | str) -> BranchSyncStatus:
     """Module-level entry point for active branch ahead/behind status."""
@@ -2085,3 +2237,85 @@ def interactive_rebase(
     )
     refresh_repo_handle(repo)
     return result
+
+
+def list_worktrees(repo: RepoHandle | Path | str) -> list[WorktreeInfo]:
+    repo_path = repo.path if isinstance(repo, RepoHandle) else Path(repo)
+    return worktrees.list_worktrees(repo_path)
+
+
+def format_worktree_path(
+    repo: RepoHandle | Path | str,
+    branch_name: str,
+    template: str | None = None,
+) -> Path:
+    repo_path = repo.path if isinstance(repo, RepoHandle) else Path(repo)
+    return worktrees.format_worktree_path(repo_path, branch_name, template)
+
+
+def add_worktree(
+    repo: RepoHandle | Path | str,
+    target_path: Path | str,
+    branch: str | None = None,
+    *,
+    branch_name: str | None = None,
+    create_branch: bool = False,
+    new_branch: bool = False,
+    commit: str | None = None,
+) -> WorktreeInfo:
+    repo_path = repo.path if isinstance(repo, RepoHandle) else Path(repo)
+    eff_branch = branch or branch_name or ""
+    eff_create = create_branch or new_branch
+    return worktrees.add_worktree(
+        repo_path,
+        target_path,
+        eff_branch,
+        create_branch=eff_create,
+        commit=commit,
+    )
+
+
+def lock_worktree(
+    repo: RepoHandle | Path | str,
+    worktree_path: Path | str,
+    reason: str = "",
+) -> None:
+    repo_path = repo.path if isinstance(repo, RepoHandle) else Path(repo)
+    worktrees.lock_worktree(repo_path, worktree_path, reason=reason)
+
+
+def unlock_worktree(repo: RepoHandle | Path | str, worktree_path: Path | str) -> None:
+    repo_path = repo.path if isinstance(repo, RepoHandle) else Path(repo)
+    worktrees.unlock_worktree(repo_path, worktree_path)
+
+
+def remove_worktree(
+    repo: RepoHandle | Path | str,
+    worktree_path: Path | str,
+    *,
+    force: bool = False,
+) -> None:
+    repo_path = repo.path if isinstance(repo, RepoHandle) else Path(repo)
+    worktrees.remove_worktree(repo_path, worktree_path, force=force)
+
+
+def prune_worktrees(repo: RepoHandle | Path | str) -> None:
+    repo_path = repo.path if isinstance(repo, RepoHandle) else Path(repo)
+    worktrees.prune_worktrees(repo_path)
+
+
+def cross_worktree_cherry_pick(target_worktree_path: Path | str, commit_oid: str) -> None:
+    worktrees.cross_worktree_cherry_pick(target_worktree_path, commit_oid)
+
+
+def verify_commit_signatures(
+    repo: RepoHandle | Path | str,
+    commit_oids: list[str],
+) -> dict[str, SignatureStatus]:
+    repo_path = repo.path if isinstance(repo, RepoHandle) else Path(repo)
+    return signing_ops.verify_commit_signatures_batch(repo_path, commit_oids)
+
+
+def list_signing_keys() -> list[SigningKey]:
+    return signing_ops.list_available_signing_keys()
+

@@ -20,7 +20,12 @@ from PySide6.QtWidgets import (
 from wrench.core import engine
 from wrench.core.engine import Commit, FileStat, RepoHandle
 from wrench.ui.diff_view.diff_widget import DiffWidget
-from wrench.ui.theme import COMMIT_STAT_COLORS, get_badge_colors, is_dark_theme
+from wrench.ui.theme import (
+    COMMIT_STAT_COLORS,
+    get_badge_colors,
+    get_signature_badge_qss,
+    is_dark_theme,
+)
 from wrench.ui.widgets.avatar import AvatarWidget, resolve_author_avatar_url
 
 logger = logging.getLogger(__name__)
@@ -62,6 +67,11 @@ class CommitDetailPanel(QWidget):
         self.copy_sha_btn.setFixedHeight(22)
         self.copy_sha_btn.clicked.connect(self._copy_sha)
         meta_top.addWidget(self.copy_sha_btn)
+
+        self.signature_badge = QLabel(self)
+        self.signature_badge.setFixedHeight(22)
+        self.signature_badge.setVisible(False)
+        meta_top.addWidget(self.signature_badge)
 
         meta_top.addStretch()
 
@@ -270,6 +280,7 @@ class CommitDetailPanel(QWidget):
         self._current_commit = commit
         if not commit or not self._repo:
             self.avatar_widget.setVisible(False)
+            self.signature_badge.setVisible(False)
             self.sha_label.setText("SHA: -")
             self.author_date_label.setText("-")
             self.message_edit.clear()
@@ -283,6 +294,60 @@ class CommitDetailPanel(QWidget):
 
         self.avatar_widget.setVisible(True)
         self.avatar_widget.set_avatar(url, commit.author_name or commit.author_email)
+
+        # Verify signature (VP-18, FR-2.9, FR-2.10)
+        try:
+            sigs = engine.verify_commit_signatures(self._repo, [commit.sha])
+            sig = sigs.get(commit.sha)
+            is_dark = is_dark_theme(self)
+            if sig and sig.state == "verified":
+                self.signature_badge.setText(self.tr("✓ Verified"))
+                self.signature_badge.setToolTip(
+                    self.tr(
+                        f"Cryptographically verified signature\n"
+                        f"Signer: {sig.signer or 'Unknown'}\n"
+                        f"Key ID: {sig.key_fingerprint or 'N/A'}\n"
+                        f"Type: {sig.key_type or 'N/A'}"
+                    )
+                )
+                self.signature_badge.setStyleSheet(get_signature_badge_qss("verified", is_dark))
+                self.signature_badge.setVisible(True)
+            elif sig and sig.state == "unverified_key":
+                self.signature_badge.setText(self.tr("? Unverified Key"))
+                self.signature_badge.setToolTip(
+                    self.tr(
+                        f"Valid signature with unverified/unknown public key\n"
+                        f"Signer: {sig.signer or 'Unknown'}\n"
+                        f"Key ID: {sig.key_fingerprint or 'N/A'}"
+                    )
+                )
+                self.signature_badge.setStyleSheet(
+                    get_signature_badge_qss("unverified_key", is_dark)
+                )
+                self.signature_badge.setVisible(True)
+            elif sig and sig.state == "bad":
+                self.signature_badge.setText(self.tr("✕ Bad Signature"))
+                self.signature_badge.setToolTip(
+                    self.tr(f"Signature verification failed!\n{sig.validity_details or ''}")
+                )
+                self.signature_badge.setStyleSheet(get_signature_badge_qss("bad", is_dark))
+                self.signature_badge.setVisible(True)
+            else:
+                self.signature_badge.setText(self.tr("Unsigned"))
+                self.signature_badge.setToolTip(
+                    self.tr("This commit does not contain a cryptographic GPG or SSH signature.")
+                )
+                self.signature_badge.setStyleSheet(get_signature_badge_qss("unsigned", is_dark))
+                self.signature_badge.setVisible(True)
+        except Exception as e:
+            logger.debug("Signature check error: %s", e)
+            is_dark = is_dark_theme(self)
+            self.signature_badge.setText(self.tr("Unsigned"))
+            self.signature_badge.setToolTip(
+                self.tr("This commit does not contain a cryptographic GPG or SSH signature.")
+            )
+            self.signature_badge.setStyleSheet(get_signature_badge_qss("unsigned", is_dark))
+            self.signature_badge.setVisible(True)
 
         self.sha_label.setText(f"SHA: {commit.sha[:8]} ({commit.sha})")
 

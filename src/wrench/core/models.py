@@ -3,6 +3,7 @@
 
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 
 @dataclass
@@ -53,6 +54,8 @@ class RepoStatus:
     merge_in_progress: bool = False
     rebase_in_progress: bool = False
     partially_staged: list[FileChange] = field(default_factory=list)
+    is_bare: bool = False
+    is_bare_hub: bool = False
 
     @property
     def partially_staged_paths(self) -> set[str]:
@@ -374,3 +377,57 @@ class RefSidebarTree:
     remote_branches: tuple[BranchInfo, ...] = ()
     tags: tuple[TagInfo, ...] = ()
     stashes: tuple[StashEntry, ...] = ()
+
+
+# ---------------------------------------------------------------------------
+# VP-3 / VP-18: Git Worktrees, Workspace Sessions & Cryptographic Signing
+# ---------------------------------------------------------------------------
+
+
+@dataclass(slots=True, frozen=True)
+class WorktreeInfo:
+    """Metadata for a git worktree entry (VP-3, FR-1.13, FR-1.17)."""
+
+    path: str
+    head_oid: str
+    branch_name: str | None
+    is_bare: bool
+    is_locked: bool
+    lock_reason: str | None = None
+    is_prunable: bool = False
+    is_main: bool = False
+    is_detached: bool = False
+
+
+@dataclass(slots=True, frozen=True)
+class WorkspaceSession:
+    """Named multi-tab workspace session saved in SQLite (VP-3, FR-1.15)."""
+
+    session_name: str
+    repo_paths: tuple[str, ...]
+    active_index: int
+    tabs: tuple[dict[str, Any], ...] = ()
+
+
+@dataclass(slots=True, frozen=True)
+class SignatureStatus:
+    """Cryptographic signature verification status for a commit or tag (FR-2.9, FR-2.10)."""
+
+    oid: str
+    state: str  # 'verified' | 'unverified_key' | 'bad' | 'unsigned' | 'expired' | 'revoked'
+    signer: str | None = None
+    key_fingerprint: str | None = None
+    key_type: str | None = None  # 'openpgp' | 'ssh' | 'x509'
+    validity_details: str | None = None
+
+
+@dataclass(slots=True, frozen=True)
+class SigningKey:
+    """Discovered local GPG, SSH, or X.509 signing key for user configuration."""
+
+    key_id: str
+    key_type: str  # 'openpgp' | 'ssh' | 'x509'
+    display_name: str
+    fingerprint: str
+    email: str | None = None
+

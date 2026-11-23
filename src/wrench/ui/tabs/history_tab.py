@@ -51,6 +51,7 @@ class HistoryTab(QWidget):
     merge_requested = Signal(str)
     create_branch_requested = Signal(str)
     create_tag_requested = Signal(str)
+    cherry_pick_to_worktree_requested = Signal(str, str)
 
     def __init__(
         self,
@@ -166,6 +167,9 @@ class HistoryTab(QWidget):
         self.graph_widget.merge_requested.connect(self.merge_requested)
         self.graph_widget.create_branch_requested.connect(self.create_branch_requested)
         self.graph_widget.create_tag_requested.connect(self.create_tag_requested)
+        self.graph_widget.cherry_pick_to_worktree_requested.connect(
+            self.cherry_pick_to_worktree_requested
+        )
         self.graph_layout.addWidget(self.graph_widget)
 
         # Empty state (no commits / unborn branch)

@@ -97,6 +97,7 @@ from wrench.ui.dialogs.push_recovery_dialogs import (
     SecretScanningDialog,
 )
 from wrench.ui.dialogs.remotes_dialog import RemotesDialog
+from wrench.storage import session_storage
 from wrench.ui.dialogs.sparse_checkout_dialog import SparseCheckoutDialog
 from wrench.ui.recovery.busy_dialog import BusyOperationDialog
 from wrench.ui.snapshots_panel import SnapshotsPanel
@@ -107,6 +108,7 @@ from wrench.ui.tabs.issue_list_tab import IssueListTab
 from wrench.ui.tabs.pr_detail_tab import PRDetailTab
 from wrench.ui.tabs.pr_list_tab import PRListTab
 from wrench.ui.tabs.tab_bar import TabContainer
+from wrench.ui.widgets.worktree_panel import WorktreePanel
 from wrench.ui.theme import (
     apply_theme,
     get_status_pill_style,
@@ -306,6 +308,11 @@ class MainWindow(QMainWindow):
         self.terminal_drawer = GitTerminalDrawer(self)
         self.terminal_drawer.setVisible(False)
         self.terminal_drawer.set_command_runner(self._run_terminal_git_command)
+        self.terminal_drawer.closed.connect(
+            lambda: self.context_header_bar.quick_actions.set_terminal_active(False)
+            if hasattr(self, "context_header_bar")
+            else None
+        )
         _central_layout.addWidget(self.terminal_drawer)
 
         QShortcut(QKeySequence("Ctrl+`"), self, activated=self._toggle_terminal_drawer)
@@ -343,6 +350,7 @@ class MainWindow(QMainWindow):
         self.history_tab.merge_requested.connect(self._on_history_merge)
         self.history_tab.create_branch_requested.connect(self._on_history_create_branch)
         self.history_tab.create_tag_requested.connect(self._on_history_create_tag)
+        self.history_tab.cherry_pick_to_worktree_requested.connect(self._on_cherry_pick_to_worktree)
         self.tab_container.add_tab(
             widget=self.history_tab,
             label=self.tr("History"),
@@ -352,6 +360,10 @@ class MainWindow(QMainWindow):
 
         # 3. Snapshots panel instance
         self.snapshots_panel = SnapshotsPanel(self._conn, self)
+
+        # 4. Worktree panel instance (VP-3)
+        self.worktree_panel = WorktreePanel(self._engine, self._settings_registry, self)
+        self.worktree_panel.open_worktree_requested.connect(self._on_open_worktree_tab)
 
         # Connect add category tab request from (+) menu
         self.tab_container.add_category_tab_requested.connect(self._on_add_category_tab)
@@ -461,6 +473,15 @@ class MainWindow(QMainWindow):
 
         file_menu.addSeparator()
 
+        # Workspace Sessions (VP-3, FR-1.15)
+        self.menu_workspace_sessions = file_menu.addMenu(self.tr("Workspace &Sessions"))
+        act_save_session = self.menu_workspace_sessions.addAction(self.tr("Save Current Session…"))
+        act_save_session.triggered.connect(self._on_save_workspace_session)
+        self.menu_workspace_sessions.addSeparator()
+        self.menu_workspace_sessions.aboutToShow.connect(self._populate_workspace_sessions_menu)
+
+        file_menu.addSeparator()
+
         act_close = file_menu.addAction(self.tr("&Close Repository"))
         act_close.setShortcut(QKeySequence("Ctrl+W"))
         act_close.triggered.connect(self._on_close_repo)
@@ -545,6 +566,9 @@ class MainWindow(QMainWindow):
         self.act_toggle_activity_dock.setShortcut(QKeySequence("Ctrl+`"))
         self.act_toggle_activity_dock.triggered.connect(self._on_toggle_activity_dock)
 
+        self.act_view_worktrees = view_menu.addAction(self.tr("Worktree &Manager"))
+        self.act_view_worktrees.triggered.connect(self._on_manage_worktrees)
+
         self.act_humor_lines = view_menu.addAction(self.tr("Show &Humor / Personality Lines"))
         self.act_humor_lines.setCheckable(True)
         self.act_humor_lines.toggled.connect(self._set_humor_lines)
@@ -570,6 +594,9 @@ class MainWindow(QMainWindow):
 
         self.act_remotes = repo_menu.addAction(self.tr("&Remotes…"))
         self.act_remotes.triggered.connect(self._on_manage_remotes)
+
+        self.act_worktrees = repo_menu.addAction(self.tr("&Worktree Manager…"))
+        self.act_worktrees.triggered.connect(self._on_manage_worktrees)
 
         self.act_sparse_checkout = repo_menu.addAction(self.tr("&Sparse-Checkout Directories…"))
         self.act_sparse_checkout.triggered.connect(self._on_manage_sparse_checkout)
@@ -855,6 +882,18 @@ class MainWindow(QMainWindow):
         if hasattr(self, "context_header_bar"):
             self.context_header_bar.setVisible(
                 self._settings_registry.is_enabled("ui.show_context_header_bar")
+            )
+        if hasattr(self, "act_worktrees"):
+            self.act_worktrees.setVisible(
+                self._settings_registry.is_enabled("worktrees.enabled")
+            )
+        if hasattr(self, "act_view_worktrees"):
+            self.act_view_worktrees.setVisible(
+                self._settings_registry.is_enabled("worktrees.enabled")
+            )
+        if hasattr(self, "menu_workspace_sessions"):
+            self.menu_workspace_sessions.menuAction().setVisible(
+                self._settings_registry.is_enabled("workspace.named_sessions.enabled")
             )
 
         # Mark restoration complete and ensure no lingering auto-save timer
@@ -1267,6 +1306,8 @@ class MainWindow(QMainWindow):
             self._sync_sparse_ui_visibility()
             self._apply_status_bar_theme()
             self._maybe_write_commit_graph(path)
+            if hasattr(self, "worktree_panel"):
+                self.worktree_panel.set_repo_path(path)
 
             status = getattr(self.changes_tab, "_current_status", None)
             if status:
@@ -1280,6 +1321,16 @@ class MainWindow(QMainWindow):
                     branch = "main"
             self.status_label.setText(self.tr(f"Opened: {Path(path).name} ({branch})"))
             self._update_context_header_bar()
+
+            # Dynamic window title (ui-planning.md §1.1, VP-3)
+            p_path = Path(path)
+            is_linked_wt = (p_path / ".git").is_file()
+            if is_linked_wt:
+                parent_repo_name = p_path.parent.name
+                folder_name = p_path.name
+                self.setWindowTitle(f"Wrench — {parent_repo_name} [worktree: {folder_name}] ({branch})")
+            else:
+                self.setWindowTitle(f"Wrench — {p_path.name} ({branch})")
 
             # Restore cached draft/selections if available for this repo (skip duplicate
             # restore when ChangesTab._open_repo_by_path already restored _commit_drafts)
@@ -2127,14 +2178,21 @@ class MainWindow(QMainWindow):
                     self.terminal_drawer.isVisible()
                 )
 
-    def _run_terminal_git_command(self, cmd_line: str) -> tuple[int, str, str]:
+    def _run_terminal_git_command(
+        self, cmd_line: str | list[str]
+    ) -> tuple[int, str, str, float]:
         """Execute a git command in the embedded terminal drawer."""
         if not self._current_repo:
-            return (1, "", self.tr("No repository open"))
-        args = cmd_line.strip().split()
+            return (1, "", self.tr("No repository open"), 0.0)
+        if isinstance(cmd_line, (list, tuple)):
+            args = list(cmd_line)
+        else:
+            args = cmd_line.strip().split()
         if not args:
-            return (0, "", "")
-        code, out, err = self._engine.run_git_terminal_command(args, cwd=self._current_repo.path)
+            return (0, "", "", 0.0)
+        code, out, err, dur = self._engine.run_git_terminal_command(
+            args, repo=self._current_repo.path
+        )
         first_cmd = args[0].lower()
         if first_cmd in (
             "commit",
@@ -2151,7 +2209,7 @@ class MainWindow(QMainWindow):
             "revert",
         ):
             self._refresh_after_git_op()
-        return (code, out, err)
+        return (code, out, err, dur)
 
     def _on_undo_last_commit(self) -> None:
         """Undo the most recent commit (git reset --soft HEAD~1)."""
@@ -2942,6 +3000,8 @@ class MainWindow(QMainWindow):
             self.changes_tab.set_repo(None)
             self.history_tab.set_repo(None)
             self.snapshots_panel.set_repo(None)
+            if hasattr(self, "worktree_panel"):
+                self.worktree_panel.set_repo_path(None)
             self.watcher_mode_label.setVisible(False)
             self._sync_sparse_ui_visibility()
             self.status_label.setText(self.tr("Repository closed"))
@@ -3313,6 +3373,16 @@ class MainWindow(QMainWindow):
             enabled = self._settings_registry.is_enabled(key, eff_repo)
             if hasattr(self, "context_header_bar") and shiboken6.isValid(self.context_header_bar):
                 self.context_header_bar.setVisible(enabled)
+        elif key == "worktrees.enabled":
+            if hasattr(self, "worktree_panel") and shiboken6.isValid(self.worktree_panel):
+                self.worktree_panel.setVisible(bool(value))
+            if hasattr(self, "act_worktrees") and shiboken6.isValid(self.act_worktrees):
+                self.act_worktrees.setVisible(bool(value))
+            if hasattr(self, "act_view_worktrees") and shiboken6.isValid(self.act_view_worktrees):
+                self.act_view_worktrees.setVisible(bool(value))
+        elif key == "workspace.named_sessions.enabled":
+            if hasattr(self, "menu_workspace_sessions") and shiboken6.isValid(self.menu_workspace_sessions):
+                self.menu_workspace_sessions.menuAction().setVisible(bool(value))
 
     @Slot(str, str)
     def _on_watcher_mode_changed(self, mode: str, reason: str) -> None:
@@ -3441,6 +3511,17 @@ class MainWindow(QMainWindow):
                     label=self.tr("Issues"),
                     tab_type="issues_list",
                     repo_path=repo_path,
+                    closable=True,
+                )
+            else:
+                self.tab_container.set_current_index(idx)
+        elif tab_type == "worktrees":
+            idx = self.tab_container.find_tab("worktrees", "")
+            if idx is None:
+                self.tab_container.add_tab(
+                    widget=self.worktree_panel,
+                    label=self.tr("Worktrees"),
+                    tab_type="worktrees",
                     closable=True,
                 )
             else:
@@ -3770,3 +3851,259 @@ class MainWindow(QMainWindow):
         from PySide6.QtGui import QDesktopServices
 
         QDesktopServices.openUrl(QUrl("https://github.com/uzair777-dev/Wrench/issues"))
+
+    # -----------------------------------------------------------------------
+    # VP-3: Git Worktrees & Workspace Sessions
+    # -----------------------------------------------------------------------
+
+    @Slot(str)
+    def _on_open_worktree_tab(self, worktree_path: str) -> None:
+        """Open a worktree directory as a repository in Wrench (VP-3, FR-1.13)."""
+        if not worktree_path or not Path(worktree_path).exists():
+            return
+        try:
+            opened_repo = engine.open_repo(worktree_path)
+            repo_registry.add_repo(self._conn, worktree_path, Path(worktree_path).name)
+            self.changes_tab.load_repos(select_path=worktree_path, opened_repo=opened_repo)
+        except Exception as e:
+            logger.exception("Failed to open worktree: %s", e)
+            QMessageBox.critical(
+                self,
+                self.tr("Open Worktree Failed"),
+                self.tr(f"Could not open worktree at '{worktree_path}':\n{e}"),
+            )
+
+    def _on_manage_worktrees(self) -> None:
+        """Open or activate the Worktrees tab."""
+        idx = self.tab_container.find_tab("worktrees", "")
+        if idx is None:
+            self.tab_container.add_tab(
+                widget=self.worktree_panel,
+                label=self.tr("Worktrees"),
+                tab_type="worktrees",
+                closable=True,
+            )
+        else:
+            self.tab_container.set_current_index(idx)
+
+    def _on_save_workspace_session(self) -> None:
+        """Prompt user for a session name and save current open tabs/repos (VP-3, FR-1.15)."""
+        if not self._settings_registry.is_enabled("workspace.named_sessions.enabled"):
+            return
+        name, ok = QInputDialog.getText(
+            self,
+            self.tr("Save Workspace Session"),
+            self.tr("Session name:"),
+        )
+        if not ok or not name.strip():
+            return
+
+        repo_paths: list[str] = []
+        for i in range(self.tab_container.count()):
+            meta = self.tab_container.tab_metadata(i)
+            if meta and meta.repo_path and meta.repo_path not in repo_paths:
+                repo_paths.append(meta.repo_path)
+        if not repo_paths and self._current_repo:
+            repo_paths.append(str(self._current_repo.path))
+
+        tabs_serialized = self.tab_container.serialize_tabs().get("tabs", [])
+        active_idx = self.tab_container.current_index()
+        session_storage.save_session(
+            self._conn, name.strip(), repo_paths, active_idx, tabs=tabs_serialized
+        )
+        self.status_label.setText(self.tr(f"Session '{name.strip()}' saved"))
+
+    def _populate_workspace_sessions_menu(self) -> None:
+        """Dynamically populate Workspace Sessions menu with saved sessions."""
+        self.menu_workspace_sessions.clear()
+        act_save = self.menu_workspace_sessions.addAction(self.tr("Save Current Session…"))
+        act_save.triggered.connect(self._on_save_workspace_session)
+        self.menu_workspace_sessions.addSeparator()
+
+        sessions = session_storage.list_sessions(self._conn)
+        if not sessions:
+            act_none = self.menu_workspace_sessions.addAction(self.tr("(No saved sessions)"))
+            act_none.setEnabled(False)
+            return
+
+        for session_name in sessions:
+            sub = self.menu_workspace_sessions.addMenu(session_name)
+            act_restore = sub.addAction(self.tr("Restore Session"))
+            act_restore.triggered.connect(
+                lambda _checked=False, n=session_name: self._on_restore_workspace_session(n)
+            )
+            act_delete = sub.addAction(self.tr("Delete Session"))
+            act_delete.triggered.connect(
+                lambda _checked=False, n=session_name: self._on_delete_workspace_session(n)
+            )
+
+    def _on_restore_workspace_session(self, session_name: str) -> None:
+        """Restore all repositories from a named workspace session (VP-3, FR-1.15)."""
+        session = session_storage.load_session(self._conn, session_name)
+        if not session or not session.repo_paths:
+            QMessageBox.information(
+                self,
+                self.tr("Restore Session"),
+                self.tr(
+                    f"Session '{session_name}' has no saved repositories or paths cannot be found."
+                ),
+            )
+            return
+
+        for p in session.repo_paths:
+            if Path(p).exists():
+                try:
+                    opened_repo = engine.open_repo(p)
+                    repo_registry.add_repo(self._conn, p, Path(p).name)
+                    self.changes_tab.load_repos(select_path=p, opened_repo=opened_repo)
+                except Exception as e:
+                    logger.warning("Could not restore repo '%s' from session: %s", p, e)
+
+        # Restore open tabs if saved in session (VP-3, FR-1.15)
+        if getattr(session, "tabs", None):
+            self._restore_session_tabs(session.tabs)
+
+        if 0 <= session.active_index < self.tab_container.count():
+            self.tab_container.set_current_index(session.active_index)
+        self.status_label.setText(self.tr(f"Restored session '{session_name}'"))
+
+    def _restore_session_tabs(
+        self, tabs_data: tuple[dict[str, Any], ...] | list[dict[str, Any]]
+    ) -> None:
+        """Recreate open category and detail tabs from saved workspace session data."""
+        for item in tabs_data:
+            t_type = item.get("tab_type", "")
+            tab_repo = item.get("repo_path") or (
+                str(self._current_repo.path) if self._current_repo else ""
+            )
+            entity_id = item.get("entity_id")
+            label = item.get("label", "")
+            closable = item.get("closable", True)
+            is_pinned = item.get("is_pinned", False)
+
+            if t_type == "changes":
+                self.tab_container.add_tab(
+                    widget=self.changes_tab,
+                    label=self.tr("Changes"),
+                    tab_type="changes",
+                    closable=closable,
+                    is_pinned=is_pinned,
+                    activate=False,
+                )
+            elif t_type == "history":
+                self.tab_container.add_tab(
+                    widget=self.history_tab,
+                    label=self.tr("History"),
+                    tab_type="history",
+                    closable=closable,
+                    is_pinned=is_pinned,
+                    activate=False,
+                )
+            elif t_type == "worktrees":
+                self.tab_container.add_tab(
+                    widget=self.worktree_panel,
+                    label=self.tr("Worktrees"),
+                    tab_type="worktrees",
+                    closable=closable,
+                    is_pinned=is_pinned,
+                    activate=False,
+                )
+            elif t_type == "snapshots":
+                if hasattr(self, "snapshots_panel"):
+                    self.tab_container.add_tab(
+                        widget=self.snapshots_panel,
+                        label=label or self.tr("Snapshots"),
+                        tab_type="snapshots",
+                        closable=closable,
+                        is_pinned=is_pinned,
+                        activate=False,
+                    )
+            elif t_type == "pr_list":
+                def _make_pr_list(repo=tab_repo):
+                    pr_tab = PRListTab(repo, self)
+                    pr_tab.pr_selected.connect(self._open_pr_detail_tab)
+                    pr_tab.link_requested.connect(self._on_link_forge)
+                    return pr_tab
+
+                self.tab_container.add_tab(
+                    widget=_make_pr_list,
+                    label=label or self.tr("Pull Requests"),
+                    tab_type="pr_list",
+                    repo_path=tab_repo,
+                    closable=closable,
+                    is_pinned=is_pinned,
+                    activate=False,
+                )
+            elif t_type in ("issues_list", "issue_list"):
+                def _make_issue_list(repo=tab_repo):
+                    issue_tab = IssueListTab(repo, self)
+                    issue_tab.issue_selected.connect(self._open_issue_detail_tab)
+                    issue_tab.link_requested.connect(self._on_link_forge)
+                    return issue_tab
+
+                self.tab_container.add_tab(
+                    widget=_make_issue_list,
+                    label=label or self.tr("Issues"),
+                    tab_type="issues_list",
+                    repo_path=tab_repo,
+                    closable=closable,
+                    is_pinned=is_pinned,
+                    activate=False,
+                )
+            elif t_type == "pr_detail" and entity_id:
+                parts = entity_id.split(":", 1)
+                if len(parts) == 2:
+                    def _make_pr_detail(repo=tab_repo, remote=parts[0], pr_id=parts[1]):
+                        detail_tab = PRDetailTab(repo, remote, pr_id, self)
+                        detail_tab.branch_checkout_requested.connect(self._on_checkout_branch)
+                        return detail_tab
+
+                    self.tab_container.add_tab(
+                        widget=_make_pr_detail,
+                        label=label or f"PR #{parts[1]}",
+                        tab_type="pr_detail",
+                        repo_path=tab_repo,
+                        entity_id=entity_id,
+                        closable=closable,
+                        is_pinned=is_pinned,
+                        activate=False,
+                    )
+            elif t_type == "issue_detail" and entity_id:
+                parts = entity_id.split(":", 1)
+                if len(parts) == 2:
+                    def _make_issue_detail(repo=tab_repo, remote=parts[0], issue_id=parts[1]):
+                        return IssueDetailTab(repo, remote, issue_id, self)
+
+                    self.tab_container.add_tab(
+                        widget=_make_issue_detail,
+                        label=label or f"Issue #{parts[1]}",
+                        tab_type="issue_detail",
+                        repo_path=tab_repo,
+                        entity_id=entity_id,
+                        closable=closable,
+                        is_pinned=is_pinned,
+                        activate=False,
+                    )
+
+    def _on_delete_workspace_session(self, session_name: str) -> None:
+        """Delete a named workspace session from SQLite."""
+        session_storage.delete_session(self._conn, session_name)
+        self.status_label.setText(self.tr(f"Session '{session_name}' deleted"))
+
+    @Slot(str, str)
+    def _on_cherry_pick_to_worktree(self, sha: str, worktree_path: str) -> None:
+        """Execute cross-worktree cherry-pick (VP-3, FR-1.17)."""
+        if not self._current_repo:
+            return
+        try:
+            self._engine.cross_worktree_cherry_pick(worktree_path, sha)
+            self.status_label.setText(
+                self.tr(f"Cherry-picked {sha[:8]} into worktree at {Path(worktree_path).name}")
+            )
+        except Exception as e:
+            logger.exception("Cross-worktree cherry-pick failed: %s", e)
+            QMessageBox.critical(
+                self,
+                self.tr("Cherry-Pick Failed"),
+                self.tr(f"Could not cherry-pick {sha[:8]} into '{worktree_path}':\n{e}"),
+            )

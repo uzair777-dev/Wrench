@@ -249,6 +249,24 @@ def configure_libgit2_memory_limits(max_cache_mb: int = 32) -> None:
 def get_status(repo: RepoHandle) -> RepoStatus:
     """Get the full working-tree and index status of a repo."""
     r = repo.pygit2_repo
+    if r.is_bare:
+        from wrench.storage.settings_registry import peek_settings_registry
+
+        reg = peek_settings_registry()
+        is_hub = reg.is_enabled("worktrees.bare_hub.enabled", str(repo.path)) if reg else True
+        return RepoStatus(
+            staged=[],
+            unstaged=[],
+            untracked=[],
+            current_branch=None,
+            is_detached=False,
+            ahead=0,
+            behind=0,
+            has_conflicts=False,
+            is_bare=True,
+            is_bare_hub=is_hub,
+        )
+
     try:
         r.index.read()
     except Exception as e:

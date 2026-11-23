@@ -1,5 +1,5 @@
--- schema version 3
-PRAGMA user_version = 3;
+-- schema version 4
+PRAGMA user_version = 4;
 
 CREATE TABLE repos (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -109,5 +109,13 @@ CREATE TABLE IF NOT EXISTS settings_undo_log (
     old_value_json  TEXT NOT NULL,
     new_value_json  TEXT NOT NULL,
     undone          INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS workspace_sessions (
+    session_name    TEXT PRIMARY KEY,
+    repo_paths_json TEXT NOT NULL,
+    active_index    INTEGER NOT NULL DEFAULT 0,
+    tabs_json       TEXT DEFAULT '[]',
+    updated_at      TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 

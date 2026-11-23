@@ -1,6 +1,6 @@
 # Wrench Auto-Generated Core API Symbol Map (`dev/REPO_MAP_CORE.md`)
 
-> Generated from `src/wrench/` at git HEAD `129475e` by
+> Generated from `src/wrench/` at git HEAD `045c88e` by
 > `scripts/generate_repo_map.py`. Treat every dataclass field, `Signal`,
 > `SettingsRegistry` key, and signature below as live ground truth.
 
@@ -14,13 +14,13 @@
 - **Custom Actions & Shortcuts:** `shortcuts.vim_mode_enabled` (`False`), `custom_actions.enabled` (`True`)
 - **Diff & Merge:** `diff.context_lines` (`3`), `diff.ignore_whitespace_mode` (`'none'`), `merge.default_strategy` (`'merge'`), `merge.builtin_3way_tool.enabled` (`True`)
 - **Forges & CI:** `forge.enabled` (`True`), `forge.github.enabled` (`True`), `forge.gitlab.enabled` (`True`), `forge.forgejo.enabled` (`True`), `forge.bitbucket.enabled` (`True`), `forge.ci_badges.enabled` (`True`), `forge.poll_interval_seconds` (`120`), `forge.allow_third_party_entrypoint_plugins` (`True`)
-- **General & UI:** `ui.theme_mode` (`'system'`), `ui.font_size_pt` (`10`), `ui.confirm_destructive_actions` (`True`), `ui.avatars_gravatar` (`False`), `ui.session_state` (`True`), `ui.humor_lines` (`True`), `ui.activity_dock.max_lines` (`500`), `ui.show_cli_preview_in_dialogs` (`True`), `workspace.restore_session_on_startup` (`True`), `ui.settings_view_mode` (`'normal'`), `repo.recent_max_count` (`20`), `repo.auto_discovery.enabled` (`True`), `help.tooltip_mode` (`'beginner_rich'`), `help.tooltip_delay_ms` (`500`), `ui.history_three_column_layout` (`True`), `ui.show_context_header_bar` (`True`), `ui.show_empty_state_launchpad` (`True`)
-- **Hooks & Signing:** `hooks.enabled` (`True`), `signing.enabled` (`False`), `signing.verify_badges_in_graph.enabled` (`True`)
+- **General & UI:** `ui.theme_mode` (`'system'`), `ui.font_size_pt` (`10`), `ui.confirm_destructive_actions` (`True`), `ui.avatars_gravatar` (`False`), `ui.session_state` (`True`), `ui.humor_lines` (`True`), `ui.activity_dock.max_lines` (`500`), `ui.show_cli_preview_in_dialogs` (`True`), `workspace.restore_session_on_startup` (`True`), `ui.settings_view_mode` (`'normal'`), `repo.recent_max_count` (`20`), `repo.auto_discovery.enabled` (`True`), `help.tooltip_mode` (`'beginner_rich'`), `help.tooltip_delay_ms` (`500`), `workspace.named_sessions.enabled` (`True`), `ui.history_three_column_layout` (`True`), `ui.show_context_header_bar` (`True`), `ui.show_empty_state_launchpad` (`True`)
+- **Hooks & Signing:** `hooks.enabled` (`True`), `signing.enabled` (`False`), `signing.format` (`'auto'`), `signing.key_id_or_path` (`''`), `signing.sign_commits_by_default` (`True`), `signing.sign_tags_by_default` (`True`), `signing.gui_askpass_fallback.enabled` (`True`), `signing.verify_badges_in_graph.enabled` (`True`)
 - **Remotes & LFS:** `remote.auto_fetch.enabled` (`True`), `remote.auto_fetch.interval_seconds` (`180`), `remote.pull_default_mode` (`'ff-only'`), `remote.force_push_mode` (`'force-with-lease'`), `remote.prune_on_fetch` (`True`), `lfs.enabled` (`True`), `clone.default_filter_mode` (`'none'`)
 - **Safety & Backups:** `safety.commit_partially_staged_mode` (`'prompt'`), `safety.auto_stage_hook_modifications` (`True`), `safety.precommit_tool_search_paths` (`True`), `safety.pre_op_snapshot.enabled` (`True`), `safety.scheduled_backups.enabled` (`False`), `safety.op_log_undo_enabled` (`True`), `stash.ui.enabled` (`True`), `stash.confirm_before_drop` (`True`), `desktop.system_tray.enabled` (`True`)
 - **Staging & Commits:** `staging.line_staging.enabled` (`True`), `commit.subject_max_length_guide` (`50`), `commit.body_wrap_column` (`72`), `commit.auto_stage_all_if_empty` (`False`), `commit.undo_button.enabled` (`True`)
 - **Watcher & Performance:** `watcher.inotify.enabled` (`True`), `watcher.debounce_ms` (`300`), `watcher.refresh_on_window_focus` (`True`), `watcher.lock_recovery_prompt.enabled` (`True`), `performance.worker_thread_count` (`4`), `performance.max_diff_file_size_kb` (`2048`), `watcher.monorepo_adaptive_fallback.enabled` (`True`), `performance.graph_page_size` (`500`), `maintenance.auto_commit_graph.enabled` (`True`)
-- **Worktrees & Submodules:** `worktrees.enabled` (`True`), `worktrees.bare_hub.enabled` (`True`), `submodules.enabled` (`True`), `submodules.auto_init` (`True`), `monorepo.sparse_checkout_ui.enabled` (`True`)
+- **Worktrees & Submodules:** `worktrees.enabled` (`True`), `worktrees.bare_hub.enabled` (`True`), `worktrees.path_template` (`'../{repo_name}-{branch_slug}'`), `worktrees.cross_cherry_pick.enabled` (`True`), `submodules.enabled` (`True`), `submodules.auto_init` (`True`), `monorepo.sparse_checkout_ui.enabled` (`True`)
 
 ---
 
@@ -44,115 +44,115 @@
 ### `src/wrench/core/discovery.py` (73 lines)
 - `def discover_repos(root: Path | str, *, max_depth: int = 3, cancel_event: threading.Event | None = None, on_progress: Callable[[int], None] | None = None) -> list[Path]` (L20)
 
-### `src/wrench/core/engine.py` (2087 lines)
-- `@dataclass class FileChange` (L43)
+### `src/wrench/core/engine.py` (2321 lines)
+- `@dataclass class FileChange` (L48)
   - **Fields:** `path: str; change_type: str; old_path: str | None = None; is_partially_staged: bool = False`
   - `status_code(self) -> str`
-- `@dataclass class FileStatusInfo` (L56)
+- `@dataclass class FileStatusInfo` (L61)
   - **Fields:** `path: str; staged_code: str; unstaged_code: str; is_partially_staged: bool; is_untracked: bool = False; staged_hunks_count: int = 0; unstaged_hunks_count: int = 0`
   - `composite_badge(self) -> str`
-- `@dataclass class RepoStatus` (L76)
-  - **Fields:** `staged: list[FileChange]; unstaged: list[FileChange]; untracked: list[str]; current_branch: str | None; is_detached: bool; ahead: int; behind: int; has_conflicts: bool; detached_head_sha: str | None = None; head_sha: str | None = None; merge_in_progress: bool = False; rebase_in_progress: bool = False; partially_staged: list[FileChange] = field(default_factory=list)`
+- `@dataclass class RepoStatus` (L81)
+  - **Fields:** `staged: list[FileChange]; unstaged: list[FileChange]; untracked: list[str]; current_branch: str | None; is_detached: bool; ahead: int; behind: int; has_conflicts: bool; detached_head_sha: str | None = None; head_sha: str | None = None; merge_in_progress: bool = False; rebase_in_progress: bool = False; partially_staged: list[FileChange] = field(default_factory=list); is_bare: bool = False; is_bare_hub: bool = False`
   - `branch_name(self) -> str | None`
   - `is_detached_head(self) -> bool`
   - `partially_staged_paths(self) -> set[str]`
-- `@dataclass class FileStat` (L105)
+- `@dataclass class FileStat` (L112)
   - **Fields:** `path: str; change_type: str; additions: int; deletions: int`
-- `@dataclass class RefLabel` (L115)
+- `@dataclass class RefLabel` (L122)
   - **Fields:** `name: str; kind: str`
-- `@dataclass class Commit` (L123)
+- `@dataclass class Commit` (L130)
   - **Fields:** `sha: str; message: str; author_name: str; author_email: str; author_date: str; parent_shas: list[str]; refs: list[RefName] = field(default_factory=list)`
   - `author(self) -> str`
   - `hex(self) -> str`
-- `@dataclass class BlameLine` (L142)
+- `@dataclass class BlameLine` (L149)
   - **Fields:** `line_no: int; commit_sha: str; author: str; line_content: str`
-- `@dataclass class DiffLine` (L150)
+- `@dataclass class DiffLine` (L157)
   - **Fields:** `content: str; origin: str; old_lineno: int | None; new_lineno: int | None`
-- `@dataclass class Hunk` (L158)
+- `@dataclass class Hunk` (L165)
   - **Fields:** `id: str; old_start: int; old_count: int; new_start: int; new_count: int; lines: list[DiffLine]`
-- `@dataclass class Diff` (L168)
+- `@dataclass class Diff` (L175)
   - **Fields:** `path: str; is_binary: bool; hunks: list[Hunk]; is_truncated: bool = False; total_lines: int = 0; truncated_reason: str | None = None`
-- `@dataclass class MergeResult` (L178)
+- `@dataclass class MergeResult` (L185)
   - **Fields:** `status: str; commit_sha: str | None = None; conflicted_files: list[str] = field(default_factory=list)`
-- `@dataclass class RebaseResult` (L185)
+- `@dataclass class RebaseResult` (L192)
   - **Fields:** `status: str; conflicted_files: list[str] = field(default_factory=list)`
-- `@dataclass class Remote` (L191)
+- `@dataclass class Remote` (L198)
   - **Fields:** `name: str; url: str`
-- `@dataclass class ReflogEntry` (L197)
+- `@dataclass class ReflogEntry` (L204)
   - **Fields:** `sha: str; message: str; timestamp: str`
-- `@dataclass class Submodule` (L204)
+- `@dataclass class Submodule` (L211)
   - **Fields:** `path: str; url: str; initialized: bool`
-- `@dataclass class SubmoduleStatus` (L211)
+- `@dataclass class SubmoduleStatus` (L218)
   - **Fields:** `path: str; current_commit: str; is_dirty: bool`
-- `@dataclass class LogFilter` (L218)
+- `@dataclass class LogFilter` (L225)
   - **Fields:** `author: str | None = None; message_substring: str | None = None; date_from: str | None = None; date_to: str | None = None; path: str | None = None`
-- `@dataclass class CloneResult` (L227)
+- `@dataclass class CloneResult` (L234)
   - **Fields:** `path: Path`
-- `@dataclass class RemoteInfo` (L234)
+- `@dataclass class RemoteInfo` (L241)
   - **Fields:** `name: str; url: str; last_fetch_at: str | None = None; is_reachable: bool | None = None`
   - `fetch_url(self) -> str`
-- `class RepoHandle` (L247)
+- `class RepoHandle` (L254)
   - `__init__(self, pygit2_repo: pygit2.Repository | str | Path, path: Path | str | None = None)`
   - `reload(self) -> None`
-- `def init_repo(path: Path | str) -> RepoHandle` (L320)
-- `def clone_repo(url: str, dest: Path | str, *, progress_cb = None, cancel_event = None, branch: str | None = None, recursive: bool = False, filter_spec: str | None = None, sparse: bool = False) -> CloneResult` (L326)
-- `def open_repo(path: Path | str, *, configure_credentials: bool = True) -> RepoHandle` (L353)
-- `def get_status(repo: RepoHandle) -> RepoStatus` (L386)
-- `def get_diff(repo: RepoHandle, path: str, *, staged: bool, max_lines: int | None = None, max_bytes: int | None = None) -> Diff` (L390)
-- `def get_log(repo: RepoHandle, filter: LogFilter | None = None, *, limit: int = 100, offset: int = 0, all_refs: bool = False) -> list[Commit]` (L407)
-- `def get_log_page(repo: RepoHandle, filter: LogFilter | None = None, *, limit: int = 500, cursor_sha: str | None = None, all_refs: bool = False) -> LogPage` (L418)
-- `def iter_commits(repo: RepoHandle, *, all_refs: bool = False)` (L435)
-- `def get_commit_diff(repo: RepoHandle, sha: str, path: str | None = None, *, max_lines: int | None = None, max_bytes: int | None = None) -> Diff` (L439)
-- `def get_commit_file_stats(repo: RepoHandle, sha: str) -> list[FileStat]` (L456)
-- `def get_ref_labels(repo: RepoHandle) -> dict[str, list[RefLabel]]` (L460)
-- `def get_repo_refs_signature(repo: RepoHandle) -> tuple[str, bool, bool, str, str, str] | None` (L464)
-- `def blame(repo: RepoHandle, path: str) -> list[BlameLine]` (L470)
-- `def stage_file(repo: RepoHandle, path: str) -> None` (L474)
-- `def unstage_file(repo: RepoHandle, path: str) -> None` (L488)
-- `def stage_hunk(repo: RepoHandle, path: str, hunk_id: str) -> None` (L502)
-- `def stage_lines(repo: RepoHandle, path: str, line_numbers: list[int]) -> None` (L521)
-- `def commit(repo: RepoHandle, message: str, *, amend: bool = False) -> str` (L605)
-- `def list_branches(repo: RepoHandle, *, local: bool | None = None, remote: bool | None = None, include_remote: bool = False) -> list[str]` (L611)
-- `def create_branch(repo: RepoHandle, name: str, *, from_ref: str = 'HEAD') -> None` (L644)
-- `def switch_branch(repo: RepoHandle, name: str) -> None` (L648)
-- `def delete_branch(repo: RepoHandle, name: str, *, force: bool = False) -> None` (L653)
-- `def rename_branch(repo: RepoHandle, old: str, new: str) -> None` (L660)
-- `def discard_file(repo: RepoHandle, path: str) -> None` (L664)
-- `def stash_create(repo: RepoHandle, message: str | None = None) -> str` (L670)
-- `def stash_pop(repo: RepoHandle, stash_id: str | int = 0) -> None` (L676)
-- `def stash_apply(repo: RepoHandle, stash_id: str) -> None` (L681)
-- `def stash_drop(repo: RepoHandle, stash_id: str) -> None` (L686)
-- `def check_identity(repo_or_path: RepoHandle | Path | str) -> tuple[str, str]` (L690)
-- `def set_identity(repo_or_path: RepoHandle | Path | str, name: str, email: str) -> None` (L695)
-- `def get_reflog(repo: RepoHandle) -> list[ReflogEntry]` (L700)
-- `def restore_to_ref(repo: RepoHandle, sha: str) -> None` (L704)
-- `def push(repo: RepoHandle, remote: str, branch: str, *, force: bool = False, extra_config: dict[str, str] | None = None, timeout: float = 1800.0, progress_cb = None, cancel_event = None) -> None` (L708)
-- `def push_incremental_batches(repo: RepoHandle, remote: str, branch: str, *, chunk_size: int = 20, force: bool = False, extra_config: dict[str, str] | None = None, progress_cb = None, cancel_event = None) -> None` (L731)
-- `def pull(repo: RepoHandle, remote: str, branch: str, *, progress_cb = None, cancel_event = None) -> None` (L754)
-- `def fetch(repo: RepoHandle, remote: str, *, db_conn = None, progress_cb = None, cancel_event = None) -> None` (L771)
-- `def list_remotes(repo: RepoHandle, *, db_conn: sqlite3.Connection | None = None) -> list[RemoteInfo]` (L816)
-- `def probe_remotes_async(repo: RepoHandle, *, db_conn: sqlite3.Connection | None = None, on_complete: Callable[[], None] | None = None) -> threading.Thread` (L918)
-- `def add_remote(repo: RepoHandle, name: str, url: str, *, db_conn: sqlite3.Connection | None = None) -> None` (L943)
-- `def remove_remote(repo: RepoHandle, name: str) -> None` (L970)
-- `def set_remote_url(repo: RepoHandle, name: str, url: str) -> None` (L979)
-- `def get_remote_url(repo: RepoHandle, name: str) -> str` (L991)
-- `def count_unpushed_commits(repo: RepoHandle, remote: str, branch: str) -> int` (L999)
-- `def merge(repo: RepoHandle, source_branch: str) -> MergeResult` (L1012)
-- `def merge_abort(repo: RepoHandle) -> None` (L1016)
-- `def rebase(repo: RepoHandle, onto: str) -> RebaseResult` (L1021)
-- `def rebase_continue(repo: RepoHandle) -> RebaseResult` (L1025)
-- `def rebase_abort(repo: RepoHandle) -> None` (L1029)
-- `def create_tag(repo: RepoHandle, name: str, target: str = 'HEAD') -> None` (L1034)
-- `def check_repo_guard(repo: RepoHandle, timeout: float = 3.0)` (L1039)
-- `def sweep_repo_debris(repo: RepoHandle) -> list[str]` (L1045)
-- `def get_git_config(repo: RepoHandle | Path | str | None, key: str, scope: str = 'local') -> str | None` (L1052)
-- `def set_git_config(repo: RepoHandle | Path | str | None, key: str, value: str, scope: str = 'local') -> None` (L1077)
-- `def get_http_post_buffer(repo: RepoHandle | Path | str | None = None, scope: str = 'local') -> int | None` (L1096)
-- `def set_http_post_buffer(repo: RepoHandle | Path | str | None, buffer_bytes: int, scope: str = 'local') -> None` (L1110)
-- `def get_http_version(repo: RepoHandle | Path | str | None = None, scope: str = 'local') -> str | None` (L1119)
-- `def set_http_version(repo: RepoHandle | Path | str | None, version: str, scope: str = 'local') -> None` (L1127)
-- `def scan_unpushed_large_blobs(repo: RepoHandle, remote: str = 'origin', branch: str | None = None, threshold_mb: float = 50.0) -> list[tuple[str, float]]` (L1149)
-- `class GitEngine` (L1225)
+- `def init_repo(path: Path | str) -> RepoHandle` (L336)
+- `def clone_repo(url: str, dest: Path | str, *, progress_cb = None, cancel_event = None, branch: str | None = None, recursive: bool = False, filter_spec: str | None = None, sparse: bool = False) -> CloneResult` (L342)
+- `def open_repo(path: Path | str, *, configure_credentials: bool = True) -> RepoHandle` (L369)
+- `def get_status(repo: RepoHandle) -> RepoStatus` (L402)
+- `def get_diff(repo: RepoHandle, path: str, *, staged: bool, max_lines: int | None = None, max_bytes: int | None = None) -> Diff` (L406)
+- `def get_log(repo: RepoHandle, filter: LogFilter | None = None, *, limit: int = 100, offset: int = 0, all_refs: bool = False) -> list[Commit]` (L423)
+- `def get_log_page(repo: RepoHandle, filter: LogFilter | None = None, *, limit: int = 500, cursor_sha: str | None = None, all_refs: bool = False) -> LogPage` (L434)
+- `def iter_commits(repo: RepoHandle, *, all_refs: bool = False)` (L451)
+- `def get_commit_diff(repo: RepoHandle, sha: str, path: str | None = None, *, max_lines: int | None = None, max_bytes: int | None = None) -> Diff` (L455)
+- `def get_commit_file_stats(repo: RepoHandle, sha: str) -> list[FileStat]` (L472)
+- `def get_ref_labels(repo: RepoHandle) -> dict[str, list[RefLabel]]` (L476)
+- `def get_repo_refs_signature(repo: RepoHandle) -> tuple[str, bool, bool, str, str, str] | None` (L480)
+- `def blame(repo: RepoHandle, path: str) -> list[BlameLine]` (L486)
+- `def stage_file(repo: RepoHandle, path: str) -> None` (L490)
+- `def unstage_file(repo: RepoHandle, path: str) -> None` (L504)
+- `def stage_hunk(repo: RepoHandle, path: str, hunk_id: str) -> None` (L518)
+- `def stage_lines(repo: RepoHandle, path: str, line_numbers: list[int]) -> None` (L537)
+- `def commit(repo: RepoHandle, message: str, *, amend: bool = False) -> str` (L621)
+- `def list_branches(repo: RepoHandle, *, local: bool | None = None, remote: bool | None = None, include_remote: bool = False) -> list[str]` (L627)
+- `def create_branch(repo: RepoHandle, name: str, *, from_ref: str = 'HEAD') -> None` (L660)
+- `def switch_branch(repo: RepoHandle, name: str) -> None` (L664)
+- `def delete_branch(repo: RepoHandle, name: str, *, force: bool = False) -> None` (L669)
+- `def rename_branch(repo: RepoHandle, old: str, new: str) -> None` (L676)
+- `def discard_file(repo: RepoHandle, path: str) -> None` (L680)
+- `def stash_create(repo: RepoHandle, message: str | None = None) -> str` (L686)
+- `def stash_pop(repo: RepoHandle, stash_id: str | int = 0) -> None` (L692)
+- `def stash_apply(repo: RepoHandle, stash_id: str) -> None` (L697)
+- `def stash_drop(repo: RepoHandle, stash_id: str) -> None` (L702)
+- `def check_identity(repo_or_path: RepoHandle | Path | str) -> tuple[str, str]` (L706)
+- `def set_identity(repo_or_path: RepoHandle | Path | str, name: str, email: str) -> None` (L711)
+- `def get_reflog(repo: RepoHandle) -> list[ReflogEntry]` (L716)
+- `def restore_to_ref(repo: RepoHandle, sha: str) -> None` (L720)
+- `def push(repo: RepoHandle, remote: str, branch: str, *, force: bool = False, extra_config: dict[str, str] | None = None, timeout: float = 1800.0, progress_cb = None, cancel_event = None) -> None` (L724)
+- `def push_incremental_batches(repo: RepoHandle, remote: str, branch: str, *, chunk_size: int = 20, force: bool = False, extra_config: dict[str, str] | None = None, progress_cb = None, cancel_event = None) -> None` (L747)
+- `def pull(repo: RepoHandle, remote: str, branch: str, *, progress_cb = None, cancel_event = None) -> None` (L770)
+- `def fetch(repo: RepoHandle, remote: str, *, db_conn = None, progress_cb = None, cancel_event = None) -> None` (L787)
+- `def list_remotes(repo: RepoHandle, *, db_conn: sqlite3.Connection | None = None) -> list[RemoteInfo]` (L832)
+- `def probe_remotes_async(repo: RepoHandle, *, db_conn: sqlite3.Connection | None = None, on_complete: Callable[[], None] | None = None) -> threading.Thread` (L934)
+- `def add_remote(repo: RepoHandle, name: str, url: str, *, db_conn: sqlite3.Connection | None = None) -> None` (L959)
+- `def remove_remote(repo: RepoHandle, name: str) -> None` (L986)
+- `def set_remote_url(repo: RepoHandle, name: str, url: str) -> None` (L995)
+- `def get_remote_url(repo: RepoHandle, name: str) -> str` (L1007)
+- `def count_unpushed_commits(repo: RepoHandle, remote: str, branch: str) -> int` (L1015)
+- `def merge(repo: RepoHandle, source_branch: str) -> MergeResult` (L1028)
+- `def merge_abort(repo: RepoHandle) -> None` (L1032)
+- `def rebase(repo: RepoHandle, onto: str) -> RebaseResult` (L1037)
+- `def rebase_continue(repo: RepoHandle) -> RebaseResult` (L1041)
+- `def rebase_abort(repo: RepoHandle) -> None` (L1045)
+- `def create_tag(repo: RepoHandle, name: str, target: str = 'HEAD') -> None` (L1050)
+- `def check_repo_guard(repo: RepoHandle, timeout: float = 3.0)` (L1055)
+- `def sweep_repo_debris(repo: RepoHandle) -> list[str]` (L1061)
+- `def get_git_config(repo: RepoHandle | Path | str | None, key: str, scope: str = 'local') -> str | None` (L1068)
+- `def set_git_config(repo: RepoHandle | Path | str | None, key: str, value: str, scope: str = 'local') -> None` (L1093)
+- `def get_http_post_buffer(repo: RepoHandle | Path | str | None = None, scope: str = 'local') -> int | None` (L1112)
+- `def set_http_post_buffer(repo: RepoHandle | Path | str | None, buffer_bytes: int, scope: str = 'local') -> None` (L1126)
+- `def get_http_version(repo: RepoHandle | Path | str | None = None, scope: str = 'local') -> str | None` (L1135)
+- `def set_http_version(repo: RepoHandle | Path | str | None, version: str, scope: str = 'local') -> None` (L1143)
+- `def scan_unpushed_large_blobs(repo: RepoHandle, remote: str = 'origin', branch: str | None = None, threshold_mb: float = 50.0) -> list[tuple[str, float]]` (L1165)
+- `class GitEngine` (L1241)
   - `__init__(self, repo: RepoHandle | None = None, settings: Any = None) -> None`
   - `get_settings(self) -> Any`
   - `is_feature_enabled(self, key: str, repo_path: str | None = None) -> bool`
@@ -222,30 +222,40 @@
   - `get_commit_details(self, sha: str, repo: RepoHandle | Path | str | None = None) -> Commit | None`
   - `run_terminal_command(self, subcommand_args: list[str] | str, repo: RepoHandle | Path | str | None = None) -> tuple[int, str, str, float]`
   - `run_git_terminal_command(self, subcommand_args: list[str] | str, repo: RepoHandle | Path | str | None = None) -> tuple[int, str, str, float]`
-- `def run_git_terminal_command(repo_path: Path | str, subcommand_args: list[str] | str, timeout: float = 15.0) -> tuple[int, str, str, float]` (L1832)
-- `def get_branch_sync_status(repo: RepoHandle | Path | str) -> BranchSyncStatus` (L1896)
-- `def get_ref_sidebar_tree(repo: RepoHandle | Path | str) -> RefSidebarTree` (L1902)
-- `def get_commit(repo: RepoHandle | Path | str, sha: str) -> Commit | None` (L1908)
-- `def get_commit_details(repo: RepoHandle | Path | str, sha: str) -> Commit | None` (L1914)
-- `def is_unborn_repo(repo_path: Path | str) -> bool` (L1920)
-- `def refresh_repo_handle(repo: RepoHandle | None) -> None` (L1928)
-- `def is_sparse_checkout_enabled(repo_path: Path | str) -> bool` (L1938)
-- `def get_sparse_checkout_state(repo_path: Path | str) -> SparseCheckoutState` (L1942)
-- `def init_sparse_checkout(repo_path: Path | str, cone: bool = True) -> None` (L1946)
-- `def list_sparse_directories(repo_path: Path | str) -> list[str]` (L1950)
-- `def set_sparse_directories(repo_path: Path | str, dirs: list[str], *, cone: bool = True, warnings_out: list[str] | None = None) -> None` (L1954)
-- `def disable_sparse_checkout(repo_path: Path | str, *, warnings_out: list[str] | None = None) -> None` (L1969)
-- `def list_head_top_directories(repo_path: Path | str, max_depth: int = 2) -> list[str]` (L1977)
-- `def list_tree_subdirectories(repo_path: Path | str, parent_rel_path: str = '') -> list[TreeDirectoryEntry]` (L1981)
-- `def write_commit_graph(repo_path: Path | str, *, reachable: bool = True, changed_paths: bool = True, timeout: int = 120) -> CommitGraphStats` (L1988)
-- `def maybe_write_commit_graph(repo_path: Path | str, settings_registry: Any = None) -> CommitGraphStats` (L2003)
-- `def build_interactive_rebase_cli_args(base_oid: str, *, autostash: bool = True, autosquash: bool = True) -> list[str]` (L2018)
-- `def get_interactive_rebase_target_label(repo: RepoHandle | Path | str, base_oid: str) -> tuple[str, str, bool]` (L2031)
-- `def list_commits_for_interactive_rebase_checked(repo: RepoHandle | Path | str, base_oid: str, *, limit: int = 1000) -> tuple[list[RebaseTodoEntry], bool]` (L2039)
-- `def list_commits_for_interactive_rebase(repo: RepoHandle | Path | str, base_oid: str, *, limit: int = 1000) -> list[RebaseTodoEntry]` (L2053)
-- `def interactive_rebase(repo: RepoHandle, base_oid: str, entries: list[RebaseTodoEntry], *, autostash: bool = True, autosquash: bool = True, conn: sqlite3.Connection | None = None) -> RebaseResult` (L2067)
+- `def run_git_terminal_command(repo_path: Path | str, subcommand_args: list[str] | str, timeout: float = 15.0) -> tuple[int, str, str, float]` (L1848)
+- `def get_branch_sync_status(repo: RepoHandle | Path | str) -> BranchSyncStatus` (L2048)
+- `def get_ref_sidebar_tree(repo: RepoHandle | Path | str) -> RefSidebarTree` (L2054)
+- `def get_commit(repo: RepoHandle | Path | str, sha: str) -> Commit | None` (L2060)
+- `def get_commit_details(repo: RepoHandle | Path | str, sha: str) -> Commit | None` (L2066)
+- `def is_unborn_repo(repo_path: Path | str) -> bool` (L2072)
+- `def refresh_repo_handle(repo: RepoHandle | None) -> None` (L2080)
+- `def is_sparse_checkout_enabled(repo_path: Path | str) -> bool` (L2090)
+- `def get_sparse_checkout_state(repo_path: Path | str) -> SparseCheckoutState` (L2094)
+- `def init_sparse_checkout(repo_path: Path | str, cone: bool = True) -> None` (L2098)
+- `def list_sparse_directories(repo_path: Path | str) -> list[str]` (L2102)
+- `def set_sparse_directories(repo_path: Path | str, dirs: list[str], *, cone: bool = True, warnings_out: list[str] | None = None) -> None` (L2106)
+- `def disable_sparse_checkout(repo_path: Path | str, *, warnings_out: list[str] | None = None) -> None` (L2121)
+- `def list_head_top_directories(repo_path: Path | str, max_depth: int = 2) -> list[str]` (L2129)
+- `def list_tree_subdirectories(repo_path: Path | str, parent_rel_path: str = '') -> list[TreeDirectoryEntry]` (L2133)
+- `def write_commit_graph(repo_path: Path | str, *, reachable: bool = True, changed_paths: bool = True, timeout: int = 120) -> CommitGraphStats` (L2140)
+- `def maybe_write_commit_graph(repo_path: Path | str, settings_registry: Any = None) -> CommitGraphStats` (L2155)
+- `def build_interactive_rebase_cli_args(base_oid: str, *, autostash: bool = True, autosquash: bool = True) -> list[str]` (L2170)
+- `def get_interactive_rebase_target_label(repo: RepoHandle | Path | str, base_oid: str) -> tuple[str, str, bool]` (L2183)
+- `def list_commits_for_interactive_rebase_checked(repo: RepoHandle | Path | str, base_oid: str, *, limit: int = 1000) -> tuple[list[RebaseTodoEntry], bool]` (L2191)
+- `def list_commits_for_interactive_rebase(repo: RepoHandle | Path | str, base_oid: str, *, limit: int = 1000) -> list[RebaseTodoEntry]` (L2205)
+- `def interactive_rebase(repo: RepoHandle, base_oid: str, entries: list[RebaseTodoEntry], *, autostash: bool = True, autosquash: bool = True, conn: sqlite3.Connection | None = None) -> RebaseResult` (L2219)
+- `def list_worktrees(repo: RepoHandle | Path | str) -> list[WorktreeInfo]` (L2242)
+- `def format_worktree_path(repo: RepoHandle | Path | str, branch_name: str, template: str | None = None) -> Path` (L2247)
+- `def add_worktree(repo: RepoHandle | Path | str, target_path: Path | str, branch: str | None = None, *, branch_name: str | None = None, create_branch: bool = False, new_branch: bool = False, commit: str | None = None) -> WorktreeInfo` (L2256)
+- `def lock_worktree(repo: RepoHandle | Path | str, worktree_path: Path | str, reason: str = '') -> None` (L2278)
+- `def unlock_worktree(repo: RepoHandle | Path | str, worktree_path: Path | str) -> None` (L2287)
+- `def remove_worktree(repo: RepoHandle | Path | str, worktree_path: Path | str, *, force: bool = False) -> None` (L2292)
+- `def prune_worktrees(repo: RepoHandle | Path | str) -> None` (L2302)
+- `def cross_worktree_cherry_pick(target_worktree_path: Path | str, commit_oid: str) -> None` (L2307)
+- `def verify_commit_signatures(repo: RepoHandle | Path | str, commit_oids: list[str]) -> dict[str, SignatureStatus]` (L2311)
+- `def list_signing_keys() -> list[SigningKey]` (L2319)
 
-### `src/wrench/core/exceptions.py` (345 lines)
+### `src/wrench/core/exceptions.py` (354 lines)
 - `class WrenchGitError(Exception)` (L4)
   - `__init__(self, message: str, *, stderr: str | None = None)`
 - `class WrenchRepoNotFoundError(WrenchGitError)` (L12)
@@ -299,6 +309,8 @@
   - `__init__(self, args_or_msg: list[str] | str = '', returncode_or_timeout: int | float = -1, stderr: str = '', timeout: float | None = None)`
 - `class LfsUnavailableError(WrenchGitError)` (L338)
   - `__init__(self, message: str = 'Git LFS is not installed. Please install git-lfs to use LFS features.')`
+- `class WorktreeAlreadyCheckedOutError(WrenchGitError)` (L348)
+  - `__init__(self, branch: str, existing_path: str)`
 
 ### `src/wrench/core/git_credential_helper.py` (200 lines)
 - `def main() -> None` (L82)
@@ -336,7 +348,7 @@
 - `def remove_lock(repo_path: Path | str) -> None` (L34)
 - `def check_all_repos(conn) -> list[tuple[int, str, str]]` (L42)
 
-### `src/wrench/core/models.py` (376 lines)
+### `src/wrench/core/models.py` (431 lines)
 - `@dataclass class FileChange` (L9)
   - **Fields:** `path: str; change_type: str; old_path: str | None = None; is_partially_staged: bool = False`
   - `status_code(self) -> str`
@@ -344,74 +356,82 @@
   - **Fields:** `path: str; staged_code: str; unstaged_code: str; is_partially_staged: bool; is_untracked: bool = False; staged_hunks_count: int = 0; unstaged_hunks_count: int = 0`
   - `composite_badge(self) -> str`
 - `@dataclass class RepoStatus` (L42)
-  - **Fields:** `staged: list[FileChange]; unstaged: list[FileChange]; untracked: list[str]; current_branch: str | None; is_detached: bool; ahead: int; behind: int; has_conflicts: bool; detached_head_sha: str | None = None; head_sha: str | None = None; merge_in_progress: bool = False; rebase_in_progress: bool = False; partially_staged: list[FileChange] = field(default_factory=list)`
+  - **Fields:** `staged: list[FileChange]; unstaged: list[FileChange]; untracked: list[str]; current_branch: str | None; is_detached: bool; ahead: int; behind: int; has_conflicts: bool; detached_head_sha: str | None = None; head_sha: str | None = None; merge_in_progress: bool = False; rebase_in_progress: bool = False; partially_staged: list[FileChange] = field(default_factory=list); is_bare: bool = False; is_bare_hub: bool = False`
   - `partially_staged_paths(self) -> set[str]`
   - `branch_name(self) -> str | None`
   - `is_detached_head(self) -> bool`
-- `@dataclass class FileStat` (L71)
+- `@dataclass class FileStat` (L73)
   - **Fields:** `path: str; change_type: str; additions: int; deletions: int`
-- `class RefName(str)` (L80)
-- `@dataclass class RefLabel` (L96)
+- `class RefName(str)` (L82)
+- `@dataclass class RefLabel` (L98)
   - **Fields:** `name: str; kind: str`
-- `@dataclass class Commit` (L104)
+- `@dataclass class Commit` (L106)
   - **Fields:** `sha: str; message: str; author_name: str; author_email: str; author_date: str; parent_shas: list[str]; refs: list[RefName] = field(default_factory=list)`
   - `author(self) -> str`
   - `hex(self) -> str`
-- `@dataclass class BlameLine` (L123)
+- `@dataclass class BlameLine` (L125)
   - **Fields:** `line_no: int; commit_sha: str; author: str; line_content: str`
-- `@dataclass class DiffLine` (L131)
+- `@dataclass class DiffLine` (L133)
   - **Fields:** `content: str; origin: str; old_lineno: int | None; new_lineno: int | None`
-- `@dataclass class Hunk` (L139)
+- `@dataclass class Hunk` (L141)
   - **Fields:** `id: str; old_start: int; old_count: int; new_start: int; new_count: int; lines: list[DiffLine]`
-- `@dataclass class Diff` (L149)
+- `@dataclass class Diff` (L151)
   - **Fields:** `path: str; is_binary: bool; hunks: list[Hunk]; is_truncated: bool = False; total_lines: int = 0; truncated_reason: str | None = None`
-- `@dataclass class MergeResult` (L159)
+- `@dataclass class MergeResult` (L161)
   - **Fields:** `status: str; commit_sha: str | None = None; conflicted_files: list[str] = field(default_factory=list)`
-- `@dataclass class RebaseResult` (L166)
+- `@dataclass class RebaseResult` (L168)
   - **Fields:** `status: str; conflicted_files: list[str] = field(default_factory=list)`
-- `@dataclass class Remote` (L172)
+- `@dataclass class Remote` (L174)
   - **Fields:** `name: str; url: str`
-- `@dataclass class ReflogEntry` (L178)
+- `@dataclass class ReflogEntry` (L180)
   - **Fields:** `sha: str; message: str; timestamp: str`
-- `@dataclass class Submodule` (L185)
+- `@dataclass class Submodule` (L187)
   - **Fields:** `path: str; url: str; initialized: bool`
-- `@dataclass class SubmoduleStatus` (L192)
+- `@dataclass class SubmoduleStatus` (L194)
   - **Fields:** `path: str; current_commit: str; is_dirty: bool`
-- `@dataclass class LogFilter` (L199)
+- `@dataclass class LogFilter` (L201)
   - **Fields:** `author: str | None = None; message_substring: str | None = None; date_from: str | None = None; date_to: str | None = None; path: str | None = None`
-- `@dataclass class CloneResult` (L208)
+- `@dataclass class CloneResult` (L210)
   - **Fields:** `path: Path`
-- `@dataclass class RemoteInfo` (L215)
+- `@dataclass class RemoteInfo` (L217)
   - **Fields:** `name: str; url: str; last_fetch_at: str | None = None; is_reachable: bool | None = None`
   - `fetch_url(self) -> str`
-- `@dataclass class LfsFileStatus` (L229)
+- `@dataclass class LfsFileStatus` (L231)
   - **Fields:** `path: str; is_pointer: bool; oid: str | None = None; size: int | None = None; is_locked: bool = False; locked_by: str | None = None`
-- `@dataclass class LFSLock` (L241)
+- `@dataclass class LFSLock` (L243)
   - **Fields:** `lock_id: str; path: str; owner: str`
-- `@dataclass class BundleInfo` (L250)
+- `@dataclass class BundleInfo` (L252)
   - **Fields:** `path: Path; is_valid: bool; prerequisites: list[str] = field(default_factory=list); references: list[str] = field(default_factory=list)`
-- `@dataclass class SparseCheckoutState` (L260)
+- `@dataclass class SparseCheckoutState` (L262)
   - **Fields:** `enabled: bool; cone_mode: bool; directories: tuple[str, ...]; partial_filter: str | None = None`
-- `@dataclass class TreeDirectoryEntry` (L270)
+- `@dataclass class TreeDirectoryEntry` (L272)
   - **Fields:** `name: str; rel_path: str; has_children: bool; is_selected: bool = False`
-- `@dataclass class LogPage` (L280)
+- `@dataclass class LogPage` (L282)
   - **Fields:** `commits: tuple[Commit, ...]; next_cursor_sha: str | None; has_more: bool; scanned_count: int = 0`
-- `@dataclass class CommitGraphStats` (L290)
+- `@dataclass class CommitGraphStats` (L292)
   - **Fields:** `written: bool; duration_ms: int; skipped_reason: str | None = None; graph_file_size_bytes: int = 0`
-- `@dataclass class WatcherStatusInfo` (L300)
+- `@dataclass class WatcherStatusInfo` (L302)
   - **Fields:** `mode: str; is_fallback: bool; watched_paths: tuple[str, ...]; reason: str | None = None`
-- `@dataclass class RebaseTodoEntry` (L310)
+- `@dataclass class RebaseTodoEntry` (L312)
   - **Fields:** `action: str; oid: str; short_oid: str; summary: str; author: str; new_message: str | None = None`
-- `@dataclass class BranchInfo` (L327)
+- `@dataclass class BranchInfo` (L329)
   - **Fields:** `name: str; is_head: bool; upstream_name: str | None = None; ahead: int = 0; behind: int = 0; target_oid: str = ''`
-- `@dataclass class TagInfo` (L339)
+- `@dataclass class TagInfo` (L341)
   - **Fields:** `name: str; target_oid: str; message: str | None = None; tagger_date: str | None = None`
-- `@dataclass class StashEntry` (L349)
+- `@dataclass class StashEntry` (L351)
   - **Fields:** `index: int; message: str; oid: str; timestamp: str | None = None`
-- `@dataclass class BranchSyncStatus` (L359)
+- `@dataclass class BranchSyncStatus` (L361)
   - **Fields:** `branch_name: str; upstream_name: str | None; ahead: int = 0; behind: int = 0; is_detached: bool = False`
-- `@dataclass class RefSidebarTree` (L370)
+- `@dataclass class RefSidebarTree` (L372)
   - **Fields:** `local_branches: tuple[BranchInfo, ...] = (); remote_branches: tuple[BranchInfo, ...] = (); tags: tuple[TagInfo, ...] = (); stashes: tuple[StashEntry, ...] = ()`
+- `@dataclass class WorktreeInfo` (L387)
+  - **Fields:** `path: str; head_oid: str; branch_name: str | None; is_bare: bool; is_locked: bool; lock_reason: str | None = None; is_prunable: bool = False; is_main: bool = False; is_detached: bool = False`
+- `@dataclass class WorkspaceSession` (L402)
+  - **Fields:** `session_name: str; repo_paths: tuple[str, ...]; active_index: int`
+- `@dataclass class SignatureStatus` (L411)
+  - **Fields:** `oid: str; state: str; signer: str | None = None; key_fingerprint: str | None = None; key_type: str | None = None; validity_details: str | None = None`
+- `@dataclass class SigningKey` (L423)
+  - **Fields:** `key_id: str; key_type: str; display_name: str; fingerprint: str; email: str | None = None`
 
 ### `src/wrench/core/paths.py` (61 lines)
 - `def data_dir() -> Path` (L12)
@@ -420,23 +440,23 @@
 - `def cache_dir() -> Path` (L27)
 - `def resolve_git_dir(repo_path: Path | str) -> Path` (L32)
 
-### `src/wrench/core/read_ops.py` (1743 lines)
+### `src/wrench/core/read_ops.py` (1761 lines)
 - `def configure_libgit2_cache_limits(*, force: bool = False) -> None` (L225)
 - `def configure_libgit2_memory_limits(max_cache_mb: int = 32) -> None` (L242)
 - `def get_status(repo: RepoHandle) -> RepoStatus` (L249)
-- `def get_diff(repo: RepoHandle, path: str, *, staged: bool, max_lines: int | None = None, max_bytes: int | None = None) -> Diff` (L788)
-- `def get_commit_diff(repo: RepoHandle, sha: str, path: str | None = None, *, max_lines: int | None = None, max_bytes: int | None = None) -> Diff` (L980)
-- `def get_commit_file_stats(repo: RepoHandle, sha: str) -> list[FileStat]` (L1030)
-- `def get_ref_labels(repo: RepoHandle) -> dict[str, list[RefLabel]]` (L1081)
-- `def iter_commits(repo: RepoHandle, *, all_refs: bool = False) -> Iterator[Commit]` (L1148)
-- `def get_log_page(repo: RepoHandle, filter: LogFilter | None = None, *, limit: int = 500, cursor_sha: str | None = None, all_refs: bool = False) -> LogPage` (L1319)
-- `def get_log(repo: RepoHandle, filter: LogFilter | None = None, *, limit: int = 100, offset: int = 0, all_refs: bool = False) -> list[Commit]` (L1424)
-- `def get_commit(repo: RepoHandle | Path | str, sha: str) -> Commit | None` (L1472)
-- `def get_commit_details(repo: RepoHandle | Path | str, sha: str) -> Commit | None` (L1487)
-- `def blame_file(repo: RepoHandle, path: str) -> list[BlameLine]` (L1492)
-- `def get_repo_refs_signature(repo: RepoHandle) -> tuple[str, bool, bool, str, str, str] | None` (L1527)
-- `def get_branch_sync_status(repo_path: Path | str) -> BranchSyncStatus` (L1586)
-- `def get_ref_sidebar_tree(repo_path: Path | str) -> RefSidebarTree` (L1650)
+- `def get_diff(repo: RepoHandle, path: str, *, staged: bool, max_lines: int | None = None, max_bytes: int | None = None) -> Diff` (L806)
+- `def get_commit_diff(repo: RepoHandle, sha: str, path: str | None = None, *, max_lines: int | None = None, max_bytes: int | None = None) -> Diff` (L998)
+- `def get_commit_file_stats(repo: RepoHandle, sha: str) -> list[FileStat]` (L1048)
+- `def get_ref_labels(repo: RepoHandle) -> dict[str, list[RefLabel]]` (L1099)
+- `def iter_commits(repo: RepoHandle, *, all_refs: bool = False) -> Iterator[Commit]` (L1166)
+- `def get_log_page(repo: RepoHandle, filter: LogFilter | None = None, *, limit: int = 500, cursor_sha: str | None = None, all_refs: bool = False) -> LogPage` (L1337)
+- `def get_log(repo: RepoHandle, filter: LogFilter | None = None, *, limit: int = 100, offset: int = 0, all_refs: bool = False) -> list[Commit]` (L1442)
+- `def get_commit(repo: RepoHandle | Path | str, sha: str) -> Commit | None` (L1490)
+- `def get_commit_details(repo: RepoHandle | Path | str, sha: str) -> Commit | None` (L1505)
+- `def blame_file(repo: RepoHandle, path: str) -> list[BlameLine]` (L1510)
+- `def get_repo_refs_signature(repo: RepoHandle) -> tuple[str, bool, bool, str, str, str] | None` (L1545)
+- `def get_branch_sync_status(repo_path: Path | str) -> BranchSyncStatus` (L1604)
+- `def get_ref_sidebar_tree(repo_path: Path | str) -> RefSidebarTree` (L1668)
 
 ### `src/wrench/core/rebase_editor_helper.py` (145 lines)
 - `def apply_sequence_plan(todo_path: Path, plan: dict[str, Any]) -> None` (L40)
@@ -538,6 +558,12 @@
 - `def validate_git_ref(ref: str) -> str` (L77)
 - `def redact_secrets(text: str) -> str` (L99)
 
+### `src/wrench/core/signing_ops.py` (231 lines)
+- `def parse_signature_log_output(output: str) -> dict[str, SignatureStatus]` (L24)
+- `def verify_commit_signatures_batch(repo_path: Path | str, oids: list[str], settings: Any = None) -> dict[str, SignatureStatus]` (L89)
+- `def clear_signature_cache() -> None` (L156)
+- `def list_available_signing_keys() -> list[SigningKey]` (L161)
+
 ### `src/wrench/core/snapshots.py` (290 lines)
 - `@dataclass class Snapshot` (L22)
   - **Fields:** `id: int; created_at: str; trigger_type: str; is_manual: bool; label: str | None; ref_name: str`
@@ -572,6 +598,16 @@
 - `def update_submodules(repo, path: str | None = None, recursive: bool = True) -> None` (L116)
 - `def sync_submodules(repo, path: str | None = None) -> None` (L129)
 - `def add_submodule(repo, url: str, path: str) -> None` (L137)
+
+### `src/wrench/core/worktrees.py` (213 lines)
+- `def list_worktrees(repo_path: Path | str) -> list[WorktreeInfo]` (L21)
+- `def format_worktree_path(repo_path: Path | str, branch_name: str, template: str | None = None) -> Path` (L96)
+- `def add_worktree(repo_path: Path | str, target_path: Path | str, branch: str | None = None, *, branch_name: str | None = None, create_branch: bool = False, new_branch: bool = False, commit: str | None = None) -> WorktreeInfo` (L118)
+- `def lock_worktree(repo_path: Path | str, worktree_path: Path | str, reason: str = '') -> None` (L172)
+- `def unlock_worktree(repo_path: Path | str, worktree_path: Path | str) -> None` (L184)
+- `def remove_worktree(repo_path: Path | str, worktree_path: Path | str, *, force: bool = False) -> None` (L189)
+- `def prune_worktrees(repo_path: Path | str) -> None` (L203)
+- `def cross_worktree_cherry_pick(target_worktree_path: Path | str, commit_oid: str) -> None` (L208)
 
 ### `src/wrench/core/write_ops.py` (1293 lines)
 - `def run_git(repo_path: Path | str, args: list[str], *, timeout: int = 30, check: bool = True, input_text: str | None = None) -> subprocess.CompletedProcess` (L64)
@@ -621,6 +657,12 @@
   - `unavailable_help_text(self) -> str`
 - `class AppImageSecretServiceBackend(SecretServiceBackend)` (L56)
   - `unavailable_help_text(self) -> str`
+
+### `src/wrench/credentials/signing_askpass.py` (127 lines)
+- `class SigningAskpassBridge` (L18)
+  - `__init__(self, prompt_callback: Callable[[str], str]) -> None`
+  - `start(self) -> dict[str, str]`
+  - `stop(self) -> None`
 
 ### `src/wrench/forge/adapters/bitbucket.py` (264 lines)
 - `class BitbucketAdapter(ForgeAdapter)` (L18)
@@ -736,7 +778,7 @@
 ### `src/wrench/storage/__init__.py` (10 lines)
 - `def get_connection(*args, **kwargs)` (L4)
 
-### `src/wrench/storage/db.py` (96 lines)
+### `src/wrench/storage/db.py` (111 lines)
 - `def get_connection() -> sqlite3.Connection` (L17)
 - `def run_migrations(conn: sqlite3.Connection) -> None` (L43)
 
@@ -779,12 +821,18 @@
 - `def clear_missing(conn: sqlite3.Connection, path_or_id: str | int) -> None` (L136)
 - `def relocate_repo(conn: sqlite3.Connection, old_path_or_id: str | int, new_path: str) -> None` (L146)
 
+### `src/wrench/storage/session_storage.py` (73 lines)
+- `def save_session(conn: sqlite3.Connection, session_name: str, repo_paths: list[str] | tuple[str, ...], active_index: int = 0) -> None` (L15)
+- `def load_session(conn: sqlite3.Connection, session_name: str) -> WorkspaceSession | None` (L37)
+- `def list_sessions(conn: sqlite3.Connection) -> list[str]` (L58)
+- `def delete_session(conn: sqlite3.Connection, session_name: str) -> bool` (L66)
+
 ### `src/wrench/storage/settings.py` (103 lines)
 - `def get_setting(conn: sqlite3.Connection, key: str) -> str | None` (L30)
 - `def set_setting(conn: sqlite3.Connection, key: str, value: str) -> None` (L60)
 - `def delete_setting(conn: sqlite3.Connection, key: str) -> None` (L86)
 
-### `src/wrench/storage/settings_registry.py` (1769 lines)
+### `src/wrench/storage/settings_registry.py` (1857 lines)
 - `class SettingType(str, Enum)` (L26)
 - `class SettingScope(str, Enum)` (L34)
 - `class SettingTier(str, Enum)` (L39)
@@ -792,7 +840,7 @@
   - **Fields:** `key: str; category: str; label: str; description: str; setting_type: SettingType; default: Any; scope: SettingScope = SettingScope.REPO_OVERRIDABLE; choices: tuple[str, ...] = (); min_value: int | None = None; max_value: int | None = None; parent_toggle_key: str | None = None; tier: SettingTier = SettingTier.ADVANCED; requires_restart: bool = False`
 - `@dataclass class SettingDelta` (L62)
   - **Fields:** `change_id: int; timestamp: str; repo_path: str | None; key: str; old_value: Any; new_value: Any; undone: bool = False`
-- `class SettingsRegistry(QObject)` (L1043)
+- `class SettingsRegistry(QObject)` (L1131)
   - **Signals:** `setting_changed = Signal(str, object, object)`
   - `__init__(self, conn: sqlite3.Connection | None = None) -> None`
   - `register(self, spec: SettingSpec) -> None`
@@ -818,8 +866,8 @@
   - `apply_minimalist_local_only_preset(self, repo_path: str | None = None) -> None`
   - `export_json(self, file_path: str | Path) -> None`
   - `import_json(self, file_path: str | Path) -> None`
-- `def peek_settings_registry() -> SettingsRegistry | None` (L1758)
-- `def get_settings_registry(conn: sqlite3.Connection | None = None) -> SettingsRegistry` (L1763)
+- `def peek_settings_registry() -> SettingsRegistry | None` (L1846)
+- `def get_settings_registry(conn: sqlite3.Connection | None = None) -> SettingsRegistry` (L1851)
 
 ### `src/wrench/storage/snapshots.py` (116 lines)
 - `@dataclass class SnapshotRecord` (L10)
@@ -837,8 +885,8 @@
 - `def get_pixmap(name: str, color: str = DEFAULT_ICON_COLOR, size: int = 16) -> QPixmap` (L235)
 - `def get_icon(name: str, color: str = DEFAULT_ICON_COLOR, size: int = 16) -> QIcon` (L264)
 
-### `src/wrench/ui/main_window.py` (3772 lines)
-- `class MainWindow(QMainWindow)` (L219)
+### `src/wrench/ui/main_window.py` (3963 lines)
+- `class MainWindow(QMainWindow)` (L221)
   - `__init__(self, conn: Any = None, parent = None)`
   - `moveEvent(self, event) -> None`
   - `restart_snapshot_timer(self) -> None`
@@ -846,7 +894,7 @@
   - `open_settings_at_category(self, category: str, highlight_key: str | None = None, parent_dialog: QWidget | None = None) -> None`
   - `request_restart(self) -> bool`
 
-### `src/wrench/ui/theme.py` (1106 lines)
+### `src/wrench/ui/theme.py` (1151 lines)
 - `def is_dark_theme(widget_or_palette: QWidget | QPalette | None = None) -> bool` (L26)
 - `def create_pastel_light_palette() -> QPalette` (L133)
 - `def create_pastel_dark_palette() -> QPalette` (L156)
@@ -869,10 +917,12 @@
 - `def get_status_pill_style(kind: str, is_dark: bool) -> dict[str, str]` (L896)
 - `def get_tree_widget_qss(is_dark: bool) -> str` (L926)
 - `def get_settings_badge_qss(is_dark: bool) -> str` (L945)
-- `def get_remote_status_color(is_reachable: bool | None, is_dark: bool) -> QColor` (L991)
-- `def get_avatar_bg_color(identifier: str, is_dark: bool) -> str` (L1034)
-- `def get_avatar_fg_color(is_dark: bool) -> str` (L1041)
-- `def get_readonly_field_qss(is_dark: bool, *, placeholder: bool = False) -> str` (L1077)
+- `def get_signature_badge_qss(state: str, is_dark: bool) -> str` (L968)
+- `def get_worktree_status_color(kind: str, is_dark: bool) -> str` (L993)
+- `def get_remote_status_color(is_reachable: bool | None, is_dark: bool) -> QColor` (L1036)
+- `def get_avatar_bg_color(identifier: str, is_dark: bool) -> str` (L1079)
+- `def get_avatar_fg_color(is_dark: bool) -> str` (L1086)
+- `def get_readonly_field_qss(is_dark: bool, *, placeholder: bool = False) -> str` (L1122)
 
 ### `src/wrench/ui/workers.py` (253 lines)
 - `def set_activity_log(log: Any) -> None` (L21)

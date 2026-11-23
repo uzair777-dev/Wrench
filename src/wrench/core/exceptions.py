@@ -343,3 +343,12 @@ class LfsUnavailableError(WrenchGitError):
         message: str = "Git LFS is not installed. Please install git-lfs to use LFS features.",
     ):
         super().__init__(message)
+
+
+class WorktreeAlreadyCheckedOutError(WrenchGitError):
+    """Attempted to checkout a branch already checked out in another worktree."""
+
+    def __init__(self, branch: str, existing_path: str):
+        self.branch = branch
+        self.existing_path = existing_path
+        super().__init__(f"Branch '{branch}' is already checked out at '{existing_path}'.")

@@ -48,9 +48,9 @@ def run_migrations(conn: sqlite3.Connection) -> None:
         if current_version == 0:
             schema_sql = resources.files("wrench.storage").joinpath("schema.sql").read_text()
             conn.executescript(schema_sql)
-            conn.execute("PRAGMA user_version = 3")
+            conn.execute("PRAGMA user_version = 4")
             conn.commit()
-            logger.info("Applied initial schema (version 3)")
+            logger.info("Applied initial schema (version 4)")
             return
 
         if current_version == 1:
@@ -94,3 +94,18 @@ def run_migrations(conn: sqlite3.Connection) -> None:
             conn.execute("PRAGMA user_version = 3")
             conn.commit()
             logger.info("Applied schema migration to version 3 (Universal settings registry)")
+            current_version = 3
+
+        if current_version == 3:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS workspace_sessions (
+                    session_name    TEXT PRIMARY KEY,
+                    repo_paths_json TEXT NOT NULL,
+                    active_index    INTEGER NOT NULL DEFAULT 0,
+                    updated_at      TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+                """)
+            conn.execute("PRAGMA user_version = 4")
+            conn.commit()
+            logger.info("Applied schema migration to version 4 (Workspace sessions)")
+            current_version = 4

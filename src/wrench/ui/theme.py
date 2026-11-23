@@ -951,6 +951,53 @@ def get_settings_badge_qss(is_dark: bool) -> str:
     )
 
 
+SIGNATURE_BADGE_STYLES = {
+    "light": {
+        "verified": {"bg": "#dcfce7", "fg": "#15803d", "border": "#22c55e"},
+        "unverified_key": {"bg": "#fef9c3", "fg": "#854d0e", "border": "#eab308"},
+        "bad": {"bg": "#fee2e2", "fg": "#b91c1c", "border": "#ef4444"},
+        "unsigned": {"bg": "#f1f5f9", "fg": "#64748b", "border": "#cbd5e1"},
+    },
+    "dark": {
+        "verified": {"bg": "#1e3827", "fg": "#a6e3a1", "border": "#a6e3a1"},
+        "unverified_key": {"bg": "#38321a", "fg": "#f9e2af", "border": "#f9e2af"},
+        "bad": {"bg": "#3a1c24", "fg": "#f38ba8", "border": "#f38ba8"},
+        "unsigned": {"bg": "#1e1e2e", "fg": "#a6adc8", "border": "#45475a"},
+    },
+}
+
+
+def get_signature_badge_qss(state: str, is_dark: bool) -> str:
+    """Return theme-aware QSS for cryptographic signature verification badges."""
+    mode = "dark" if is_dark else "light"
+    style = SIGNATURE_BADGE_STYLES[mode].get(
+        state, SIGNATURE_BADGE_STYLES[mode]["unverified_key"]
+    )
+    return (
+        f"QLabel {{ background-color: {style['bg']}; color: {style['fg']}; "
+        f"border: 1px solid {style['border']}; border-radius: 3px; "
+        f"padding: 2px 6px; font-weight: bold; font-size: 10px; }}"
+    )
+
+
+WORKTREE_STATUS_COLORS = {
+    "light": {
+        "locked": "#df8e1d",
+        "prunable": "#d20f39",
+    },
+    "dark": {
+        "locked": "#fab387",
+        "prunable": "#f38ba8",
+    },
+}
+
+
+def get_worktree_status_color(kind: str, is_dark: bool) -> str:
+    """Return hex color for worktree panel status badges."""
+    mode = "dark" if is_dark else "light"
+    return WORKTREE_STATUS_COLORS[mode].get(kind, "#cdd6f4" if is_dark else "#4c4f69")
+
+
 TOAST_TEXT_COLOR = {
     "light": "#216e39",
     "dark": "#a6e3a1",

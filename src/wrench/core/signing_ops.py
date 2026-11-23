@@ -1,4 +1,4 @@
-"""Cryptographic commit and tag signature verification and key discovery (VP-18, FR-2.9, FR-2.10)."""
+"""Cryptographic commit and tag signature verification (VP-18, FR-2.9, FR-2.10)."""
 
 from __future__ import annotations
 

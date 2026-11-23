@@ -1397,8 +1397,10 @@ class GitEngine:
         local: bool | None = None,
         remote: bool | None = None,
         include_remote: bool = False,
-        repo: RepoHandle | None = None,
+        repo: RepoHandle | str | Path | None = None,
     ) -> list[str]:
+        if isinstance(repo, (str, Path)):
+            repo = open_repo(repo)
         target = repo or self.repo
         if not target:
             raise ValueError("No repository provided")

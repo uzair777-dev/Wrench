@@ -141,18 +141,46 @@ class AddWorktreeDialog(QDialog):
 
     def _load_branches(self) -> None:
         """Load repository branches into the selector dropdown."""
+        branch_names: list[str] = []
         try:
             branches = self._engine.list_branches(repo=self._repo_path)
-            branch_names = [b.name for b in branches if getattr(b, "name", None)]
+            for b in branches:
+                if isinstance(b, str):
+                    name = b
+                else:
+                    name = getattr(b, "name", "")
+                if name and not name.startswith("origin/") and name not in branch_names:
+                    branch_names.append(name)
         except Exception as e:
             logger.debug("Failed listing branches: %s", e)
             branch_names = []
 
+        active_branches: set[str] = set()
+        try:
+            if hasattr(self._engine, "list_worktrees"):
+                wts = self._engine.list_worktrees(repo=self._repo_path)
+            else:
+                from wrench.core import worktrees
+
+                wts = worktrees.list_worktrees(self._repo_path)
+            active_branches = {w.branch_name for w in wts if getattr(w, "branch_name", None)}
+        except Exception as e:
+            logger.debug("Failed listing active worktrees: %s", e)
+
+        self._all_existing_branches: set[str] = set(branch_names)
+        self._active_worktree_branches: set[str] = active_branches
+
         self.combo_branch.clear()
-        if branch_names:
+        available = [b for b in branch_names if b not in active_branches]
+        if available:
+            self.combo_branch.addItems(available)
+            self.chk_new_branch.setChecked(False)
+        elif branch_names:
             self.combo_branch.addItems(branch_names)
+            self.chk_new_branch.setChecked(True)
+            self.combo_branch.setEditText("feature-worktree")
         else:
-            self.combo_branch.addItem("main")
+            self.combo_branch.addItem("feature-worktree")
             self.chk_new_branch.setChecked(True)
 
     @Slot(str)
@@ -232,6 +260,34 @@ class AddWorktreeDialog(QDialog):
 
         if not target_path:
             QMessageBox.warning(self, "Invalid Path", "Please specify a destination path.")
+            return
+
+        if (
+            is_new
+            and hasattr(self, "_all_existing_branches")
+            and branch in self._all_existing_branches
+        ):
+            QMessageBox.warning(
+                self,
+                "Branch Already Exists",
+                f"A local branch named '{branch}' already exists.\n\n"
+                "Please choose a different name for the new branch, or uncheck 'Create new branch' "
+                "to checkout an existing branch.",
+            )
+            return
+
+        if (
+            not is_new
+            and hasattr(self, "_active_worktree_branches")
+            and branch in self._active_worktree_branches
+        ):
+            QMessageBox.warning(
+                self,
+                "Branch Already Checked Out",
+                f"Branch '{branch}' is already checked out by another worktree.\n\n"
+                "Git does not permit checking out the same branch in multiple worktrees. "
+                "Please check 'Create new branch' or choose another branch.",
+            )
             return
 
         try:

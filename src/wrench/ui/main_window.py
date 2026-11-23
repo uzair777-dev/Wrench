@@ -3907,7 +3907,8 @@ class MainWindow(QMainWindow):
         if not repo_paths and self._current_repo:
             repo_paths.append(str(self._current_repo.path))
 
-        tabs_serialized = self.tab_container.serialize_tabs().get("tabs", [])
+        tabs_dict = self.tab_container.serialize_tabs()
+        tabs_serialized = tabs_dict.get("items") or tabs_dict.get("tabs") or []
         active_idx = self.tab_container.current_index()
         session_storage.save_session(
             self._conn, name.strip(), repo_paths, active_idx, tabs=tabs_serialized
@@ -4055,40 +4056,47 @@ class MainWindow(QMainWindow):
                 )
             elif t_type == "pr_detail" and entity_id:
                 parts = entity_id.split(":", 1)
-                if len(parts) == 2:
+                r_name = parts[0] if len(parts) == 2 else "origin"
+                p_id = parts[1] if len(parts) == 2 else parts[0]
 
-                    def _make_pr_detail(repo=tab_repo, remote=parts[0], pr_id=parts[1]):
-                        detail_tab = PRDetailTab(repo, remote, pr_id, self)
-                        detail_tab.branch_checkout_requested.connect(self._on_checkout_branch)
-                        return detail_tab
+                def _make_pr_detail(repo=tab_repo, remote=r_name, pr_id=p_id):
+                    detail_tab = PRDetailTab(repo, remote, pr_id, self)
+                    detail_tab.branch_checkout_requested.connect(self._on_checkout_branch)
+                    if self._current_repo:
+                        detail_tab.set_active_repository(str(self._current_repo.path))
+                    return detail_tab
 
-                    self.tab_container.add_tab(
-                        widget=_make_pr_detail,
-                        label=label or f"PR #{parts[1]}",
-                        tab_type="pr_detail",
-                        repo_path=tab_repo,
-                        entity_id=entity_id,
-                        closable=closable,
-                        is_pinned=is_pinned,
-                        activate=False,
-                    )
+                self.tab_container.add_tab(
+                    widget=_make_pr_detail,
+                    label=label or f"PR #{p_id}",
+                    tab_type="pr_detail",
+                    repo_path=tab_repo,
+                    entity_id=entity_id,
+                    closable=closable,
+                    is_pinned=is_pinned,
+                    activate=False,
+                )
             elif t_type == "issue_detail" and entity_id:
                 parts = entity_id.split(":", 1)
-                if len(parts) == 2:
+                r_name = parts[0] if len(parts) == 2 else "origin"
+                i_id = parts[1] if len(parts) == 2 else parts[0]
 
-                    def _make_issue_detail(repo=tab_repo, remote=parts[0], issue_id=parts[1]):
-                        return IssueDetailTab(repo, remote, issue_id, self)
+                def _make_issue_detail(repo=tab_repo, remote=r_name, issue_id=i_id):
+                    dt = IssueDetailTab(repo, remote, issue_id, self)
+                    if self._current_repo:
+                        dt.set_active_repository(str(self._current_repo.path))
+                    return dt
 
-                    self.tab_container.add_tab(
-                        widget=_make_issue_detail,
-                        label=label or f"Issue #{parts[1]}",
-                        tab_type="issue_detail",
-                        repo_path=tab_repo,
-                        entity_id=entity_id,
-                        closable=closable,
-                        is_pinned=is_pinned,
-                        activate=False,
-                    )
+                self.tab_container.add_tab(
+                    widget=_make_issue_detail,
+                    label=label or f"Issue #{i_id}",
+                    tab_type="issue_detail",
+                    repo_path=tab_repo,
+                    entity_id=entity_id,
+                    closable=closable,
+                    is_pinned=is_pinned,
+                    activate=False,
+                )
 
     def _on_delete_workspace_session(self, session_name: str) -> None:
         """Delete a named workspace session from SQLite."""

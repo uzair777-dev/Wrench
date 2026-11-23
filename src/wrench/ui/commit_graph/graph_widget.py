@@ -906,6 +906,12 @@ class CommitGraphWidget(QTableView):
         self._paint_cache_epoch += 1
         self._model._paint_cache_epoch = self._paint_cache_epoch
         self._model._avatar_url_cache.clear()
+        try:
+            from wrench.ui.history_view import clear_avatar_cache
+
+            clear_avatar_cache()
+        except Exception as e:
+            logger.debug("Failed clearing avatar cache in invalidate_paint_caches: %s", e)
         if shiboken6.isValid(self) and self.viewport() is not None:
             self.viewport().update()
 

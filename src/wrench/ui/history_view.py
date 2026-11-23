@@ -80,18 +80,29 @@ from wrench.ui.theme import (
     SIDEBAR_BG_LIGHT,
     is_dark_theme,
 )
+from wrench.ui.widgets.avatar import get_avatar_loader, resolve_author_avatar_url
 
 logger = logging.getLogger(__name__)
 
 
 class AvatarPixmapCache:
-    """128-entry LRU cache mapping (author_email, size_px, ring_color_hex) -> circular QPixmap."""
+    """128-entry LRU cache mapping (author_email, size_px, ring_color_hex, is_dark) -> circular QPixmap."""
 
     def __init__(self, maxsize: int = 128) -> None:
         self._maxsize = maxsize
-        self._cache: collections.OrderedDict[tuple[str, int, str], QPixmap] = (
+        self._cache: collections.OrderedDict[tuple[str, int, str, bool], QPixmap] = (
             collections.OrderedDict()
         )
+        try:
+            get_avatar_loader().avatar_ready.connect(self._on_avatar_ready)
+        except Exception as e:
+            logger.debug("Failed connecting avatar loader in history view: %s", e)
+
+    def _on_avatar_ready(self, _url: str = "", _size: int = 0) -> None:
+        self.clear()
+
+    def clear(self) -> None:
+        self._cache.clear()
 
     def get_or_render(
         self,
@@ -99,9 +110,14 @@ class AvatarPixmapCache:
         email: str,
         size: int,
         ring_color_hex: str,
+        *,
+        remote_urls: list[str] | None = None,
+        db_conn: Any = None,
+        is_dark: bool = True,
     ) -> QPixmap:
         """Returns cached circular avatar/initials pixmap with 2px ring border."""
-        key = (email.strip().lower(), size, ring_color_hex)
+        clean_email = email.strip().lower()
+        key = (clean_email or name.strip().lower(), size, ring_color_hex, is_dark)
         if key in self._cache:
             pix = self._cache[key]
             self._cache.move_to_end(key)
@@ -113,39 +129,69 @@ class AvatarPixmapCache:
         painter = QPainter(pix)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
 
-        # Background circular fill
         r = float(size) / 2.0
         center = QPointF(r, r)
-
-        # Derive initial letters from author name
-        words = name.strip().split()
-        if len(words) >= 2:
-            initials = (words[0][:1] + words[1][:1]).upper()
-        elif words:
-            initials = words[0][:2].upper()
-        else:
-            initials = email[:2].upper() if email else "??"
-
         ring_color = QColor(ring_color_hex)
-        bg_color = QColor(ring_color.red(), ring_color.green(), ring_color.blue(), 60)
 
-        # Draw circle background
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QBrush(bg_color))
-        painter.drawEllipse(center, r - 1.5, r - 1.5)
+        # 1. Resolve avatar URL and check if loaded
+        avatar_pm: QPixmap | None = None
+        try:
+            url = resolve_author_avatar_url(
+                name,
+                email,
+                remote_urls=remote_urls,
+                db_conn=db_conn,
+            )
+            if url:
+                inner_size = max(12, size - 4)
+                loader = get_avatar_loader()
+                candidate = loader.get_avatar(
+                    url,
+                    name or email,
+                    size=inner_size,
+                    is_dark=is_dark,
+                )
+                if candidate is not None and not candidate.isNull():
+                    avatar_pm = candidate
+        except Exception as e:
+            logger.debug("History avatar resolve error: %s", e)
+            avatar_pm = None
 
-        # Draw 2px solid ring border
+        if avatar_pm is not None and not avatar_pm.isNull():
+            # Draw real avatar image inside circular clipping region
+            path = QPainterPath()
+            path.addEllipse(center, r - 2.0, r - 2.0)
+            painter.setClipPath(path)
+            x_off = (size - avatar_pm.width()) / 2.0
+            y_off = (size - avatar_pm.height()) / 2.0
+            painter.drawPixmap(int(x_off), int(y_off), avatar_pm)
+            painter.setClipping(False)
+        else:
+            # Fallback to initials
+            words = name.strip().split()
+            if len(words) >= 2:
+                initials = (words[0][:1] + words[1][:1]).upper()
+            elif words:
+                initials = words[0][:2].upper()
+            else:
+                initials = email[:2].upper() if email else "??"
+
+            bg_color = QColor(ring_color.red(), ring_color.green(), ring_color.blue(), 60)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QBrush(bg_color))
+            painter.drawEllipse(center, r - 1.5, r - 1.5)
+
+            painter.setPen(QPen(QColor(255, 255, 255, 240)))
+            font = painter.font()
+            font.setPointSize(max(7, int(size * 0.38)))
+            font.setBold(True)
+            painter.setFont(font)
+            painter.drawText(QRectF(0, 0, size, size), Qt.AlignmentFlag.AlignCenter, initials)
+
+        # Draw 2px solid ring border on top
         painter.setPen(QPen(ring_color, 2.0))
         painter.setBrush(Qt.BrushStyle.NoBrush)
-        painter.drawEllipse(center, r - 1.5, r - 1.5)
-
-        # Draw initials text
-        painter.setPen(QPen(QColor(255, 255, 255, 240)))
-        font = painter.font()
-        font.setPointSize(max(7, int(size * 0.38)))
-        font.setBold(True)
-        painter.setFont(font)
-        painter.drawText(QRectF(0, 0, size, size), Qt.AlignmentFlag.AlignCenter, initials)
+        painter.drawEllipse(center, r - 1.0, r - 1.0)
 
         painter.end()
 
@@ -156,6 +202,10 @@ class AvatarPixmapCache:
 
 
 _AVATAR_CACHE = AvatarPixmapCache(maxsize=128)
+
+
+def clear_avatar_cache() -> None:
+    _AVATAR_CACHE.clear()
 
 
 class CommitGraphRowDelegate(QStyledItemDelegate):
@@ -353,9 +403,7 @@ class CommitGraphRowDelegate(QStyledItemDelegate):
         lane_w = 22.0
         node_x = (rect.x() + 14.0 - scroll_x) + lane_idx * lane_w
         node_color = (
-            QColor(row_data.node_color)
-            if getattr(row_data, "node_color", None)
-            else lane_color
+            QColor(row_data.node_color) if getattr(row_data, "node_color", None) else lane_color
         )
 
         # 1. Connect wire from left edge into node if commit has ref_labels or refs
@@ -365,7 +413,14 @@ class CommitGraphRowDelegate(QStyledItemDelegate):
 
         # 2. Vertical Pass-Through Rails for all active parallel branch lanes
         active_lane_colors = getattr(row_data, "active_lane_colors", None) or [
-            (ln, row_data.node_color if ln == lane_idx else NEON_LANES_DARK[ln % len(NEON_LANES_DARK)])
+            (
+                ln,
+                (
+                    row_data.node_color
+                    if ln == lane_idx
+                    else NEON_LANES_DARK[ln % len(NEON_LANES_DARK)]
+                ),
+            )
             for ln in getattr(row_data, "active_lanes", [lane_idx])
         ]
         for act_lane, col_hex in active_lane_colors:
@@ -437,11 +492,17 @@ class CommitGraphRowDelegate(QStyledItemDelegate):
         author_name = getattr(row_data.commit, "author_name", "") or ""
         author_email = getattr(row_data.commit, "author_email", "") or ""
 
+        remote_urls = getattr(option.widget, "_remote_urls", None)
+        db_conn = getattr(option.widget, "_conn", None)
+
         avatar_pix = _AVATAR_CACHE.get_or_render(
             author_name,
             author_email,
             avatar_size,
             node_color.name(),
+            remote_urls=remote_urls,
+            db_conn=db_conn,
+            is_dark=is_dark_theme(option.widget) if option.widget else True,
         )
         avatar_rect = QRectF(
             node_x - avatar_size / 2.0,

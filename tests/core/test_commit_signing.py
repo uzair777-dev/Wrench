@@ -120,7 +120,7 @@ def test_signing_askpass_bridge_permissions() -> None:
         helper_path = Path(env["GIT_ASKPASS"])
         assert helper_path.exists()
 
-        # Check SEC-4 filesystem permissions: directory must be 0o700, script must be 0o700, socket 0o600
+        # Check SEC-4 filesystem permissions: directory 0o700, script 0o700, socket 0o600
         dir_stat = helper_path.parent.stat()
         file_stat = helper_path.stat()
         socket_path = Path(bridge._socket_path)

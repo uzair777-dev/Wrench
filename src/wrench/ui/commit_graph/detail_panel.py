@@ -87,7 +87,7 @@ class CommitDetailPanel(QWidget):
 
         self.message_edit = QTextEdit(self)
         self.message_edit.setReadOnly(True)
-        self.message_edit.setMaximumHeight(60)
+        self.message_edit.setMinimumHeight(48)
         self.message_edit.setPlaceholderText("Commit message...")
         header_layout.addWidget(self.message_edit)
 
@@ -125,9 +125,13 @@ class CommitDetailPanel(QWidget):
         """
         if enabled:
             self.splitter.setOrientation(Qt.Orientation.Vertical)
+            self.splitter.setStretchFactor(0, 0)
+            self.splitter.setStretchFactor(1, 1)
             self.setMinimumWidth(280)
         else:
             self.splitter.setOrientation(Qt.Orientation.Horizontal)
+            self.splitter.setStretchFactor(0, 1)
+            self.splitter.setStretchFactor(1, 2)
             self.setMinimumWidth(0)
 
     def closeEvent(self, event) -> None:
@@ -217,6 +221,15 @@ class CommitDetailPanel(QWidget):
             self.files_table.setCellWidget(row, 2, stat_widget)
         self.files_table.blockSignals(False)
 
+        if self.splitter.orientation() == Qt.Orientation.Vertical:
+            n_files = len(self._file_stats)
+            files_h = min(180, max(56, 26 + n_files * 24 + 10))
+            total_h = self.splitter.height()
+            if total_h < 200:
+                total_h = 500
+            diff_h = max(200, total_h - files_h)
+            self.splitter.setSizes([files_h, diff_h])
+
     def set_repo(self, repo: RepoHandle | None):
         prev_path = getattr(self._repo, "path", None)
         next_path = getattr(repo, "path", None)
@@ -284,6 +297,7 @@ class CommitDetailPanel(QWidget):
             self.sha_label.setText("SHA: -")
             self.author_date_label.setText("-")
             self.message_edit.clear()
+            self.message_edit.setFixedHeight(52)
             self._clear_files_table()
             self.diff_widget.set_diff_model(
                 engine.Diff(path="", is_binary=False, hunks=[]), title="No commit selected"
@@ -355,6 +369,9 @@ class CommitDetailPanel(QWidget):
             f"{commit.author_name} <{commit.author_email}> on {commit.author_date}"
         )
         self.message_edit.setPlainText(commit.message)
+        lines = [line for line in commit.message.strip().splitlines() if line.strip()]
+        target_h = max(52, min(180, len(lines) * 20 + 20))
+        self.message_edit.setFixedHeight(target_h)
 
         # Load file stats
         try:

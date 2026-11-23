@@ -34,7 +34,9 @@ def save_session(
     with conn:
         conn.execute(
             """
-            INSERT INTO workspace_sessions (session_name, repo_paths_json, active_index, tabs_json, updated_at)
+            INSERT INTO workspace_sessions (
+                session_name, repo_paths_json, active_index, tabs_json, updated_at
+            )
             VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
             ON CONFLICT(session_name) DO UPDATE SET
                 repo_paths_json = excluded.repo_paths_json,
@@ -50,7 +52,11 @@ def load_session(conn: sqlite3.Connection, session_name: str) -> WorkspaceSessio
     """Load a named workspace session by name."""
     _ensure_schema(conn)
     cursor = conn.execute(
-        "SELECT session_name, repo_paths_json, active_index, tabs_json FROM workspace_sessions WHERE session_name = ?",
+        """
+        SELECT session_name, repo_paths_json, active_index, tabs_json
+        FROM workspace_sessions
+        WHERE session_name = ?
+        """,
         (session_name.strip(),),
     )
     row = cursor.fetchone()

@@ -3,17 +3,15 @@
 from __future__ import annotations
 
 import sqlite3
-from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
-from PySide6.QtCore import QModelIndex, QPoint, QRect, Qt
+from PySide6.QtCore import QRect, Qt
 from PySide6.QtGui import QColor, QImage, QPainter
-from PySide6.QtWidgets import QApplication
 
-from wrench.core.models import Commit, WorkspaceSession
+from wrench.core.models import Commit
 from wrench.storage import session_storage
-from wrench.storage.settings_registry import SettingsRegistry, SettingTier
+from wrench.storage.settings_registry import SettingTier
 from wrench.ui.commit_graph.detail_panel import CommitDetailPanel
 from wrench.ui.commit_graph.layout import Connector, ConnectorKind, GraphRow
 from wrench.ui.dialogs.settings_dialog import SettingsDialog
@@ -120,8 +118,7 @@ def test_tab_bar_add_menu_includes_worktrees(qtbot):
 def test_workspace_session_saves_and_restores_tab_metadata():
     """Test Issue 6: WorkspaceSession serializes tabs and restores them."""
     conn = sqlite3.connect(":memory:")
-    conn.execute(
-        """
+    conn.execute("""
         CREATE TABLE workspace_sessions (
             session_name    TEXT PRIMARY KEY,
             repo_paths_json TEXT NOT NULL,
@@ -129,13 +126,17 @@ def test_workspace_session_saves_and_restores_tab_metadata():
             tabs_json       TEXT DEFAULT '[]',
             updated_at      TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         )
-        """
-    )
+        """)
 
     tabs = [
         {"tab_type": "changes", "repo_path": "/repo1", "entity_id": None, "label": "Changes"},
         {"tab_type": "worktrees", "repo_path": "/repo1", "entity_id": None, "label": "Worktrees"},
-        {"tab_type": "issue_detail", "repo_path": "/repo1", "entity_id": "origin:42", "label": "Issue #42"},
+        {
+            "tab_type": "issue_detail",
+            "repo_path": "/repo1",
+            "entity_id": "origin:42",
+            "label": "Issue #42",
+        },
     ]
 
     session_storage.save_session(conn, "my_session", ["/repo1"], active_index=1, tabs=tabs)
@@ -249,3 +250,107 @@ def test_commit_graph_row_delegate_paint_geometry(qtbot):
 
     painter.end()
     assert not img.isNull()
+
+
+def test_engine_list_branches_accepts_string_path(tmp_path):
+    """Test Round 2: engine.list_branches accepts a string or Path object."""
+    import pygit2
+
+    from wrench.core import engine
+
+    repo_path = tmp_path / "test_repo"
+    pygit2.init_repository(str(repo_path))
+
+    # Test with string repo path
+    branches = engine.GitEngine().list_branches(repo=str(repo_path))
+    assert isinstance(branches, list)
+
+    # Test with Path repo path
+    branches_path = engine.GitEngine().list_branches(repo=repo_path)
+    assert isinstance(branches_path, list)
+
+
+def test_add_worktree_dialog_branch_listing_and_collision(qtbot, tmp_path):
+    """Test Round 2: AddWorktreeDialog populates branches and detects collisions."""
+    import pygit2
+
+    from wrench.core import engine
+    from wrench.ui.dialogs.add_worktree_dialog import AddWorktreeDialog
+
+    repo_path = tmp_path / "test_repo"
+    r = pygit2.init_repository(str(repo_path))
+
+    # Create initial commit so main branch exists
+    sig = pygit2.Signature("Test", "test@example.com")
+    tree = r.TreeBuilder().write()
+    r.create_commit("refs/heads/main", sig, sig, "init", tree, [])
+
+    eng = engine.GitEngine()
+    dlg = AddWorktreeDialog(eng, None, str(repo_path))
+    qtbot.addWidget(dlg)
+
+    assert "main" in dlg._all_existing_branches
+    assert dlg.combo_branch.count() >= 1
+
+    # Collision test: trying to create a new branch named 'main' triggers validation
+    dlg.chk_new_branch.setChecked(True)
+    dlg.combo_branch.setEditText("main")
+    dlg.edit_path.setText(str(tmp_path / "wt1"))
+
+    # _on_add_clicked should abort before running git
+    with pytest.MonkeyPatch.context() as mp:
+        warning_shown = []
+        mp.setattr(
+            "PySide6.QtWidgets.QMessageBox.warning",
+            lambda *args: warning_shown.append(args),
+        )
+        dlg._on_add_clicked()
+        assert len(warning_shown) == 1
+        assert "Already Exists" in warning_shown[0][1]
+    dlg.close()
+
+
+def test_commit_detail_panel_dynamic_message_and_splitter_proportions(qtbot):
+    """Test Round 2: CommitDetailPanel dynamically sizes message and configures splitter."""
+    panel = CommitDetailPanel()
+    qtbot.addWidget(panel)
+    panel.show()
+
+    panel.set_compact_vertical_layout(True)
+    assert panel.splitter.orientation() == Qt.Orientation.Vertical
+    assert panel.minimumWidth() >= 280
+
+    # Multi-line commit message
+    multi_line_msg = (
+        "Merge branch 'feature' into main\n\n"
+        "This is paragraph 1 of the explanation.\n"
+        "This is paragraph 2.\n"
+        "More details here.\n"
+    )
+    commit = Commit(
+        sha="1234567890abcdef1234567890abcdef12345678",
+        author_name="Dev",
+        author_email="dev@example.com",
+        author_date="2026-11-23 20:00:00",
+        message=multi_line_msg,
+        parent_shas=(),
+    )
+    mock_repo = MagicMock()
+    mock_repo.path = "/tmp/repo"
+    panel.set_repo(mock_repo)
+    panel.set_commit(commit)
+
+    # Height should adapt above 60px to accommodate multiple lines
+    assert panel.message_edit.height() >= 80
+    assert panel.message_edit.maximumHeight() > 60
+
+
+def test_avatar_pixmap_cache_and_loader(qtbot):
+    """Test Round 2: AvatarPixmapCache renders clean 20x20 circular avatar pixmap."""
+    from wrench.ui.history_view import AvatarPixmapCache
+
+    cache = AvatarPixmapCache(maxsize=10)
+    pix = cache.get_or_render("Junio C Hamano", "gitster@pobox.com", 20, "#89b4fa")
+    assert not pix.isNull()
+    assert pix.width() == 20
+    assert pix.height() == 20

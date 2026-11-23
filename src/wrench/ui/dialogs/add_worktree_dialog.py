@@ -3,19 +3,16 @@
 from __future__ import annotations
 
 import logging
-import os
-import re
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import Qt, Slot
+from PySide6.QtCore import Slot
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDialog,
     QFileDialog,
-    QFrame,
     QHBoxLayout,
     QLabel,
     QLineEdit,

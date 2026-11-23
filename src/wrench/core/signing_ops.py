@@ -3,11 +3,8 @@
 from __future__ import annotations
 
 import logging
-import os
-import re
 import shutil
 import subprocess
-from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -130,7 +127,11 @@ def verify_commit_signatures_batch(
     ]
     try:
         res = write_ops.run_git(repo_str, cmd, check=True)
-        stdout_str = res.stdout if isinstance(res.stdout, str) else res.stdout.decode("utf-8", errors="replace")
+        stdout_str = (
+            res.stdout
+            if isinstance(res.stdout, str)
+            else res.stdout.decode("utf-8", errors="replace")
+        )
         new_statuses = parse_signature_log_output(stdout_str)
     except write_ops.GitCommandError as e:
         logger.debug("Signature batch verification failed: %s", e)

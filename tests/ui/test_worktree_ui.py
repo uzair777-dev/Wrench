@@ -5,13 +5,12 @@ from __future__ import annotations
 import sqlite3
 import subprocess
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 from PySide6.QtWidgets import QApplication
 
 from wrench.core import engine
-from wrench.core.engine import init_repo, open_repo
 from wrench.storage import session_storage
 from wrench.storage.db import run_migrations
 from wrench.storage.settings_registry import SettingsRegistry

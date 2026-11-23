@@ -970,9 +970,7 @@ SIGNATURE_BADGE_STYLES = {
 def get_signature_badge_qss(state: str, is_dark: bool) -> str:
     """Return theme-aware QSS for cryptographic signature verification badges."""
     mode = "dark" if is_dark else "light"
-    style = SIGNATURE_BADGE_STYLES[mode].get(
-        state, SIGNATURE_BADGE_STYLES[mode]["unverified_key"]
-    )
+    style = SIGNATURE_BADGE_STYLES[mode].get(state, SIGNATURE_BADGE_STYLES[mode]["unverified_key"])
     return (
         f"QLabel {{ background-color: {style['bg']}; color: {style['fg']}; "
         f"border: 1px solid {style['border']}; border-radius: 3px; "

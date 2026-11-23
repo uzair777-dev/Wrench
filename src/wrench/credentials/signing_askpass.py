@@ -9,7 +9,6 @@ import socket
 import sys
 import tempfile
 import threading
-from pathlib import Path
 from typing import Callable
 
 logger = logging.getLogger(__name__)

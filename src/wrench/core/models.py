@@ -430,4 +430,3 @@ class SigningKey:
     display_name: str
     fingerprint: str
     email: str | None = None
-

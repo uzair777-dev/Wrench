@@ -81,7 +81,7 @@ from wrench.core.exceptions import (
 )
 from wrench.core.remote_urls import host_of_instance_url, parse_remote_url
 from wrench.forge.registry import close_avatar_http_client
-from wrench.storage import forge_accounts, get_connection, repo_registry, settings
+from wrench.storage import forge_accounts, get_connection, repo_registry, session_storage, settings
 from wrench.storage.settings_registry import SettingScope, SettingsRegistry, get_settings_registry
 from wrench.ui.dialogs.about_dialog import AboutDialog
 from wrench.ui.dialogs.accounts_dialog import AccountsDialog
@@ -97,7 +97,6 @@ from wrench.ui.dialogs.push_recovery_dialogs import (
     SecretScanningDialog,
 )
 from wrench.ui.dialogs.remotes_dialog import RemotesDialog
-from wrench.storage import session_storage
 from wrench.ui.dialogs.sparse_checkout_dialog import SparseCheckoutDialog
 from wrench.ui.recovery.busy_dialog import BusyOperationDialog
 from wrench.ui.snapshots_panel import SnapshotsPanel
@@ -108,7 +107,6 @@ from wrench.ui.tabs.issue_list_tab import IssueListTab
 from wrench.ui.tabs.pr_detail_tab import PRDetailTab
 from wrench.ui.tabs.pr_list_tab import PRListTab
 from wrench.ui.tabs.tab_bar import TabContainer
-from wrench.ui.widgets.worktree_panel import WorktreePanel
 from wrench.ui.theme import (
     apply_theme,
     get_status_pill_style,
@@ -119,6 +117,7 @@ from wrench.ui.theme import (
 from wrench.ui.widgets.activity_log import ActivityLogBar, ActivityLogModel
 from wrench.ui.widgets.avatar import clear_author_avatar_cache
 from wrench.ui.widgets.context_header_bar import ContextHeaderBar, GitTerminalDrawer
+from wrench.ui.widgets.worktree_panel import WorktreePanel
 from wrench.ui.workers import clear_activity_log, run_in_background, set_activity_log
 from wrench.watcher.inotify_watcher import RepoWatcher
 
@@ -309,9 +308,11 @@ class MainWindow(QMainWindow):
         self.terminal_drawer.setVisible(False)
         self.terminal_drawer.set_command_runner(self._run_terminal_git_command)
         self.terminal_drawer.closed.connect(
-            lambda: self.context_header_bar.quick_actions.set_terminal_active(False)
-            if hasattr(self, "context_header_bar")
-            else None
+            lambda: (
+                self.context_header_bar.quick_actions.set_terminal_active(False)
+                if hasattr(self, "context_header_bar")
+                else None
+            )
         )
         _central_layout.addWidget(self.terminal_drawer)
 
@@ -884,9 +885,7 @@ class MainWindow(QMainWindow):
                 self._settings_registry.is_enabled("ui.show_context_header_bar")
             )
         if hasattr(self, "act_worktrees"):
-            self.act_worktrees.setVisible(
-                self._settings_registry.is_enabled("worktrees.enabled")
-            )
+            self.act_worktrees.setVisible(self._settings_registry.is_enabled("worktrees.enabled"))
         if hasattr(self, "act_view_worktrees"):
             self.act_view_worktrees.setVisible(
                 self._settings_registry.is_enabled("worktrees.enabled")
@@ -1328,7 +1327,9 @@ class MainWindow(QMainWindow):
             if is_linked_wt:
                 parent_repo_name = p_path.parent.name
                 folder_name = p_path.name
-                self.setWindowTitle(f"Wrench — {parent_repo_name} [worktree: {folder_name}] ({branch})")
+                self.setWindowTitle(
+                    f"Wrench — {parent_repo_name} [worktree: {folder_name}] ({branch})"
+                )
             else:
                 self.setWindowTitle(f"Wrench — {p_path.name} ({branch})")
 
@@ -2178,9 +2179,7 @@ class MainWindow(QMainWindow):
                     self.terminal_drawer.isVisible()
                 )
 
-    def _run_terminal_git_command(
-        self, cmd_line: str | list[str]
-    ) -> tuple[int, str, str, float]:
+    def _run_terminal_git_command(self, cmd_line: str | list[str]) -> tuple[int, str, str, float]:
         """Execute a git command in the embedded terminal drawer."""
         if not self._current_repo:
             return (1, "", self.tr("No repository open"), 0.0)
@@ -3381,7 +3380,9 @@ class MainWindow(QMainWindow):
             if hasattr(self, "act_view_worktrees") and shiboken6.isValid(self.act_view_worktrees):
                 self.act_view_worktrees.setVisible(bool(value))
         elif key == "workspace.named_sessions.enabled":
-            if hasattr(self, "menu_workspace_sessions") and shiboken6.isValid(self.menu_workspace_sessions):
+            if hasattr(self, "menu_workspace_sessions") and shiboken6.isValid(
+                self.menu_workspace_sessions
+            ):
                 self.menu_workspace_sessions.menuAction().setVisible(bool(value))
 
     @Slot(str, str)
@@ -4019,6 +4020,7 @@ class MainWindow(QMainWindow):
                         activate=False,
                     )
             elif t_type == "pr_list":
+
                 def _make_pr_list(repo=tab_repo):
                     pr_tab = PRListTab(repo, self)
                     pr_tab.pr_selected.connect(self._open_pr_detail_tab)
@@ -4035,6 +4037,7 @@ class MainWindow(QMainWindow):
                     activate=False,
                 )
             elif t_type in ("issues_list", "issue_list"):
+
                 def _make_issue_list(repo=tab_repo):
                     issue_tab = IssueListTab(repo, self)
                     issue_tab.issue_selected.connect(self._open_issue_detail_tab)
@@ -4053,6 +4056,7 @@ class MainWindow(QMainWindow):
             elif t_type == "pr_detail" and entity_id:
                 parts = entity_id.split(":", 1)
                 if len(parts) == 2:
+
                     def _make_pr_detail(repo=tab_repo, remote=parts[0], pr_id=parts[1]):
                         detail_tab = PRDetailTab(repo, remote, pr_id, self)
                         detail_tab.branch_checkout_requested.connect(self._on_checkout_branch)
@@ -4071,6 +4075,7 @@ class MainWindow(QMainWindow):
             elif t_type == "issue_detail" and entity_id:
                 parts = entity_id.split(":", 1)
                 if len(parts) == 2:
+
                     def _make_issue_detail(repo=tab_repo, remote=parts[0], issue_id=parts[1]):
                         return IssueDetailTab(repo, remote, issue_id, self)
 

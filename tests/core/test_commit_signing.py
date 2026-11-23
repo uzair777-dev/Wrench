@@ -5,15 +5,12 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
-import pytest
-
 from wrench.core import engine
 from wrench.core.models import SignatureStatus, SigningKey
 from wrench.core.signing_ops import (
     _SIGNATURE_CACHE,
     list_available_signing_keys,
     parse_signature_log_output,
-    verify_commit_signatures_batch,
 )
 from wrench.credentials.signing_askpass import SigningAskpassBridge
 
@@ -42,7 +39,9 @@ def _init_repo(path: Path) -> Path:
 
 def test_parse_signature_log_output() -> None:
     # 1. Good valid signature
-    line_g = "1111111111111111111111111111111111111111|G|Alice <alice@test.org>|4A3B2C1D|4A3B2C1D|PGP"
+    line_g = (
+        "1111111111111111111111111111111111111111|G|Alice <alice@test.org>|4A3B2C1D|4A3B2C1D|PGP"
+    )
     res_g = parse_signature_log_output(line_g)
     assert res_g["1111111111111111111111111111111111111111"] == SignatureStatus(
         oid="1111111111111111111111111111111111111111",
@@ -54,7 +53,9 @@ def test_parse_signature_log_output() -> None:
     )
 
     # 2. Good signature with untrusted/unverified key (U) with SSH fingerprint
-    line_u = "2222222222222222222222222222222222222222|U|Bob <bob@test.org>|SHA256:abc123|DEADBEEF|SSH"
+    line_u = (
+        "2222222222222222222222222222222222222222|U|Bob <bob@test.org>|SHA256:abc123|DEADBEEF|SSH"
+    )
     res_u = parse_signature_log_output(line_u)
     assert res_u["2222222222222222222222222222222222222222"].state == "unverified_key"
     assert res_u["2222222222222222222222222222222222222222"].key_type == "ssh"

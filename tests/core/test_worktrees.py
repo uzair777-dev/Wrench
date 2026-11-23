@@ -11,9 +11,7 @@ import pytest
 from wrench.core import engine
 from wrench.core.exceptions import (
     WorktreeAlreadyCheckedOutError,
-    WrenchGitError,
 )
-from wrench.core.models import WorktreeInfo
 from wrench.storage import session_storage
 from wrench.storage.db import run_migrations
 
@@ -55,9 +53,7 @@ def test_format_worktree_path(tmp_path: Path) -> None:
 
     # Custom template
     custom_tmpl = "../worktrees/{repo_name}/{branch_name}"
-    path_custom = engine.format_worktree_path(
-        repo_dir, "hotfix/urgent", custom_tmpl
-    )
+    path_custom = engine.format_worktree_path(repo_dir, "hotfix/urgent", custom_tmpl)
     expected_custom = (tmp_path.parent / "worktrees" / "my-project" / "hotfix" / "urgent").resolve()
     assert Path(path_custom) == expected_custom
 
@@ -167,6 +163,7 @@ def test_prune_worktrees(tmp_path: Path) -> None:
 
     # Manually delete worktree folder on disk (simulating external deletion)
     import shutil
+
     shutil.rmtree(wt_path)
 
     # Before prune, list_worktrees flags it as prunable

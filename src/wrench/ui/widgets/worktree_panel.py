@@ -6,8 +6,8 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import QPoint, Qt, Signal, Slot
-from PySide6.QtGui import QAction, QColor, QFont, QIcon
+from PySide6.QtCore import QPoint, Qt, Signal
+from PySide6.QtGui import QAction, QColor, QFont
 from PySide6.QtWidgets import (
     QApplication,
     QFrame,
@@ -23,7 +23,6 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from wrench.core.exceptions import WrenchGitError
 from wrench.core.models import WorktreeInfo
 from wrench.ui.dialogs.add_worktree_dialog import AddWorktreeDialog
 from wrench.ui.theme import get_worktree_status_color, is_dark_theme

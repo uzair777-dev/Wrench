@@ -593,13 +593,15 @@ class GitTerminalDrawer(QFrame):
         self.clear_btn = QToolButton(self)
         self.clear_btn.setText(self.tr("Clear"))
         self.clear_btn.setToolTip(self.tr("Clear log output"))
-        self.clear_btn.clicked.connect(self.clear_log)
+        self.clear_btn.clicked.connect(lambda _=False: self.clear_log())
         header.addWidget(self.clear_btn)
 
         self.close_btn = QToolButton(self)
+        self.close_btn.setText("×")
         self.close_btn.setIcon(get_icon("close", size=14))
+        self.close_btn.setFixedSize(24, 24)
         self.close_btn.setToolTip(self.tr("Close terminal drawer"))
-        self.close_btn.clicked.connect(self.closed.emit)
+        self.close_btn.clicked.connect(self._on_close_clicked)
         header.addWidget(self.close_btn)
 
         layout.addLayout(header)
@@ -652,9 +654,14 @@ class GitTerminalDrawer(QFrame):
         if sb:
             sb.setValue(sb.maximum())
 
+    def _on_close_clicked(self) -> None:
+        self.setVisible(False)
+        self.closed.emit()
+
     @Slot()
     def clear_log(self) -> None:
         self.log_view.clear()
+        self.cmd_input.clear()
 
     @Slot()
     def _on_execute_command(self) -> None:
@@ -681,13 +688,23 @@ class GitTerminalDrawer(QFrame):
         self.append_log(f"[{ts}] $ git {' '.join(tokens)}")
 
         if self._command_runner:
-            returncode, stdout, stderr, duration_ms = self._command_runner(tokens)
-            if stdout:
-                self.append_log(stdout.rstrip())
-            if stderr:
-                self.append_log(f"[stderr] {stderr.rstrip()}")
-            status_text = "succeeded" if returncode == 0 else f"failed (code {returncode})"
-            self.append_log(f"[{ts}] -> {status_text} in {duration_ms:.1f}ms\n")
+            try:
+                res = self._command_runner(tokens)
+                if isinstance(res, (tuple, list)) and len(res) >= 4:
+                    returncode, stdout, stderr, duration_ms = res[:4]
+                elif isinstance(res, (tuple, list)) and len(res) == 3:
+                    returncode, stdout, stderr = res[:3]
+                    duration_ms = 0.0
+                else:
+                    returncode, stdout, stderr, duration_ms = 0, str(res), "", 0.0
+                if stdout:
+                    self.append_log(stdout.rstrip())
+                if stderr:
+                    self.append_log(f"[stderr] {stderr.rstrip()}")
+                status_text = "succeeded" if returncode == 0 else f"failed (code {returncode})"
+                self.append_log(f"[{ts}] -> {status_text} in {duration_ms:.1f}ms\n")
+            except Exception as exc:
+                self.append_log(f"[error] Command execution failed: {exc}\n")
         else:
             self.append_log("[error] No active Git command runner available.\n")
 

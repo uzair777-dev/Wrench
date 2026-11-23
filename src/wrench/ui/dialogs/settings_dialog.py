@@ -996,7 +996,7 @@ class SettingsDialog(QDialog):
                 matches = page.filter_rows(
                     query,
                     modified_only=modified_only,
-                    view_tier=self._current_view_tier,
+                    view_tier=SettingTier.ADVANCED,
                 )
                 is_visible = matches > 0
             else:
@@ -1045,7 +1045,7 @@ class SettingsDialog(QDialog):
                     self._category_pages[cur_cat].filter_rows(
                         query,
                         modified_only=modified_only,
-                        view_tier=self._current_view_tier,
+                        view_tier=SettingTier.ADVANCED if has_query else self._current_view_tier,
                     )
 
     def _apply_theme(self) -> None:
@@ -1244,10 +1244,11 @@ class SettingsDialog(QDialog):
         self.page_stack.setCurrentWidget(page)
         # Apply active search, modified, and view-tier filters
         query = self.search_input.text()
+        has_query = bool(query and query.strip())
         page.filter_rows(
             query,
             modified_only=self._effective_modified_only(),
-            view_tier=self._current_view_tier,
+            view_tier=SettingTier.ADVANCED if has_query else self._current_view_tier,
         )
 
     def _on_search_changed(self, query: str) -> None:

@@ -1519,6 +1519,4 @@ class CommitGraphWidget(QTableView):
         elif interactive_rebase_act is not None and action == interactive_rebase_act:
             self.interactive_rebase_requested.emit(commit.sha)
         elif action in cherry_pick_wt_actions:
-            self.cherry_pick_to_worktree_requested.emit(
-                commit.sha, cherry_pick_wt_actions[action]
-            )
+            self.cherry_pick_to_worktree_requested.emit(commit.sha, cherry_pick_wt_actions[action])

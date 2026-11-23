@@ -5,7 +5,6 @@ from __future__ import annotations
 import logging
 import re
 from pathlib import Path
-from typing import Any
 
 from wrench.core import write_ops
 from wrench.core.exceptions import (

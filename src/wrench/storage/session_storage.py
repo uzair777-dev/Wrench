@@ -78,9 +78,7 @@ def load_session(conn: sqlite3.Connection, session_name: str) -> WorkspaceSessio
 
 def list_sessions(conn: sqlite3.Connection) -> list[str]:
     """Return all saved session names ordered by update time descending."""
-    cursor = conn.execute(
-        "SELECT session_name FROM workspace_sessions ORDER BY updated_at DESC"
-    )
+    cursor = conn.execute("SELECT session_name FROM workspace_sessions ORDER BY updated_at DESC")
     return [r[0] for r in cursor.fetchall()]
 
 

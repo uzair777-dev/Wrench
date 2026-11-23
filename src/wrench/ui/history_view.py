@@ -64,7 +64,7 @@ from wrench.core.models import (
 from wrench.storage.settings_registry import SettingsRegistry
 from wrench.ui import icons
 from wrench.ui.commit_graph.graph_widget import CommitGraphWidget
-from wrench.ui.commit_graph.layout import GraphRow
+from wrench.ui.commit_graph.layout import ConnectorKind, GraphRow
 from wrench.ui.diff_view.diff_widget import DiffWidget
 from wrench.ui.theme import (
     CONTEXT_BAR_SUBTITLE_DARK,
@@ -177,10 +177,13 @@ class CommitGraphRowDelegate(QStyledItemDelegate):
         row_data: GraphRow | None = index.data(Qt.ItemDataRole.UserRole)
         col = index.column()
 
-        # Retrieve active lane color
-        lane_idx = row_data.lane_index if row_data is not None else 0
-        lane_color_hex = NEON_LANES_DARK[lane_idx % len(NEON_LANES_DARK)]
-        lane_color = QColor(lane_color_hex)
+        # Retrieve active lane color (VP-3 / VP-18 graph integrity)
+        if row_data is not None and getattr(row_data, "node_color", None):
+            lane_color = QColor(row_data.node_color)
+        else:
+            lane_idx = row_data.lane_index if row_data is not None else 0
+            lane_color_hex = NEON_LANES_DARK[lane_idx % len(NEON_LANES_DARK)]
+            lane_color = QColor(lane_color_hex)
 
         painter.save()
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
@@ -349,15 +352,20 @@ class CommitGraphRowDelegate(QStyledItemDelegate):
         lane_idx = row_data.lane_index
         lane_w = 22.0
         node_x = (rect.x() + 14.0 - scroll_x) + lane_idx * lane_w
+        node_color = (
+            QColor(row_data.node_color)
+            if getattr(row_data, "node_color", None)
+            else lane_color
+        )
 
-        # Connect wire from left edge into node if commit has ref_labels or refs
+        # 1. Connect wire from left edge into node if commit has ref_labels or refs
         if getattr(row_data, "ref_labels", None) or getattr(row_data.commit, "refs", None):
-            painter.setPen(QPen(lane_color, 1.5))
+            painter.setPen(QPen(node_color, 1.5))
             painter.drawLine(QPointF(rect.left(), y_center), QPointF(node_x, y_center))
 
-        # Vertical Pass-Through Rails for all active parallel branch lanes
+        # 2. Vertical Pass-Through Rails for all active parallel branch lanes
         active_lane_colors = getattr(row_data, "active_lane_colors", None) or [
-            (ln, NEON_LANES_DARK[ln % len(NEON_LANES_DARK)])
+            (ln, row_data.node_color if ln == lane_idx else NEON_LANES_DARK[ln % len(NEON_LANES_DARK)])
             for ln in getattr(row_data, "active_lanes", [lane_idx])
         ]
         for act_lane, col_hex in active_lane_colors:
@@ -366,13 +374,23 @@ class CommitGraphRowDelegate(QStyledItemDelegate):
                 painter.setPen(QPen(QColor(col_hex), 2.0))
                 painter.drawLine(QPointF(lx, y_top), QPointF(lx, y_bottom))
 
-        painter.setPen(QPen(lane_color, 2.2))
+        # 3. Top-half rail (only if this lane was active/expected from row above)
+        painter.setPen(QPen(node_color, 2.2))
         if getattr(row_data, "has_top_rail", True):
             painter.drawLine(QPointF(node_x, y_top), QPointF(node_x, y_center))
-        if getattr(row_data.commit, "parent_shas", None):
-            painter.drawLine(QPointF(node_x, y_center), QPointF(node_x, y_bottom))
 
-        # Cubic Bezier Connector Curves
+        # 4. Bottom-half rail (only if this lane continues straight down to parents without deflecting)
+        if getattr(row_data.commit, "parent_shas", None):
+            has_deflecting_fork = any(
+                conn.from_lane == lane_idx
+                and conn.to_lane != lane_idx
+                and getattr(conn, "kind", ConnectorKind.MERGE_UP) == ConnectorKind.FORK_DOWN
+                for conn in getattr(row_data, "connectors", [])
+            )
+            if not has_deflecting_fork:
+                painter.drawLine(QPointF(node_x, y_center), QPointF(node_x, y_bottom))
+
+        # 5. Directional Cubic Bezier Connector Curves
         for conn in getattr(row_data, "connectors", []):
             conn_color = QColor(conn.color)
             painter.setPen(QPen(conn_color, 2.0))
@@ -380,16 +398,41 @@ class CommitGraphRowDelegate(QStyledItemDelegate):
 
             x_from = (rect.x() + 14.0 - scroll_x) + conn.from_lane * lane_w
             x_to = (rect.x() + 14.0 - scroll_x) + conn.to_lane * lane_w
+            conn_kind = getattr(conn, "kind", ConnectorKind.MERGE_UP)
 
             path = QPainterPath()
-            path.moveTo(x_from, y_bottom)
-            dy = y_bottom - y_center
-            c1 = QPointF(x_from, y_bottom - dy * 0.5)
-            c2 = QPointF(x_to, y_center + dy * 0.5)
-            path.cubicTo(c1, c2, QPointF(x_to, y_center))
+            if conn_kind == ConnectorKind.FORK_DOWN:
+                # Leaves node at y_center downward, enters parent rail at y_bottom
+                path.moveTo(x_from, y_center)
+                dy = y_bottom - y_center
+                c1 = QPointF(x_from, y_center + dy * 0.5)
+                c2 = QPointF(x_to, y_bottom - dy * 0.5)
+                path.cubicTo(c1, c2, QPointF(x_to, y_bottom))
+            elif conn_kind == ConnectorKind.JOIN_TOP:
+                # Enters from y_top downward, joins commit node at y_center
+                path.moveTo(x_from, y_top)
+                dy = y_center - y_top
+                c1 = QPointF(x_from, y_top + dy * 0.5)
+                c2 = QPointF(x_to, y_center - dy * 0.5)
+                path.cubicTo(c1, c2, QPointF(x_to, y_center))
+            else:  # MERGE_UP
+                # Leaves branch rail at y_bottom upward, enters merge node at y_center
+                path.moveTo(x_from, y_bottom)
+                dy = y_bottom - y_center
+                c1 = QPointF(x_from, y_bottom - dy * 0.5)
+                c2 = QPointF(x_to, y_center + dy * 0.5)
+                path.cubicTo(c1, c2, QPointF(x_to, y_center))
+
             painter.drawPath(path)
 
-        # 20x20 Circular Author Avatar / Initials Node
+        # 6. Selected node halo glow (painted behind avatar)
+        if is_selected:
+            halo_brush = QBrush(QColor(node_color.red(), node_color.green(), node_color.blue(), 90))
+            painter.setPen(QPen(QColor(255, 255, 255, 230), 2.0))
+            painter.setBrush(halo_brush)
+            painter.drawEllipse(QPointF(node_x, y_center), 12.0, 12.0)
+
+        # 7. 20x20 Circular Author Avatar / Initials Node PAINTED LAST ON TOP
         avatar_size = 20
         author_name = getattr(row_data.commit, "author_name", "") or ""
         author_email = getattr(row_data.commit, "author_email", "") or ""
@@ -398,7 +441,7 @@ class CommitGraphRowDelegate(QStyledItemDelegate):
             author_name,
             author_email,
             avatar_size,
-            lane_color.name(),
+            node_color.name(),
         )
         avatar_rect = QRectF(
             node_x - avatar_size / 2.0,
@@ -407,12 +450,6 @@ class CommitGraphRowDelegate(QStyledItemDelegate):
             avatar_size,
         )
         painter.drawPixmap(int(avatar_rect.x()), int(avatar_rect.y()), avatar_pix)
-
-        if is_selected:
-            halo_brush = QBrush(QColor(lane_color.red(), lane_color.green(), lane_color.blue(), 90))
-            painter.setPen(QPen(QColor(255, 255, 255, 230), 2.0))
-            painter.setBrush(halo_brush)
-            painter.drawEllipse(QPointF(node_x, y_center), 12.0, 12.0)
 
 
 class RefsSidebarWidget(QWidget):

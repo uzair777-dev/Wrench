@@ -18,7 +18,6 @@ from .exceptions import (
     RemoteExistsError,
     RemoteNotFoundError,
     StaleLockDetectedError,  # noqa: F401
-    WorktreeAlreadyCheckedOutError,
     WrenchGitError,
     WrenchRepoNotFoundError,
 )
@@ -37,7 +36,6 @@ from .models import (
     SparseCheckoutState,
     TreeDirectoryEntry,
     WatcherStatusInfo,  # noqa: F401
-    WorkspaceSession,
     WorktreeInfo,
 )
 
@@ -2318,4 +2316,3 @@ def verify_commit_signatures(
 
 def list_signing_keys() -> list[SigningKey]:
     return signing_ops.list_available_signing_keys()
-

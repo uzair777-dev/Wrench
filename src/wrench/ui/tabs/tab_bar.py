@@ -880,6 +880,7 @@ class TabContainer(QWidget):
         has_history = any(t.tab_type == "history" for t in self._tabs)
         has_prs = any(t.tab_type == "pr_list" for t in self._tabs)
         has_issues = any(t.tab_type == "issues_list" for t in self._tabs)
+        has_worktrees = any(t.tab_type == "worktrees" for t in self._tabs)
 
         if not has_changes:
             act_changes = menu.addAction(self.tr("Changes"))
@@ -897,6 +898,12 @@ class TabContainer(QWidget):
             act_issues = menu.addAction(self.tr("Issues"))
             act_issues.triggered.connect(
                 lambda: self.add_category_tab_requested.emit("issues_list")
+            )
+
+        if not has_worktrees:
+            act_worktrees = menu.addAction(self.tr("Worktree Manager"))
+            act_worktrees.triggered.connect(
+                lambda: self.add_category_tab_requested.emit("worktrees")
             )
 
         if menu.isEmpty():

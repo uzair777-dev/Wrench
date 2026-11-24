@@ -73,8 +73,15 @@ Wrench is engineered around six non-negotiable architectural tenets:
 │  │  │  • BranchSwitcherWidget         │ │  • CommitGraphWidget(100k+) │ │   │          │
 │  │  │  • Unified File List & MM/AM    │ │  • Search/Filter Bar (300ms)│ │   │          │
 │  │  │  • DiffView (5k Cap) & Staging  │ │  • CommitDetailPanel(Avatar)│ │   │          │
-│  │  │  • Commit & Amend Box (Avatar)  │ │  • Branch & Ref Badges      │ │   │          │
+│  │  │  • Commit & Amend Box (Avatar)  │ │  • SignatureBadge (VP-18)   │ │   │          │
+│  │  │  • ContextHeaderBar (VP-2.5)    │ │  • High-DPI [0, 3, 2] Split │ │   │          │
 │  │  └─────────────────────────────────┘ └─────────────────────────────┘ │   │          │
+│  │  ┌─────────────────────────────────────────────────────────────────┐ │   │          │
+│  │  │ WorktreePanel (ui/widgets/worktree_panel.py — VP-3)             │ │   │          │
+│  │  │  • Linked Worktrees, AddWorktreeDialog & Cross Cherry-Pick      │ │   │          │
+│  │  │  • SafeStackedWidget Event Filtering & SuppressTextDelegate     │ │   │          │
+│  │  │  • Named Workspace Sessions (session_storage.py)                │ │   │          │
+│  │  └─────────────────────────────────────────────────────────────────┘ │   │          │
 │  │  ┌─────────────────────────────────────────────────────────────────┐ │   │          │
 │  │  │ Multi-Forge Tabs (ui/tabs/ & ui/forge_panel/)                   │ │   │          │
 │  │  │  • PRListTab & IssueListTab (SWR 60s Cache, Table Avatars)      │ │   │          │
@@ -112,16 +119,17 @@ Wrench is engineered around six non-negotiable architectural tenets:
 │   (RepoWatcher)      │  │   - status, diff, paged log    │  │   - Zero-overhead gating │
 │   - T1: full_inotify │  │ • write_ops.py (git CLI writes)│  │ • forge.capability       │
 │   - T2: git_dir_only │  │   - commit, branch, clone, cg  │  │   - ForgeAdapter Base    │
-│   - T3: Qt polling   │  │ • rebase_sequencer.py (VP-2)   │  │   - get_avatar_url()     │
-│   - suspend()/resume │  │   - rebase_editor_helper.py    │  │ • Concrete Adapters:     │
-│   - 300ms debounce   │  │ • sparse_checkout.py (Cone)    │  │   - GitHubAdapter        │
-│ • polling_fallback.py│  │ • security_sanitizer.py        │  │   - GitLabAdapter        │
-│ • Signals Emitted:   │  │   - SEC-2 URL / SEC-3 Redact   │  │   - ForgejoAdapter       │
-│   - status_changed   │  │ • discovery.py (FR-1.12 scan)  │  │   - BitbucketAdapter     │
-│   - adaptive_fallback│  │ • paths.py / ssh_agent.py      │  │ • author_avatar_url maps │
-│     _activated       │  │ • snapshots.py / lock_recovery │  │ • github_device_flow.py  │
-│                      │  │ • identity.py / crash_handler  │  │   - RFC 8628 Device Flow │
-│                      │  │ • lazy_loader.py (PEP 810)     │  │ • TLS Custom CA / Verify │
+│   - T3: Qt polling   │  │ • worktrees.py (VP-3 Worktrees)│  │   - get_avatar_url()     │
+│   - suspend()/resume │  │ • signing_ops.py (VP-18 Signing│  │ • Concrete Adapters:     │
+│   - 300ms debounce   │  │ • rebase_sequencer.py (VP-2)   │  │   - GitHubAdapter        │
+│ • polling_fallback.py│  │   - rebase_editor_helper.py    │  │   - GitLabAdapter        │
+│ • Signals Emitted:   │  │ • sparse_checkout.py (Cone)    │  │   - ForgejoAdapter       │
+│   - status_changed   │  │ • security_sanitizer.py        │  │   - BitbucketAdapter     │
+│   - adaptive_fallback│  │ • discovery.py (FR-1.12 scan)  │  │ • author_avatar_url maps │
+│     _activated       │  │ • paths.py / ssh_agent.py      │  │ • github_device_flow.py  │
+│                      │  │ • snapshots.py / lock_recovery │  │   - RFC 8628 Device Flow │
+│                      │  │ • identity.py / crash_handler  │  │ • TLS Custom CA / Verify │
+│                      │  │ • lazy_loader.py (PEP 810)     │  │                          │
 └──────────────────────┘  └────────────────┬───────────────┘  └────────────┬─────────────┘
                                            │                               │              
                     Snapshot / Config      │              Token Storage    │              
@@ -129,11 +137,12 @@ Wrench is engineered around six non-negotiable architectural tenets:
 ┌────────────────────────────────────────┬─┐  ┌────────────────────────────┬─────────────┐
 │   STORAGE LAYER (src/wrench/storage)   │ │  │  CREDENTIALS (src/wrench/credentials)    │
 │                                        │ │  │                                          │
-│ • SQLite Database (wrench.db, Schema v3│ │  │ • credentials.py: Backend factory        │
+│ • SQLite Database (wrench.db, Schema v4│ │  │ • credentials.py: Backend factory        │
 │   - Single coarse mutex + WAL mode     │ │  │ • SecretServiceBackend (D-Bus Secret API)│
 │ • settings_registry.py (Universal Reg) │ │  │   - KDE KWallet & GNOME Keyring          │
 │   - 13 Cats, 83 Specs, Normal/Advanced │ │  │   - Zero plaintext tokens on disk        │
-│   - 100-Entry SQLite Delta Undo (OPT-3)│ │  │ • OAuth RFC 8628 tokens resolution       │
+│   - 100-Entry SQLite Delta Undo (OPT-3)│ │  │ • signing_askpass.py (VP-18 GUI askpass) │
+│ • session_storage.py: WorkspaceSessions│ │  │ • OAuth RFC 8628 tokens resolution       │
 │ • repo_registry.py: MRU, clear_missing │ │  │ • Disambiguated accounts per remote host │
 │ • settings.py: Session & alias bridge  │ │  │                                          │
 │ • snapshots.py: Recovery records & OIDs│ │  │                                          │
@@ -222,11 +231,27 @@ Wrench is engineered around six non-negotiable architectural tenets:
   - **Live Registry Propagation, Repo-Switch Hygiene & Background Maintenance**: `_on_registry_setting_changed` live-applies changes to `ui.theme_mode`, `ui.font_size_pt` (`_apply_font_size_pt`), `ui.avatars_gravatar`, `ui.humor_lines`, `ui.activity_dock.max_lines`, `remote.auto_fetch.enabled`, `monorepo.sparse_checkout_ui.enabled`, `rebase.interactive_ui.enabled`, and `maintenance.auto_commit_graph.enabled` (using `_CommitGraphDispatcher`, `_CommitGraphWorker`, and `_maybe_write_commit_graph` with generation cancellation). `_propagate_theme_refresh()` refreshes status bar pills (`_apply_status_bar_theme()`) and open `QDialog`s (`_active_settings_dialog`, `_sparse_dialog`, `_interactive_rebase_dialog`, and child dialogs). `QSignalBlocker` prevents duplicate repo-open events on programmatic combo updates, `request_restart()` restarts Wrench cleanly for restart-flagged settings (`ui.theme_mode`), and `_reclaim_heap_after_switch()` + coalesced 150ms single-shot `_heap_trim_timer` (`_on_delayed_heap_trim`) run `gc.collect()` and `malloc_trim(0)` after `DeferredDelete` cycles with closing/validity guards.
   - **Interactive Rebase Coordinator (`_on_history_interactive_rebase` / `_run_interactive_rebase_dialog`)**: Launches non-modal `InteractiveRebaseDialog` from `HistoryTab.interactive_rebase_requested`, suspends `RepoWatcher` during `rebase_started` and resumes on `rebase_completed`/`rebase_failed`, routes paused/conflicted outcomes back to `ChangesTab`, and enforces single-instance activation.
   - Hosts the central `TabContainer`.
+  - **Dynamic Worktrees & Multi-Workspace Sessions (`VP-3`)**: Coordinates linked worktree workspaces (`open_worktree_in_tab`), workspace session save/restore (`Save Workspace Session...`, `Restore Workspace Session...`), and cross-worktree cherry-pick routing.
+  - **Context Status Bar & Embedded Terminal Drawer (`VP-2.5`)**: Houses the 4-cell `ContextHeaderBar` and quick terminal drawer toggle.
   - **GUI Session Persistence Engine**: Runs a continuous 1000ms debounced auto-save timer (`_auto_save_timer`) coalescing window geometry, splitter ratios, tab list/order/pinning, active repo, and per-repo selections/drafts into `app_settings` key `ui.session_state`.
   - Synchronous flush on `closeEvent(event)` ensures state is never lost on shutdown or unexpected termination.
   - Startup restoration guard `_is_restoring` prevents initialization noise from wiping saved drafts and checkbox selections.
   - Enforces quit guards when unsaved commit message drafts exist or background workers are busy.
   - Owns the active `RepoHandle` and `RepoWatcher`.
+- **`SafeStackedWidget` & `TabContainer` (`ui/tabs/tab_bar.py`)**:
+  - `SafeStackedWidget(QStackedWidget)` overrides default Qt child page visibility by installing a protective event filter on all managed tab widgets. Any `QEvent.Type.Show` event dispatched to an inactive page (e.g. from rogue background updates or unmanaged `setVisible(True)` calls) is intercepted and forced hidden (`watched.hide()`).
+  - Implements singleton tab lifecycle (`changes`, `history`, `pr_list`, `issue_list`, `worktrees`) to hide rather than destroy tab pages on tab closure.
+- **`WorktreePanel` & `WorktreeCardWidget` (`ui/widgets/worktree_panel.py — VP-3`)**:
+  - Dedicated Worktrees workspace tab displaying active linked worktrees with branch badges, head commit OIDs, filesystem paths, lock status, and quick actions (`Open in Tab`, `Lock/Unlock`, `Remove`).
+  - `SuppressTextDelegate(QStyledItemDelegate)` installed on column 0 prevents double-text painting beneath custom `WorktreeCardWidget` cards while retaining screen-reader text.
+  - Deferred refresh logic (`_needs_refresh = True`) when hidden avoids background work and visual bleed when another tab is active.
+- **`AddWorktreeDialog` (`ui/dialogs/add_worktree_dialog.py — VP-3`)**:
+  - Modal dialog for adding linked worktrees with branch selection, new branch creation, and path formatting driven by `worktrees.path_template`.
+  - Enforces Git worktree branch exclusivity: detects if a branch is already checked out by another worktree and alerts the user with guided navigation.
+- **`CommitGraphWidget` & `HistoryTab` Proportional Layout (`ui/commit_graph/graph_widget.py`, `ui/tabs/history_tab.py`)**:
+  - Rebalanced content splitter with stretch factors `[0, 3, 2]` (`sidebar: 0`, `graph_table: 3`, `detail_panel: 2`), default pixel allocation `[220, 680, 480]`, and `detail_panel.setMinimumWidth(320)`. Ensures the commit detail dock expands dynamically to 40% of extra horizontal space on wide monitors without staying pinned to narrow fixed widths.
+  - Expanded column allocations: Branch/Tag (Col 0: 250px), Graph (Col 1: 160px), Date (Col 4: 160px), eliminating timestamp ellipsis truncation.
+  - Asynchronous signature badges (`SignatureBadge`) in `CommitDetailPanel` displaying OpenPGP/SSH verification state (`Good`, `Bad`, `Untrusted`, `Expired`), key fingerprint, and signer identity (`VP-18`).
 - **`PRListTab` & `IssueListTab` (`ui/tabs/pr_list_tab.py`, `ui/tabs/issue_list_tab.py`)**:
   - Forge pull request and issue browser workspaces keyed by `(tab_type, repo_path)`.
   - Author column displays 24px `AvatarWidget` circular avatar or deterministic colored initials badge fallback.
@@ -411,6 +436,9 @@ Wrench is engineered around six non-negotiable architectural tenets:
 - **`engine.py`**: Public façade exposing unified, typed functions. Converts internal errors into typed `WrenchGitError` derivatives.
   - Remote & Clone operations: `push(repo, remote, branch, force=False)` (enforces `--force-with-lease`), `pull(repo, remote, branch)` (enforces `--ff-only`), `fetch(repo, remote)` (with `--prune` and timestamp storage), and `clone_repo` / `clone_repository` (atomic staging via tempdir with automated rollback, `--filter=blob:none`/`tree:0`, `--sparse`).
   - Remotes façade: `list_remotes(repo)`, `add_remote(repo, name, url)`, `remove_remote(repo, name)`, `set_remote_url(repo, name, url)`, and `_probe_reachability(repo_path, remote_name)`.
+  - Worktrees façade (`VP-3`): `list_worktrees(repo)`, `format_worktree_path(repo, branch, template)`, `add_worktree(repo, target_path, branch, create_branch)`, `lock_worktree(repo, path, reason)`, `unlock_worktree(repo, path)`, `remove_worktree(repo, path, force)`, `prune_worktrees(repo)`, and `cherry_pick_to_worktree(repo, sha, target_worktree_path)`.
+  - Cryptographic Signing façade (`VP-18`): `verify_commit_signature(repo, sha)`, `verify_tag_signature(repo, tag)`, and `batch_verify_signatures(repo, oids)`.
+  - Workspace Sessions façade (`VP-3`): `save_workspace_session(name, repo_paths, active_idx, tabs)`, `list_workspace_sessions()`, `get_workspace_session(name)`, and `delete_workspace_session(name)`.
   - Monorepo, Graph & Maintenance façade: `get_log_page`, `get_repo_refs_signature`, `is_unborn_repo`, `refresh_repo_handle`, `is_sparse_checkout_enabled`, `get_sparse_checkout_state`, `init_sparse_checkout`, `list_sparse_directories`, `set_sparse_directories`, `disable_sparse_checkout`, `list_head_top_directories`, `list_tree_subdirectories`, `write_commit_graph`, `maybe_write_commit_graph`, `validate_clone_url`, `validate_git_ref`, `redact_secrets`, and `resolve_git_dir`.
   - Feature gating facade: `is_feature_enabled(feature_key, repo_path)` and `get_settings(repo_path)` providing zero-overhead short-circuits (`OPT-1`).
   - Interactive Rebase façade (`VP-2`): `build_interactive_rebase_cli_args`, `get_interactive_rebase_target_label`, `list_commits_for_interactive_rebase`, `list_commits_for_interactive_rebase_checked`, and `interactive_rebase` (creating pre-operation safety snapshots and honoring `rebase.autostash`/`rebase.autosquash`).
@@ -419,6 +447,9 @@ Wrench is engineered around six non-negotiable architectural tenets:
   - Bundles façade: `create_bundle(repo, output_path, rev_range)`, `verify_bundle(repo, bundle_path)`, and `unbundle(repo, bundle_path)`.
   - Reflog façade: `list_reflog(repo, ref, limit)`, `reset_to_reflog_entry(repo, sha, mode)`, and `create_branch_from_reflog(repo, branch_name, sha)`.
 - **`models.py`**: Typed dataclass models for Git primitives and core extensions:
+  - `WorktreeInfo`: Represents git worktree entry (`path`, `head_oid`, `branch_name`, `is_bare`, `is_locked`, `lock_reason`, `is_prunable`, `VP-3`).
+  - `WorkspaceSession`: Named multi-tab workspace session saved in SQLite (`session_name`, `repo_paths`, `active_index`, `tabs_json`, `updated_at`, `VP-3`).
+  - `SignatureStatus`: Cryptographic signature state (`oid`, `state`, `signer`, `key_fingerprint`, `VP-18`).
   - `LfsFileStatus`: Represents LFS pointer status, OID, size in bytes, and local cache availability.
   - `SubmoduleInfo`: Represents submodule metadata (name, path, url, commit_sha, branch, initialized).
   - `ReflogEntry`: Represents parsed reflog entries (index, commit_sha, old_sha, committer, timestamp, message).
@@ -426,6 +457,15 @@ Wrench is engineered around six non-negotiable architectural tenets:
   - `CloneResult`: Outcome metadata for atomic clone operations (success, repo_path, duration_seconds, error_message).
   - `LogPage`, `CommitGraphStats`, `SparseCheckoutState`, `TreeDirectoryEntry`, and `WatcherStatusInfo`: Monorepo pagination, commit-graph maintenance, cone-mode sparse-checkout, and adaptive watcher telemetry models (`VP-16`).
   - `RebaseTodoEntry`: Immutable interactive rebase plan row (`action`, `oid`, `short_oid`, `summary`, `author`, `new_message`, `VP-2`).
+- **`worktrees.py` (`VP-3`, `FR-1.13`, `FR-1.17`)**: Git worktrees lifecycle management and cross-worktree operations:
+  - Enumeration: `list_worktrees(repo_path)` parses `git worktree list --porcelain -z` without disk mutations, extracting paths, HEAD OIDs, branch references, and lock/prunable reasons.
+  - Creation & Templating: `add_worktree(repo_path, target_path, branch, create_branch)` creates linked worktrees with branch exclusivity checking; `format_worktree_path(repo_path, branch, template)` resolves directory targets substituting `{repo_name}` and sanitizing branch slugs.
+  - Lifecycle: `lock_worktree` and `unlock_worktree` manage administrative locks preventing accidental pruning; `remove_worktree` enforces dirty/lock confirmation guards; `prune_worktrees` cleans expired metadata.
+  - Cross-Worktree Operations: `cherry_pick_to_worktree(repo_path, commit_sha, target_worktree_path)` executes direct cherry-pick operations into secondary worktree branches without requiring checkout switching in the primary workspace.
+- **`signing_ops.py` (`VP-18`, `FR-2.9`, `FR-2.10`)**: Cryptographic commit and tag signature verification:
+  - Inspection: `verify_commit_signature(repo_path, commit_sha)` evaluates OpenPGP and SSH (`gpg.format = ssh`, `gpg.ssh.allowedSignersFile`) signatures via `git log --no-walk --format=%H|%G?|%GS|%GF|%GK`. Maps `%G?` status codes (`G` -> verified, `U` -> unverified key, `B` -> bad, `E` -> expired, `X` -> expired key, `Y` -> revoked, `R` -> revoked key, `N` -> unsigned) into immutable `SignatureStatus` models.
+  - Viewport Batch Verification: `batch_verify_signatures(repo_path, oids)` executes batched verification queries for visible commits with an in-memory LRU cache (`maxsize=10000`) ensuring zero duplicate subprocess overhead during scrolling.
+  - Tag Verification: `verify_tag_signature(repo_path, tag_name)` verifies annotated GPG/SSH tags via `git tag -v`.
 - **`rebase_sequencer.py` (`VP-2`, `FR-3.5`, `FR-10.1`)**: Core engine for graphical interactive rebase:
   - `list_commits_for_interactive_rebase_checked` / `list_commits_for_interactive_rebase`: Enumerates `base_oid..HEAD` in oldest-first `git rebase -i` order via `pygit2` (`GIT_SORT_TOPOLOGICAL | GIT_SORT_REVERSE`, capped at `MAX_INTERACTIVE_REBASE_COMMITS = 1000`) without subprocesses.
   - `run_interactive_rebase`: Validates `RebaseTodoEntry` sequences (blocking leading `squash`/`fixup` and invalid OIDs), writes the plan JSON inside a `0o700` temporary directory with `0o600` file permissions (`SEC-4`), and executes `git rebase -i` (`shell=False`, `--` separator `SEC-1`) with `GIT_SEQUENCE_EDITOR` and `GIT_EDITOR` bound to `python -m wrench.core.rebase_editor_helper <plan_json>`.
@@ -518,7 +558,10 @@ Wrench is engineered around six non-negotiable architectural tenets:
   - Configured with `check_same_thread=False` and SQLite WAL mode (`PRAGMA journal_mode = WAL`).
   - Serialized through a single process-wide `threading.Lock()` to prevent SQLite concurrency deadlocks.
   - Automated corrupt database quarantine and recovery.
-  - Schema migrations from v1 through v2 to v3 (`user_version = 3`).
+  - Schema migrations from v1 through v3 to v4 (`user_version = 4`).
+- **`session_storage.py` (`VP-3`, `FR-1.15`)**: Named multi-tab workspace sessions storage:
+  - SQLite persistence in `workspace_sessions` table (`session_name`, `repo_paths_json`, `active_index`, `tabs_json`, `updated_at`).
+  - Supports `save_workspace_session()`, `list_workspace_sessions()`, `get_workspace_session()`, and `delete_workspace_session()`.
 - **`settings_registry.py`**: Universal Settings Registry engine (`VP-0`):
   - Manages all **83** `DEFAULT_SETTING_SPECS` across **13** `CATEGORIES_ORDER` (`General & UI`, `Staging & Commits`, `Commit Graph`, `Diff & Merge`, `Branches & Stacks`, `Worktrees & Submodules`, `Remotes & LFS`, `Forges & CI`, `Hooks & Signing`, `Blame & Search`, `Watcher & Performance`, `Safety & Backups`, `Custom Actions & Shortcuts`).
   - **Tiered Progressive Disclosure (`SettingTier`)**: Partitions preferences into `NORMAL` (17 core settings including `ui.settings_view_mode`) and `ADVANCED` (66 power-user settings).
@@ -536,7 +579,7 @@ Wrench is engineered around six non-negotiable architectural tenets:
   - Fast-path path-based link resolution for `git-credential-wrench`.
 - **`health.py`**: SQLite database health checks, pragma integrity validation, and automated repair/vacuum routines.
 - **`snapshots.py`**: Safety snapshot metadata records, dangling commit OIDs, and untracked archive paths.
-- **`schema.sql`**: Normalized relational schema (Schema Version 3) defining `global_settings`, `repo_settings_overrides`, `settings_undo_log`, `repos`, `repo_identity_overrides`, `snapshots`, `repo_forge_links`, and `forge_accounts`.
+- **`schema.sql`**: Normalized relational schema (Schema Version 4) defining `global_settings`, `repo_settings_overrides`, `settings_undo_log`, `repos`, `repo_identity_overrides`, `snapshots`, `repo_forge_links`, `forge_accounts`, and `workspace_sessions`.
 
 ### 3.6 Credentials & Platform Layer (`src/wrench/credentials/`)
 - **`backend.py`**: Abstract base class `CredentialBackend` defining `get_secret(key)`, `store_secret(key, secret)`, and `delete_secret(key)`.
@@ -544,6 +587,9 @@ Wrench is engineered around six non-negotiable architectural tenets:
   - Automatically handles collection unlocking via `collection.unlock()`.
   - Formats user-actionable diagnostics tailored to runtime environments: Flatpak sandboxes, desktop keyrings (GNOME Keyring / KWallet), and headless systems.
   - Strict compliance with Platform-Abstraction Guard (FR-11.1–11.3): all Secret Service imports are strictly encapsulated here.
+- **`signing_askpass.py` (`VP-18`, `SEC-4`)**: Standalone Unix domain socket askpass helper bridge:
+  - Invoked by `git` via `GIT_ASKPASS` / `SSH_ASKPASS` when signing commits/tags or accessing passphrase-protected SSH/GPG keys.
+  - Relays passphrase requests over a local Unix domain socket directly to Wrench's GUI passphrase dialog, eliminating terminal deadlocks.
 - **`__init__.py`**: Caching factory function `get_backend()` and packaging context detection `detect_packaging_context()` (`flatpak`, `snap`, `appimage`, `system`).
 
 ### 3.7 Automated AST Security & Anti-Hallucination Guard (`tests/unit/test_no_shortcuts_guard.py`)
@@ -1333,9 +1379,81 @@ To eliminate telemetry leakage and strictly protect developer privacy:
                 └── Route 'paused' / 'conflict' states to ChangesTab sequencer controls
 ```
 
+### 4.21 Git Worktree Lifecycle & Cross-Worktree Operations (`VP-3`)
+```text
+[User Opens Worktrees Workspace Tab / MainWindow Menu]
+         │
+         ├── 1. Enumeration: core.worktrees.list_worktrees(repo_path)
+         │      ├── Executes: git worktree list --porcelain -z
+         │      └── Parses WorktreeInfo(path, head_oid, branch_name, is_bare, is_locked, lock_reason, is_prunable)
+         │
+         ├── 2. UI Presentation & Isolation (WorktreePanel):
+         │      ├── Column 0: SuppressTextDelegate prevents text double-rendering beneath custom card widgets
+         │      ├── SafeStackedWidget: Event filter traps QEvent.Type.Show on inactive tabs to prevent page bleed
+         │      └── Deferred Refresh: Hidden tabs mark _needs_refresh = True instead of running background scans
+         │
+         ├── 3. Creation Workflow (AddWorktreeDialog):
+         │      ├── Target Path: Evaluated from template (worktrees.path_template, e.g. "../{repo_name}-{branch_slug}")
+         │      ├── Exclusivity Check: Rejects branch if already checked out in another linked worktree
+         │      └── CLI Execution: git worktree add [-b <new_branch>] <path> <branch>
+         │
+         ├── 4. Cross-Worktree Cherry-Pick:
+         │      └── core.worktrees.cherry_pick_to_worktree(repo, commit_sha, target_wt_path)
+         │             └── Directly cherry-picks commits into target worktree without switching primary checkout
+         │
+         └── 5. Named Workspace Sessions (session_storage.py):
+                └── Saves/restores multi-tab repository sets in SQLite table workspace_sessions across restarts
+```
+
+### 4.22 Cryptographic Commit & Tag Signature Verification (`VP-18`)
+```text
+[CommitGraphWidget / CommitDetailPanel Renders Viewport Commits]
+         │
+         ├── 1. Asynchronous Viewport Batching (signing.verify_badges_in_graph.enabled):
+         │      ├── Collects visible commit OIDs in viewport (first_row..last_row)
+         │      ├── Consults thread-safe LRU cache (maxsize=10000)
+         │      └── Queries unverified commits: git log --no-walk --format=%H|%G?|%GS|%GF|%GK <oids...>
+         │
+         ├── 2. Status Mapping (SignatureStatus):
+         │      ├── %G? = 'G' -> "verified" (Good signature)
+         │      ├── %G? = 'U' -> "unverified_key" (Valid signature with untrusted/unknown key)
+         │      ├── %G? = 'B' -> "bad" (Bad / forged signature)
+         │      ├── %G? = 'E'/'X' -> "expired" (Signature or key has expired)
+         │      ├── %G? = 'Y'/'R' -> "revoked" (Key has been revoked)
+         │      └── %G? = 'N' -> "unsigned"
+         │
+         ├── 3. UI Badge Presentation (SignatureBadge):
+         │      └── Displays status badge (Verified / Unverified / Bad) with signer and key fingerprint popover
+         │
+         └── 4. Passphrase Askpass Bridge (signing_askpass.py):
+                └── When GPG/SSH agent is locked, bridge forwards passphrase prompts to GUI modal via Unix socket
+```
+
+### 4.23 Dynamic Viewport Rebalancing & High-DPI Splitter Scaling
+```text
+[User Resizes Window / Uses Wide Display]
+         │
+         ├── 1. Splitter Stretch Distribution:
+         │      ├── HistoryTab content_splitter stretch factors set to [0, 3, 2]
+         │      ├── Sidebar (index 0): Stretch factor 0 (fixed / user-set width)
+         │      ├── Graph Table (index 1): Stretch factor 3 (receives 60% of extra horizontal space)
+         │      └── Detail Panel (index 2): Stretch factor 2 (receives 40% of extra horizontal space)
+         │
+         ├── 2. Minimum Width Guards:
+         │      └── detail_panel.setMinimumWidth(320) prevents narrow freezing on wide monitors
+         │
+         ├── 3. Header Column Allocations:
+         │      ├── Branch/Tag Column (Col 0): 250px (accommodates remote branch hierarchies)
+         │      ├── Graph Column (Col 1): 160px (accommodates multi-lane topological graphs)
+         │      └── Date Column (Col 4): 160px (completely eliminates "2026-11-24 11:29:..." ellipsis truncation)
+         │
+         └── 4. Vertical Flex Layout:
+                └── CommitDetailPanel dynamically flexes description, file changes, and diff preview panes
+```
+
 ---
 
-## 5. Relational Database Schema (Version 3)
+## 5. Relational Database Schema (Version 4)
 
 ```text
 ┌──────────────────────────────┐       ┌────────────────────────────────────┐
@@ -1402,6 +1520,15 @@ To eliminate telemetry leakage and strictly protect developer privacy:
 │ new_value_json                                                            │
 │ undone (0 or 1)                                                           │
 └───────────────────────────────────────────────────────────────────────────┘
+┌───────────────────────────────────────────────────────────────────────────┐
+│                            workspace_sessions                             │
+├───────────────────────────────────────────────────────────────────────────┤
+│ session_name (PK)                                                         │
+│ repo_paths_json                                                           │
+│ active_index                                                              │
+│ tabs_json                                                                 │
+│ updated_at                                                                │
+└───────────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
@@ -1446,13 +1573,17 @@ wrench/
 │   ├── appimage/                 # AppImage packaging script
 │   │   └── build-appimage.sh
 │   └── flatpak/                  # Flatpak packaging manifests
+├── scripts/
+│   └── generate_repo_map.py      # AST symbol & SettingsRegistry indexer for dev/REPO_MAP*.md
 ├── src/wrench/
 │   ├── app.py                    # Application bootstrap, logging config & RESTART_EXIT_CODE os.execv loop
 │   ├── core/                     # Core Git engine & platform primitives
 │   │   ├── engine.py             # Public unified façade
-│   │   ├── models.py             # Core dataclass models (LFS, submodules, bundles, reflog, VP-16)
+│   │   ├── models.py             # Core dataclass models (WorktreeInfo, WorkspaceSession, SignatureStatus, VP-16)
 │   │   ├── read_ops.py           # pygit2 read operations & _ACTIVE_WALKER_CACHE
 │   │   ├── write_ops.py          # subprocess CLI write, streaming ops & write_commit_graph
+│   │   ├── worktrees.py          # VP-3: Git worktrees lifecycle, path templates & cross-worktree cherry-pick
+│   │   ├── signing_ops.py        # VP-18: GPG/SSH commit & tag signature verification and batch queries
 │   │   ├── rebase_sequencer.py   # VP-2: pygit2 rebase walk & GIT_SEQUENCE_EDITOR runner
 │   │   ├── rebase_editor_helper.py # VP-2: standalone CLI editor for rebase-todo/COMMIT_EDITMSG
 │   │   ├── sparse_checkout.py    # Cone-mode sparse-checkout & HEAD/ls-tree subdir listing
@@ -1482,7 +1613,8 @@ wrench/
 │   │       └── transaction.py    # Atomic rollback & snapshot journals
 │   ├── credentials/              # Secret Service & credential backends
 │   │   ├── backend.py            # CredentialBackend abstract interface
-│   │   └── secret_service.py     # D-Bus Secret Service platform backend
+│   │   ├── secret_service.py     # D-Bus Secret Service platform backend
+│   │   └── signing_askpass.py    # VP-18: Unix domain socket askpass bridge for GUI passphrase fallback
 │   ├── forge/                    # Forge provider capability system
 │   │   ├── capability.py         # ForgeCapability flags, ForgeAdapter ABC & get_avatar_url
 │   │   ├── exceptions.py         # Typed forge error hierarchy
@@ -1498,24 +1630,29 @@ wrench/
 │   ├── storage/                  # SQLite storage & repository registry
 │   │   ├── db.py                 # SQLite connection management & locks
 │   │   ├── settings_registry.py  # Universal Settings Registry (13 cats, 83 specs, Normal/Advanced)
+│   │   ├── session_storage.py    # VP-3: WorkspaceSessions multi-tab persistence
 │   │   ├── repo_registry.py      # Repository tracking CRUD & clear_missing
 │   │   ├── settings.py           # App, session-blob & alias settings bridge
 │   │   ├── forge_accounts.py     # Forge accounts, repo links & TLS settings
 │   │   ├── health.py             # Database integrity diagnostics & vacuuming
 │   │   ├── snapshots.py          # Safety snapshots metadata
-│   │   └── schema.sql            # Normalized relational schema (Schema v3)
+│   │   └── schema.sql            # Normalized relational schema (Schema v4)
 │   ├── ui/                       # PySide6 desktop UI
 │   │   ├── main_window.py        # Main application window, live settings & repository menu
+│   │   ├── changes_view.py       # Pinned workspace changes viewport
+│   │   ├── history_view.py       # Commit history and graph viewport
+│   │   ├── icons.py              # Centralized SVG and UI icon resolver
 │   │   ├── theme.py              # Catppuccin Velvet Pastel palettes, pills & dialog styles
 │   │   ├── quotes.py             # Clean-state, waiting & wisdom quote banks
 │   │   ├── workers.py            # Thread-safe background worker marshaller
 │   │   ├── commit_graph/         # Topological DAG layout & paginated table view
 │   │   │   ├── layout.py         # S-curve calculation & slot recycling
 │   │   │   ├── graph_widget.py   # CommitGraphWidget, QThreadPool workers & QPixmapCache
-│   │   │   └── detail_panel.py   # CommitDetailPanel & author Gravatar avatar
+│   │   │   └── detail_panel.py   # CommitDetailPanel, Gravatar avatar & SignatureBadge
 │   │   ├── dialogs/              # Interactive dialogs & account managers
 │   │   │   ├── about_dialog.py   # About Wrench dialog & rotating wisdom
 │   │   │   ├── accounts_dialog.py# Forge accounts manager & OAuth Device Flow
+│   │   │   ├── add_worktree_dialog.py # VP-3: linked worktree creator dialog & branch collision check
 │   │   │   ├── clone_dialog.py   # Partial/sparse CloneDialog & _SingleLinePathLabel
 │   │   │   ├── discover_repos_dialog.py # Multi-repo discovery review & batch import
 │   │   │   ├── interactive_rebase_dialog.py # VP-2: drag-to-reorder interactive rebase dialog
@@ -1541,9 +1678,9 @@ wrench/
 │   │   ├── snapshots_panel/      # Rolling snapshots browser & restore panel
 │   │   │   └── snapshots_panel.py# Snapshot timeline & restore triggers
 │   │   ├── tabs/                 # Hybrid tab navigation system
-│   │   │   ├── tab_bar.py        # TabContainer & TabButton widgets
+│   │   │   ├── tab_bar.py        # TabContainer, TabButton & SafeStackedWidget
 │   │   │   ├── changes_tab.py    # Primary Changes workspace, quotes & account avatar
-│   │   │   ├── history_tab.py    # History / Commit graph workspace
+│   │   │   ├── history_tab.py    # History workspace, [0,3,2] splitters & detail dock
 │   │   │   ├── pr_list_tab.py    # Pull Requests virtualized list & 24px avatars
 │   │   │   ├── pr_detail_tab.py  # Pull Request discussion & 40px avatar header
 │   │   │   ├── issue_list_tab.py # Issues virtualized list & 24px avatars
@@ -1553,12 +1690,16 @@ wrench/
 │   │       ├── avatar.py         # AvatarWidget & AvatarLoader singleton
 │   │       ├── branch_switcher.py# Interactive branch selector & popup
 │   │       ├── cli_preview_bar.py# Secret-redacted CLI command preview footer
-│   │       └── loading_overlay.py# Semi-transparent loading spinner overlay
+│   │       ├── context_header_bar.py # VP-2.5: 4-cell smart status header bar
+│   │       ├── loading_overlay.py# Semi-transparent loading spinner overlay
+│   │       └── worktree_panel.py # VP-3: WorktreePanel, WorktreeCardWidget & SuppressTextDelegate
 │   └── watcher/                  # 3-tier inotify/git-dir/polling filesystem watcher
 ├── tests/                        # Comprehensive test suite (core, unit, integration, UI)
 │   ├── core/
+│   │   ├── test_commit_signing.py     # VP-18 commit & tag signing verification tests
 │   │   ├── test_interactive_rebase.py # VP-2 interactive rebase core & helper tests
-│   │   └── test_sparse_checkout.py     # Cone sparse-checkout, partial clone & sanitizer tests
+│   │   ├── test_sparse_checkout.py     # Cone sparse-checkout, partial clone & sanitizer tests
+│   │   └── test_worktrees.py          # VP-3 worktrees core operations tests
 │   ├── integration/                    # Adapter integration suites (github, gitlab, forgejo, bitbucket)
 │   ├── unit/                           # Core, storage, credentials, forge & theme/widget unit tests
 │   │   ├── test_no_shortcuts_guard.py  # AST security & anti-hallucination guard
@@ -1570,7 +1711,10 @@ wrench/
 │   └── ui/
 │       ├── test_clone_picker.py        # CloneDialog & _SingleLinePathLabel tests
 │       ├── test_forge_repo_switch.py   # Repo switch memory, diff reset & tab disposal tests
+│       ├── test_history_scaling_regression.py # Splitter stretch factors & column width tests
 │       ├── test_interactive_rebase_dialog.py # VP-2 InteractiveRebaseDialog & theme tests
+│       ├── test_view_switching_regression.py  # SafeStackedWidget & worktree bleed tests
+│       └── test_worktree_ui.py         # VP-3 WorktreePanel & AddWorktreeDialog tests
 │       ├── test_large_graph_virtualization.py # 100k+ pagination, diff cap & sparse UI tests
 │       ├── test_lazy_tabs.py           # Lazy/multi-forge tab lifecycle tests
 │       ├── test_main_window_feedback.py# ActivityLogBar, humor toggle & AboutDialog tests

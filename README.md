@@ -6,7 +6,7 @@
 ![GitHub Repo stars](https://img.shields.io/github/stars/uzair777-dev/Wrench)
 [![Python: 3.15](https://img.shields.io/badge/Python-3.15-blue.svg)](https://www.python.org/)
 [![GUI: PySide6](https://img.shields.io/badge/GUI-PySide6%20%2F%20Qt%206-informational.svg)](https://www.qt.io/)
-[![Tests: 779 passed](https://img.shields.io/badge/Tests-779%20passed-brightgreen.svg)](tests/)
+[![Tests: 845 passed](https://img.shields.io/badge/Tests-845%20passed-brightgreen.svg)](tests/)
 ![GitHub Actions Workflow Status](https://img.shields.io/github/actions/workflow/status/uzair777-dev/Wrench/ci.yml)
 
 ---
@@ -25,6 +25,8 @@
 ### Built & Working Today
 - **Hybrid Speed + 100% Real Git Fidelity:** In-process `pygit2` (`libgit2`) reads paired with real system `git` CLI writes—so your custom hooks, `.gitconfig` rules, and merge strategies behave identically to terminal Git.
 - **Granular Staging & History Editing:** Whole-file, synthetic hunk, single-line, and intent-aware partial staging, a visual Interactive Rebase builder (`VP-2`), and an in-app 3-way merge resolver.
+- **Git Worktrees & Workspace Sessions (`VP-3`):** Create, list, lock/unlock, prune, and switch linked worktrees with custom path templating, cross-worktree cherry-pick (`cherry_pick_to_worktree`), tab container containment with `SafeStackedWidget` event filtering preventing view bleeds, and named multi-tab workspace sessions stored in SQLite (`workspace_sessions`).
+- **Cryptographic Commit & Tag Signing (`VP-18`):** Asynchronous OpenPGP and SSH (`gpg.format = ssh`) commit and tag signature verification (`signing_ops.py`), graph and detail panel verification status badges (`Good`, `Bad`, `Untrusted`, `Expired`), and GUI passphrase askpass fallback bridge (`signing_askpass.py`).
 - **Git-Native Safety (Zero Custom Metadata):** Automatic pre-operation rolling snapshots (`git stash create` + untracked working-tree `.tar.gz` archives), reflog recovery, and stale `index.lock` cleanup—all while leaving your repository 100% plain standard Git.
 - **4-Host Forge Workflows Built In:** Native PRs, issues, in-app reviews, and CI status cards across **GitHub, GitLab, Forgejo/Gitea, and Bitbucket**—plus a FreeDesktop D-Bus Secret Service credential helper (`git-credential-wrench`).
 - **Monorepo & Minimalist Ready:** Partial clone + sparse checkout (`VP-16`), and a 13-category `SettingsRegistry` (`VP-0`) with a 1-click *Minimalist Local-Only Mode*.
@@ -32,7 +34,7 @@
 ### Active v2.0 Launch Roadmap (In Progress)
 - **Op-Log Time Machine (`Ctrl+Alt+Z`) & Live Conflict Prediction:** Deterministic one-click undo/redo for Wrench operations and in-memory `git merge-tree --write-tree` pre-merge previews—staying 100% plain Git.
 - **Keyboard-First Velocity:** Modal single-key chord engine (`j`/`k`/`s`/`u`/`c`) and `< 10 ms` Fuzzy Command Palette (`Ctrl+K`).
-- **Essential Pro Workflows & Distribution:** GPG/SSH commit signing (`VP-18`), multi-worktree management (`VP-3`), reproducible large-repo benchmarks on `git/git`, and self-contained Flatpak/AppImage bundles shipping a standalone Python 3.15 runtime.
+- **Essential Pro Workflows & Distribution:** Reproducible large-repo benchmarks on `git/git`, and self-contained Flatpak/AppImage bundles shipping a standalone Python 3.15 runtime.
 - **Post-v2.0 Ecosystem (`v2.5+`):** Extended forge plugins (Codeberg, Azure, Radicle, Gerrit, SourceHut, Tangled, SourceForge) and the 5-Stage Multi-Mirror DAG.
 
 ---
@@ -55,11 +57,20 @@
   - Unified changed files list with status badges (`M`, `A`, `D`, `R`, `?`, `⚠ C`), tri-state select-all checkbox, and context actions.
   - Commit box with forge account avatar, 72-character summary soft limit indicator, multi-line description, and one-click `--amend` pre-filling.
 - **Granular & Partial Staging**: Whole-file staging, synthetic patch hunk-level staging, line-level staging with syntax highlighting, and `PartialStagingDialog` conflict-of-intent prompts for partially staged files (`MM`/`AM`).
-- **Visual Topological Commit Graph**:
+- **Visual Topological Commit Graph & Responsive Viewport**:
   - Interactive Git DAG rendering branching, merging, and octopus merge topologies with smooth cubic Bézier curves.
   - Deterministic 10-color lane persistence with slot recycling algorithm preventing lane explosion.
   - Infinite scrolling cursor pagination (`performance.graph_page_size`), DPR `QPixmapCache` badges, background `git commit-graph write --reachable`, smooth per-pixel horizontal scrolling (`ScrollPerPixel`), and synchronized graph column scrollbar.
   - Integrated search, author filtering, and path filtering bar with 300ms debouncing.
+  - Proportional High-DPI Splitter Layout with `[0, 3, 2]` stretch factors (`sidebar: 0`, `graph: 3`, `detail: 2`), 320px minimum dock width, and expanded column widths (`Branch: 250px`, `Graph: 160px`, `Date: 160px`) eliminating timestamp ellipsis truncation.
+- **Git Worktrees UI & Lifecycle Manager (`VP-3`)**:
+  - Dedicated `WorktreePanel` with live card list, path templating (`worktrees.path_template`), lock/unlock badges, branch conflict detection, prune, and cross-worktree cherry-pick (`cherry_pick_to_worktree`).
+  - Tab container containment with `SafeStackedWidget` event filtering preventing background rogue shows from bleeding across inactive tabs.
+  - Named multi-tab workspace session persistence across restarts (`workspace_sessions` in SQLite).
+- **Cryptographic Commit & Tag Signing (`VP-18`)**:
+  - Asynchronous GPG and SSH (`gpg.format = ssh`, `user.signingkey`) commit and tag signature verification (`signing_ops.py`).
+  - Visual `SignatureBadge` in `CommitDetailPanel` (Verified, Unverified, Bad, Unsigned) with signer and key fingerprint details.
+  - GUI passphrase askpass bridge (`signing_askpass.py`) for locked keyrings and agents without terminal prompts.
 - **Monorepo Partial Clone & Cone Sparse-Checkout (`VP-16`)**:
   - `CloneDialog` supporting partial clone filters (`--filter=blob:none`, `--filter=tree:0`), `--sparse`, single-line middle-eliding destination readout, and live secret-redacted `CliCommandPreviewBar` footers (`SEC-2`/`SEC-3`).
   - `SparseCheckoutDialog` (`Repository -> Sparse-Checkout Directories...`) with lazy `QThreadPool` subdirectory tree expansion and watcher `suspend()/resume()` coordination.
@@ -112,7 +123,7 @@
 | **Phase 5 (Promoted)** | Self-Contained Linux Packaging (AppImage & Flatpak with Bundled Python 3.15 Runtime, `aur/wrench-bin`, `.deb`, `.rpm`) | 📋 Planned |
 | **Phase 6** | Git LFS & Submodule Management | 📋 Planned |
 | **Phase 7** | v1 Polish, Performance Benchmarks & Release | 📋 Planned |
-| **Phase 8 (v2 `VP-0`–`VP-26`)** | **Stage 1:** Universal `SettingsRegistry`, Zero-Copy Diffs (`OPT-8`), Single-Key Vim Chord Engine (`OPT-9`), Interactive Rebase, GPG/SSH Signing, 100k-Commit 60 FPS Graph & Command Palette (`Ctrl+K`)<br>**Stage 2:** Stacked Branches (`--update-refs`), Live `< 15 ms` Conflict Prediction (`git merge-tree --write-tree`), & `Ctrl+Alt+Z` Op-Log Time Machine<br>**Stage 3–6:** Wayland/XDG, Progressive Help, Blame Heatmap (`git log -L`), Bisect Wizard, 11-Forge Suite & 5-Stage Multi-Mirror DAG (`OPT-7`) | 🚧 In Progress (`VP-0`, `VP-2`, `VP-16` Completed; [v2 Plan](dev/planning/v2-implementation-plan.md)) |
+| **Phase 8 (v2 `VP-0`–`VP-26`)** | **Stage 1:** Universal `SettingsRegistry`, Zero-Copy Diffs (`OPT-8`), Single-Key Vim Chord Engine (`OPT-9`), Interactive Rebase, GPG/SSH Signing, 100k-Commit 60 FPS Graph & Command Palette (`Ctrl+K`)<br>**Stage 2:** Stacked Branches (`--update-refs`), Live `< 15 ms` Conflict Prediction (`git merge-tree --write-tree`), & `Ctrl+Alt+Z` Op-Log Time Machine<br>**Stage 3–6:** Wayland/XDG, Progressive Help, Blame Heatmap (`git log -L`), Bisect Wizard, 11-Forge Suite & 5-Stage Multi-Mirror DAG (`OPT-7`) | 🚧 In Progress (`VP-0`, `VP-2`, `VP-2.5`, `VP-3`, `VP-16`, `VP-18` Completed; [v2 Plan](dev/planning/v2-implementation-plan.md)) |
 
 ---
 
@@ -172,7 +183,7 @@ All developer binaries in `bin/` leverage `uv run --no-sync` for fast, offline e
 - **Credential Storage:** `secretstorage` (FreeDesktop Secret Service D-Bus specification, lazily imported)
 - **Local Storage:** SQLite (`~/.local/share/wrench/wrench.db` via `platformdirs`, lazily imported)
 - **Filesystem Watcher:** `watchdog` (3-tier Inotify -> `.git`-only -> polling fallback) with Qt debounce event pipeline
-- **Testing:** `pytest`, `pytest-qt` (779 passed tests across unit, integration, and UI suites)
+- **Testing:** `pytest`, `pytest-qt` (845 passed tests across unit, integration, and UI suites)
 
 For an in-depth exploration of data flows, concurrency models, and database schemas, see **[ARCHITECTURE.md](ARCHITECTURE.md)**.
 

@@ -135,24 +135,22 @@ class AvatarPixmapCache:
 
         # 1. Resolve avatar URL and check if loaded
         avatar_pm: QPixmap | None = None
+        is_real_avatar = False
+        resolved_url: str | None = None
         try:
-            url = resolve_author_avatar_url(
+            resolved_url = resolve_author_avatar_url(
                 name,
                 email,
                 remote_urls=remote_urls,
                 db_conn=db_conn,
             )
-            if url:
+            if resolved_url:
                 inner_size = max(12, size - 4)
                 loader = get_avatar_loader()
-                candidate = loader.get_avatar(
-                    url,
-                    name or email,
-                    size=inner_size,
-                    is_dark=is_dark,
-                )
+                candidate = loader.get_cached_avatar(resolved_url, size=inner_size)
                 if candidate is not None and not candidate.isNull():
                     avatar_pm = candidate
+                    is_real_avatar = True
         except Exception as e:
             logger.debug("History avatar resolve error: %s", e)
             avatar_pm = None
@@ -195,9 +193,12 @@ class AvatarPixmapCache:
 
         painter.end()
 
-        if len(self._cache) >= self._maxsize:
-            self._cache.popitem(last=False)
-        self._cache[key] = pix
+        # Cache only when definitive: real avatar is loaded OR no avatar URL exists
+        # In-flight fetches must NOT be cached as initials
+        if is_real_avatar or (resolved_url is None):
+            if len(self._cache) >= self._maxsize:
+                self._cache.popitem(last=False)
+            self._cache[key] = pix
         return pix
 
 
@@ -492,8 +493,23 @@ class CommitGraphRowDelegate(QStyledItemDelegate):
         author_name = getattr(row_data.commit, "author_name", "") or ""
         author_email = getattr(row_data.commit, "author_email", "") or ""
 
-        remote_urls = getattr(option.widget, "_remote_urls", None)
+        remote_urls = (
+            getattr(option.widget, "remote_urls", None)
+            or getattr(option.widget, "_remote_urls", None)
+            or getattr(getattr(option.widget, "_model", None), "_remote_urls", None)
+        )
+        if not remote_urls and hasattr(option.widget, "_repo") and option.widget._repo:
+            try:
+                remote_urls = [
+                    r.url
+                    for r in engine.list_remotes(option.widget._repo)
+                    if hasattr(r, "url") and isinstance(r.url, str)
+                ]
+            except Exception:
+                remote_urls = None
         db_conn = getattr(option.widget, "_conn", None)
+        if db_conn is None and hasattr(option.widget, "parent") and option.widget.parent():
+            db_conn = getattr(option.widget.parent(), "_conn", None)
 
         avatar_pix = _AVATAR_CACHE.get_or_render(
             author_name,

@@ -755,6 +755,7 @@ class CommitGraphWidget(QTableView):
         self._graph_scroll_x: int = 0
         self._max_graph_scroll_x: int = 0
         self._three_column_mode: bool = False
+        self._remote_urls: list[str] = []
 
         self._model = CommitTableModel(self)
         self.setModel(self._model)
@@ -786,8 +787,17 @@ class CommitGraphWidget(QTableView):
         self._avatar_loader_connected = False
         try:
             get_avatar_loader().avatar_ready.disconnect(self._on_avatar_ready)
-        except RuntimeError, TypeError:
+        except (RuntimeError, TypeError):
             pass
+
+    def _ensure_avatar_loader_connection(self) -> None:
+        if getattr(self, "_avatar_loader_connected", False):
+            return
+        try:
+            get_avatar_loader().avatar_ready.connect(self._on_avatar_ready)
+            self._avatar_loader_connected = True
+        except Exception as e:
+            logger.debug("Failed connecting avatar loader: %s", e)
 
     def _ensure_registry_connection(self) -> None:
         reg = self._settings_registry or peek_settings_registry()
@@ -974,8 +984,17 @@ class CommitGraphWidget(QTableView):
             if not shiboken6.isValid(self):
                 return
             self.invalidate_paint_caches()
-        except RuntimeError, AttributeError:
+        except (RuntimeError, AttributeError):
             pass
+
+    @property
+    def remote_urls(self) -> list[str]:
+        """Exposes repository remote URLs for avatar resolution."""
+        if hasattr(self, "_remote_urls") and self._remote_urls:
+            return list(self._remote_urls)
+        if hasattr(self, "_model") and hasattr(self._model, "_remote_urls"):
+            return list(self._model._remote_urls)
+        return []
 
     @property
     def graph_scrollbar(self) -> QScrollBar:
@@ -1162,17 +1181,22 @@ class CommitGraphWidget(QTableView):
     def set_repo(self, repo: RepoHandle | None):
         self._repo = repo
         self._model._avatar_url_cache.clear()
+        self._ensure_avatar_loader_connection()
         self._ensure_registry_connection()
         if repo:
             try:
-                self._model._remote_urls = [
+                urls = [
                     r.url
                     for r in engine.list_remotes(repo)
                     if hasattr(r, "url") and isinstance(r.url, str)
                 ]
+                self._remote_urls = urls
+                self._model._remote_urls = urls
             except Exception:
+                self._remote_urls = []
                 self._model._remote_urls = []
         else:
+            self._remote_urls = []
             self._model._remote_urls = []
         self.reload_commits()
 

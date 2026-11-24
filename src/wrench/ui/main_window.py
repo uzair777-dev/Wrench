@@ -820,6 +820,15 @@ class MainWindow(QMainWindow):
                                     is_pinned=is_pinned,
                                     activate=False,
                                 )
+                        elif t_type == "worktrees":
+                            self.tab_container.add_tab(
+                                widget=self.worktree_panel,
+                                label=label or self.tr("Worktrees"),
+                                tab_type="worktrees",
+                                closable=closable,
+                                is_pinned=is_pinned,
+                                activate=False,
+                            )
                         else:
                             placeholder = QWidget(self)
                             layout = QVBoxLayout(placeholder)
@@ -3517,7 +3526,12 @@ class MainWindow(QMainWindow):
             else:
                 self.tab_container.set_current_index(idx)
         elif tab_type == "worktrees":
+            if hasattr(self, "worktree_panel") and self._current_repo:
+                self.worktree_panel.set_repo_path(str(self._current_repo.path))
             idx = self.tab_container.find_tab("worktrees", "")
+            if idx is not None and self.tab_container.widget(idx) is not self.worktree_panel:
+                self.tab_container.remove_tab(idx)
+                idx = None
             if idx is None:
                 self.tab_container.add_tab(
                     widget=self.worktree_panel,
@@ -3876,7 +3890,12 @@ class MainWindow(QMainWindow):
 
     def _on_manage_worktrees(self) -> None:
         """Open or activate the Worktrees tab."""
+        if hasattr(self, "worktree_panel") and self._current_repo:
+            self.worktree_panel.set_repo_path(str(self._current_repo.path))
         idx = self.tab_container.find_tab("worktrees", "")
+        if idx is not None and self.tab_container.widget(idx) is not self.worktree_panel:
+            self.tab_container.remove_tab(idx)
+            idx = None
         if idx is None:
             self.tab_container.add_tab(
                 widget=self.worktree_panel,

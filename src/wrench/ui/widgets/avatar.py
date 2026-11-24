@@ -98,6 +98,11 @@ def resolve_author_avatar_url(
         has_github = any("github.com" in (r or "").lower() for r in remote_urls)
         if has_github:
             candidate = norm_name
+            if not (
+                candidate
+                and re.match(r"^[a-zA-Z0-9](?:[a-zA-Z0-9]|-(?=[a-zA-Z0-9])){0,38}$", candidate)
+            ):
+                candidate = norm_email.split("@")[0] if norm_email else ""
             if candidate and re.match(
                 r"^[a-zA-Z0-9](?:[a-zA-Z0-9]|-(?=[a-zA-Z0-9])){0,38}$", candidate
             ):
@@ -235,6 +240,66 @@ class AvatarLoader(QObject):
         self._negative_cache.move_to_end(url)
         while len(self._negative_cache) > NEGATIVE_CACHE_MAX_SIZE:
             self._negative_cache.popitem(last=False)
+
+    def get_cached_avatar(
+        self,
+        url: str | None,
+        size: int = 40,
+    ) -> QPixmap | None:
+        """Returns loaded avatar pixmap if cached in-memory or on-disk, else None."""
+        if not url:
+            return None
+
+        # Check negative cache (recent 404 or failure)
+        now = time.time()
+        fail_time = self._negative_cache.get(url)
+        if fail_time is not None:
+            if now - fail_time < NEGATIVE_CACHE_TTL:
+                return None
+            else:
+                self._negative_cache.pop(url, None)
+
+        cache_key = (url, size)
+        disk_file = self._disk_cache_path(url)
+        disk_mtime: float | None = None
+        if disk_file.exists():
+            try:
+                disk_mtime = disk_file.stat().st_mtime
+            except OSError:
+                disk_mtime = None
+
+        # 1. Check in-memory cache (LRU)
+        if cache_key in self._mem_cache:
+            self._mem_cache.move_to_end(cache_key)
+            pixmap, mem_time = self._mem_cache[cache_key]
+            effective_time = disk_mtime if disk_mtime is not None else mem_time
+            is_stale = (now - effective_time) > CACHE_TTL_SECONDS
+            if not is_stale:
+                return pixmap
+            self._trigger_fetch(url, size)
+            return pixmap
+
+        # 2. Check disk cache
+        if disk_file.exists() and disk_mtime is not None:
+            is_stale = (now - disk_mtime) > CACHE_TTL_SECONDS
+            image = QImage(str(disk_file))
+            if not image.isNull():
+                pixmap = _make_circular_pixmap(image, size)
+                self._put_mem_cache(cache_key, pixmap, disk_mtime)
+                if not is_stale:
+                    return pixmap
+                self._trigger_fetch(url, size)
+                return pixmap
+            else:
+                logger.debug("Pruning corrupt avatar cache file: %s", disk_file)
+                try:
+                    disk_file.unlink()
+                except OSError:
+                    pass
+
+        # 3. Trigger in-flight background fetch if not already running
+        self._trigger_fetch(url, size)
+        return None
 
     def get_avatar(
         self,

@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (
     QHeaderView,
     QLabel,
     QPushButton,
+    QSizePolicy,
     QSplitter,
     QTableWidget,
     QTableWidgetItem,
@@ -55,40 +56,67 @@ class CommitDetailPanel(QWidget):
         header_widget = QWidget(self)
         header_layout = QVBoxLayout(header_widget)
         header_layout.setContentsMargins(4, 4, 4, 4)
-        header_layout.setSpacing(2)
+        header_layout.setSpacing(4)
 
-        meta_top = QHBoxLayout()
-        self.sha_label = QLabel("SHA: -", self)
-        self.sha_label.setFont(QFont("Monospace", 9))
-        self.sha_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        meta_top.addWidget(self.sha_label)
+        # Row 1: Author & Verification
+        row1_layout = QHBoxLayout()
+        row1_layout.setContentsMargins(0, 0, 0, 0)
+        row1_layout.setSpacing(8)
 
-        self.copy_sha_btn = QPushButton("Copy SHA", self)
-        self.copy_sha_btn.setFixedHeight(22)
-        self.copy_sha_btn.clicked.connect(self._copy_sha)
-        meta_top.addWidget(self.copy_sha_btn)
+        self.avatar_widget = AvatarWidget(size=32, parent=self)
+        self.avatar_widget.setVisible(False)
+        row1_layout.addWidget(self.avatar_widget)
+
+        author_vbox = QVBoxLayout()
+        author_vbox.setContentsMargins(0, 0, 0, 0)
+        author_vbox.setSpacing(1)
+
+        self.author_name_label = QLabel("-", self)
+        font_author = QFont()
+        font_author.setBold(True)
+        font_author.setPointSize(10)
+        self.author_name_label.setFont(font_author)
+        author_vbox.addWidget(self.author_name_label)
+
+        self.author_date_label = QLabel("-", self)
+        self.author_date_label.setStyleSheet("color: palette(placeholder-text); font-size: 11px;")
+        author_vbox.addWidget(self.author_date_label)
+
+        row1_layout.addLayout(author_vbox)
+        row1_layout.addStretch()
 
         self.signature_badge = QLabel(self)
         self.signature_badge.setFixedHeight(22)
         self.signature_badge.setVisible(False)
-        meta_top.addWidget(self.signature_badge)
+        row1_layout.addWidget(self.signature_badge)
 
-        meta_top.addStretch()
+        header_layout.addLayout(row1_layout)
 
-        self.avatar_widget = AvatarWidget(size=24, parent=self)
-        self.avatar_widget.setVisible(False)
-        meta_top.addWidget(self.avatar_widget)
+        # Row 2: Commit ID & Copy SHA Action
+        row2_layout = QHBoxLayout()
+        row2_layout.setContentsMargins(0, 2, 0, 0)
+        row2_layout.setSpacing(8)
 
-        self.author_date_label = QLabel("-", self)
-        self.author_date_label.setStyleSheet("color: palette(placeholder-text);")
-        meta_top.addWidget(self.author_date_label)
+        self.sha_label = QLabel("SHA: -", self)
+        self.sha_label.setFont(QFont("Monospace", 9))
+        self.sha_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        row2_layout.addWidget(self.sha_label)
 
-        header_layout.addLayout(meta_top)
+        self.copy_sha_btn = QPushButton("Copy SHA", self)
+        self.copy_sha_btn.setFixedHeight(22)
+        self.copy_sha_btn.clicked.connect(self._copy_sha)
+        row2_layout.addWidget(self.copy_sha_btn)
+
+        row2_layout.addStretch()
+        header_layout.addLayout(row2_layout)
 
         self.message_edit = QTextEdit(self)
         self.message_edit.setReadOnly(True)
-        self.message_edit.setMinimumHeight(48)
         self.message_edit.setPlaceholderText("Commit message...")
+        self.message_edit.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        self.message_edit.document().documentLayout().documentSizeChanged.connect(
+            self._adjust_message_edit_height
+        )
         header_layout.addWidget(self.message_edit)
 
         main_layout.addWidget(header_widget)
@@ -98,6 +126,7 @@ class CommitDetailPanel(QWidget):
 
         # File list table
         self.files_table = QTableWidget(self)
+        self.files_table.setMinimumHeight(85)
         self.files_table.setColumnCount(3)
         self.files_table.setHorizontalHeaderLabels(["Status", "File", "+/-"])
         self.files_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
@@ -110,6 +139,7 @@ class CommitDetailPanel(QWidget):
 
         # DiffWidget
         self.diff_widget = DiffWidget(self)
+        self.diff_widget.setMinimumHeight(150)
         self.diff_widget.full_diff_requested.connect(self._on_full_diff_requested)
         self.splitter.addWidget(self.diff_widget)
 
@@ -125,14 +155,35 @@ class CommitDetailPanel(QWidget):
         """
         if enabled:
             self.splitter.setOrientation(Qt.Orientation.Vertical)
+            self.splitter.setSizes([90, 320])
             self.splitter.setStretchFactor(0, 0)
             self.splitter.setStretchFactor(1, 1)
             self.setMinimumWidth(280)
         else:
             self.splitter.setOrientation(Qt.Orientation.Horizontal)
+            self.splitter.setSizes([120, 320])
             self.splitter.setStretchFactor(0, 1)
             self.splitter.setStretchFactor(1, 2)
             self.setMinimumWidth(0)
+
+    def _adjust_message_edit_height(self, *_) -> None:
+        """Dynamically adjusts message box height to fit wrapped text with bounded upper cap."""
+        if not hasattr(self, "message_edit"):
+            return
+        doc = self.message_edit.document()
+        content_h = int(doc.size().height()) + 14
+        panel_h = self.height()
+        max_allowed = max(80, min(140, int(panel_h * 0.28))) if panel_h > 200 else 130
+        target_h = max(34, min(content_h, max_allowed))
+        self.message_edit.setFixedHeight(target_h)
+        if content_h > max_allowed:
+            self.message_edit.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        else:
+            self.message_edit.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._adjust_message_edit_height()
 
     def closeEvent(self, event) -> None:
         if hasattr(self, "avatar_widget"):
@@ -294,10 +345,13 @@ class CommitDetailPanel(QWidget):
         if not commit or not self._repo:
             self.avatar_widget.setVisible(False)
             self.signature_badge.setVisible(False)
+            self.author_name_label.setText("-")
             self.sha_label.setText("SHA: -")
+            self.sha_label.setToolTip("")
             self.author_date_label.setText("-")
+            self.author_date_label.setToolTip("")
             self.message_edit.clear()
-            self.message_edit.setFixedHeight(52)
+            self._adjust_message_edit_height()
             self._clear_files_table()
             self.diff_widget.set_diff_model(
                 engine.Diff(path="", is_binary=False, hunks=[]), title="No commit selected"
@@ -363,15 +417,24 @@ class CommitDetailPanel(QWidget):
             self.signature_badge.setStyleSheet(get_signature_badge_qss("unsigned", is_dark))
             self.signature_badge.setVisible(True)
 
-        self.sha_label.setText(f"SHA: {commit.sha[:8]} ({commit.sha})")
+        full_sha = commit.sha
+        short_sha = commit.sha[:8]
+        self.sha_label.setText(f"SHA: {short_sha}")
+        self.sha_label.setToolTip(f"Full SHA: {full_sha}")
 
-        self.author_date_label.setText(
-            f"{commit.author_name} <{commit.author_email}> on {commit.author_date}"
+        auth_name = commit.author_name or "Unknown"
+        auth_email = commit.author_email or ""
+        auth_date = (
+            commit.author_date[:19].replace("T", " ") if commit.author_date else "Unknown Date"
         )
+        self.author_name_label.setText(auth_name)
+        if auth_email:
+            self.author_date_label.setText(f"<{auth_email}> • {auth_date}")
+        else:
+            self.author_date_label.setText(auth_date)
+        self.author_date_label.setToolTip(f"Author: {auth_name} <{auth_email}>\nDate: {auth_date}")
         self.message_edit.setPlainText(commit.message)
-        lines = [line for line in commit.message.strip().splitlines() if line.strip()]
-        target_h = max(52, min(180, len(lines) * 20 + 20))
-        self.message_edit.setFixedHeight(target_h)
+        self._adjust_message_edit_height()
 
         # Load file stats
         try:

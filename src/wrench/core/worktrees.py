@@ -111,7 +111,8 @@ def format_worktree_path(
         branch=branch_slug,
         branch_name=branch_name,
     )
-    return (p.parent / resolved_rel).resolve()
+    # Resolve relative to repo directory (p)
+    return (p / resolved_rel).resolve()
 
 
 def add_worktree(

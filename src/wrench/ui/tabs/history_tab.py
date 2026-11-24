@@ -13,7 +13,8 @@ from __future__ import annotations
 
 import logging
 
-from PySide6.QtCore import QByteArray, QEvent, QSignalBlocker, Qt, QTimer, Signal
+import shiboken6
+from PySide6.QtCore import QByteArray, QEvent, QSignalBlocker, Qt, QTimer, Signal, Slot
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -37,6 +38,7 @@ from wrench.ui.commit_graph.graph_widget import CommitGraphWidget
 from wrench.ui.history_view import (
     RefsSidebarWidget,
 )
+from wrench.ui.widgets.avatar import get_avatar_loader
 
 logger = logging.getLogger(__name__)
 
@@ -159,8 +161,13 @@ class HistoryTab(QWidget):
 
         # Commit Graph Widget
         self.graph_widget = CommitGraphWidget(self.graph_container)
+        self.graph_widget._conn = getattr(self, "_conn", getattr(self.parent(), "_conn", None))
         self.graph_widget.set_three_column_mode(use_3col)
         self.graph_placeholder = self.graph_widget  # Backwards-compatible alias
+        try:
+            get_avatar_loader().avatar_ready.connect(self._on_avatar_ready)
+        except Exception as e:
+            logger.debug("Failed connecting avatar loader in history tab: %s", e)
         self.graph_widget.commit_selected.connect(self._on_commit_selected)
         self.graph_widget.rebase_requested.connect(self.rebase_requested)
         self.graph_widget.interactive_rebase_requested.connect(self.interactive_rebase_requested)
@@ -401,11 +408,21 @@ class HistoryTab(QWidget):
     def closeEvent(self, event) -> None:
         if hasattr(self, "_debounce_timer"):
             self._debounce_timer.stop()
+        try:
+            get_avatar_loader().avatar_ready.disconnect(self._on_avatar_ready)
+        except (RuntimeError, TypeError, AttributeError):
+            pass
         if hasattr(self, "graph_widget"):
             self.graph_widget.close()
         if hasattr(self, "detail_panel"):
             self.detail_panel.close()
         super().closeEvent(event)
+
+    @Slot(str, int)
+    @Slot()
+    def _on_avatar_ready(self, _url: str = "", _size: int = 0) -> None:
+        if hasattr(self, "graph_widget") and shiboken6.isValid(self.graph_widget):
+            self.graph_widget.invalidate_paint_caches()
 
     def changeEvent(self, event: QEvent) -> None:
         super().changeEvent(event)

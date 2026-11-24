@@ -48,13 +48,13 @@ def test_format_worktree_path(tmp_path: Path) -> None:
 
     # Default template resolves relative to repo_dir's parent
     path = engine.format_worktree_path(repo_dir, "feature/awesome-ui")
-    expected = (tmp_path.parent / "my-project-feature-awesome-ui").resolve()
+    expected = (tmp_path / "my-project-feature-awesome-ui").resolve()
     assert Path(path) == expected
 
     # Custom template
     custom_tmpl = "../worktrees/{repo_name}/{branch_name}"
     path_custom = engine.format_worktree_path(repo_dir, "hotfix/urgent", custom_tmpl)
-    expected_custom = (tmp_path.parent / "worktrees" / "my-project" / "hotfix" / "urgent").resolve()
+    expected_custom = (tmp_path / "worktrees" / "my-project" / "hotfix" / "urgent").resolve()
     assert Path(path_custom) == expected_custom
 
 

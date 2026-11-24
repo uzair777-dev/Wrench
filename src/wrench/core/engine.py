@@ -1828,86 +1828,6 @@ class GitEngine:
         target_path = target.path if isinstance(target, RepoHandle) else Path(target)
         return read_ops.get_commit_details(target_path, sha)
 
-    def run_terminal_command(
-        self, subcommand_args: list[str] | str, repo: RepoHandle | Path | str | None = None
-    ) -> tuple[int, str, str, float]:
-        """Execute non-interactive git CLI command safely under SEC-1..7."""
-        target = repo or self.repo
-        if target is None:
-            return (-1, "", "No active repository", 0.0)
-        target_path = target.path if isinstance(target, RepoHandle) else Path(target)
-        return run_git_terminal_command(target_path, subcommand_args)
-
-    def run_git_terminal_command(
-        self, subcommand_args: list[str] | str, repo: RepoHandle | Path | str | None = None
-    ) -> tuple[int, str, str, float]:
-        """Alias for run_terminal_command."""
-        return self.run_terminal_command(subcommand_args, repo)
-
-
-def run_git_terminal_command(
-    repo_path: Path | str,
-    subcommand_args: list[str] | str,
-    timeout: float = 15.0,
-) -> tuple[int, str, str, float]:
-    """Execute non-interactive git CLI command safely under SEC-1..7.
-
-    Returns (returncode, stdout, stderr, duration_ms).
-    """
-    import os
-    import shlex
-    import subprocess
-    import time
-
-    clean_path = Path(repo_path)
-    if not clean_path.is_dir():
-        return (-1, "", f"Directory not found: {clean_path}", 0.0)
-
-    # Filter out empty or whitespace-only args
-    if isinstance(subcommand_args, str):
-        try:
-            tokens = shlex.split(subcommand_args)
-        except ValueError as exc:
-            return (-1, "", f"Invalid command syntax: {exc}", 0.0)
-        if tokens and tokens[0] == "git":
-            tokens = tokens[1:]
-        args = tokens
-    else:
-        args = [arg for arg in subcommand_args if arg]
-        if args and args[0] == "git":
-            args = args[1:]
-
-    if not args:
-        return (0, "", "", 0.0)
-
-    cmd = ["git", *args]
-    env = {
-        **os.environ,
-        "GIT_TERMINAL_PROMPT": "0",
-        "GIT_OPTIONAL_LOCKS": "0",
-        "LC_ALL": "C",
-    }
-
-    start = time.perf_counter()
-    try:
-        res = subprocess.run(
-            cmd,
-            cwd=str(clean_path),
-            capture_output=True,
-            text=True,
-            shell=False,
-            timeout=timeout,
-            env=env,
-        )
-        duration_ms = (time.perf_counter() - start) * 1000.0
-        return (res.returncode, res.stdout, res.stderr, duration_ms)
-    except subprocess.TimeoutExpired:
-        duration_ms = (time.perf_counter() - start) * 1000.0
-        return (-1, "", f"Command timed out after {timeout:.1f}s: {' '.join(cmd)}", duration_ms)
-    except Exception as exc:
-        duration_ms = (time.perf_counter() - start) * 1000.0
-        return (-1, "", f"Command failed: {exc}", duration_ms)
-
     def list_worktrees(self, repo: RepoHandle | Path | str | None = None) -> list[WorktreeInfo]:
         """List active worktrees for the repository (VP-3, FR-1.13)."""
         target = repo or self.repo
@@ -2043,6 +1963,86 @@ def run_git_terminal_command(
     def list_signing_keys(self) -> list[SigningKey]:
         """List local GPG, SSH, or X.509 keys for commit signing (FR-2.9)."""
         return signing_ops.list_available_signing_keys()
+
+    def run_terminal_command(
+        self, subcommand_args: list[str] | str, repo: RepoHandle | Path | str | None = None
+    ) -> tuple[int, str, str, float]:
+        """Execute non-interactive git CLI command safely under SEC-1..7."""
+        target = repo or self.repo
+        if target is None:
+            return (-1, "", "No active repository", 0.0)
+        target_path = target.path if isinstance(target, RepoHandle) else Path(target)
+        return run_git_terminal_command(target_path, subcommand_args)
+
+    def run_git_terminal_command(
+        self, subcommand_args: list[str] | str, repo: RepoHandle | Path | str | None = None
+    ) -> tuple[int, str, str, float]:
+        """Alias for run_terminal_command."""
+        return self.run_terminal_command(subcommand_args, repo)
+
+
+def run_git_terminal_command(
+    repo_path: Path | str,
+    subcommand_args: list[str] | str,
+    timeout: float = 15.0,
+) -> tuple[int, str, str, float]:
+    """Execute non-interactive git CLI command safely under SEC-1..7.
+
+    Returns (returncode, stdout, stderr, duration_ms).
+    """
+    import os
+    import shlex
+    import subprocess
+    import time
+
+    clean_path = Path(repo_path)
+    if not clean_path.is_dir():
+        return (-1, "", f"Directory not found: {clean_path}", 0.0)
+
+    # Filter out empty or whitespace-only args
+    if isinstance(subcommand_args, str):
+        try:
+            tokens = shlex.split(subcommand_args)
+        except ValueError as exc:
+            return (-1, "", f"Invalid command syntax: {exc}", 0.0)
+        if tokens and tokens[0] == "git":
+            tokens = tokens[1:]
+        args = tokens
+    else:
+        args = [arg for arg in subcommand_args if arg]
+        if args and args[0] == "git":
+            args = args[1:]
+
+    if not args:
+        return (0, "", "", 0.0)
+
+    cmd = ["git", *args]
+    env = {
+        **os.environ,
+        "GIT_TERMINAL_PROMPT": "0",
+        "GIT_OPTIONAL_LOCKS": "0",
+        "LC_ALL": "C",
+    }
+
+    start = time.perf_counter()
+    try:
+        res = subprocess.run(
+            cmd,
+            cwd=str(clean_path),
+            capture_output=True,
+            text=True,
+            shell=False,
+            timeout=timeout,
+            env=env,
+        )
+        duration_ms = (time.perf_counter() - start) * 1000.0
+        return (res.returncode, res.stdout, res.stderr, duration_ms)
+    except subprocess.TimeoutExpired:
+        duration_ms = (time.perf_counter() - start) * 1000.0
+        return (-1, "", f"Command timed out after {timeout:.1f}s: {' '.join(cmd)}", duration_ms)
+    except Exception as exc:
+        duration_ms = (time.perf_counter() - start) * 1000.0
+        return (-1, "", f"Command failed: {exc}", duration_ms)
 
 
 def get_branch_sync_status(repo: RepoHandle | Path | str) -> BranchSyncStatus:

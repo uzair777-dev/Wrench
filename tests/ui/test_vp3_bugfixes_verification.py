@@ -354,3 +354,303 @@ def test_avatar_pixmap_cache_and_loader(qtbot):
     assert not pix.isNull()
     assert pix.width() == 20
     assert pix.height() == 20
+
+
+def test_round3_worktree_sibling_path_resolution(tmp_path):
+    """Test Round 3 Issue 1: Destination worktree resolves as sibling in parent folder."""
+    from wrench.core.worktrees import format_worktree_path
+
+    repo_path = tmp_path / "Projects" / "astryx"
+    repo_path.mkdir(parents=True)
+
+    dest = format_worktree_path(repo_path, "feature-worktree")
+    expected = (tmp_path / "Projects" / "astryx-feature-worktree").resolve()
+    assert dest == expected
+
+
+def test_round3_git_engine_facade_methods_exist():
+    """Test Round 3 Issue 4: GitEngine has all worktree & signing methods."""
+    from wrench.core.engine import GitEngine
+
+    engine = GitEngine()
+    methods = [
+        "list_worktrees",
+        "format_worktree_path",
+        "add_worktree",
+        "lock_worktree",
+        "unlock_worktree",
+        "remove_worktree",
+        "prune_worktrees",
+        "cross_worktree_cherry_pick",
+        "verify_commit_signatures",
+        "list_signing_keys",
+        "run_terminal_command",
+        "run_git_terminal_command",
+    ]
+    for m in methods:
+        assert hasattr(engine, m), f"GitEngine missing facade method: {m}"
+        assert callable(getattr(engine, m)), f"GitEngine member {m} is not callable"
+
+
+def test_round3_signature_verification_handles_zero_oid():
+    """Test Round 3 Issue 5: Zero-OID uncommitted WIP commits bypass git log gracefully."""
+    from wrench.core.signing_ops import verify_commit_signatures_batch
+
+    res = verify_commit_signatures_batch("/tmp", ["0000000000000000000000000000000000000000", ""])
+    assert "0000000000000000000000000000000000000000" in res
+    wip_status = res["0000000000000000000000000000000000000000"]
+    assert wip_status.state == "unsigned"
+    assert "WIP" in wip_status.validity_details
+
+
+def test_round3_detail_panel_two_row_card_header(qtbot):
+    """Test Round 3 Issue 3: Detail panel has 2-row card with author name, email, date, SHA."""
+    panel = CommitDetailPanel()
+    qtbot.addWidget(panel)
+    panel.show()
+
+    assert hasattr(panel, "author_name_label")
+    assert hasattr(panel, "author_date_label")
+    assert hasattr(panel, "sha_label")
+    assert hasattr(panel, "copy_sha_btn")
+    assert hasattr(panel, "signature_badge")
+    assert hasattr(panel, "avatar_widget")
+
+    mock_repo = MagicMock()
+    mock_repo.path = "/tmp/repo"
+    panel.set_repo(mock_repo)
+
+    commit = Commit(
+        sha="51af4e7d3bf0a89d71e19339e083c27635c10ad8",
+        author_name="uzair777-dev",
+        author_email="uzairshaikhking777@gmail.com",
+        author_date="2026-11-23 15:27:12",
+        message="feat: VP 03 feature complete",
+        parent_shas=(),
+    )
+    panel.set_commit(commit)
+
+    assert panel.author_name_label.text() == "uzair777-dev"
+    assert "uzairshaikhking777@gmail.com" in panel.author_date_label.text()
+    assert "2026-11-23" in panel.author_date_label.text()
+    assert panel.sha_label.text() == "SHA: 51af4e7d"
+    assert "51af4e7d3bf0a89d71e19339e083c27635c10ad8" in panel.sha_label.toolTip()
+
+
+def test_round3_avatar_url_resolution_heuristics():
+    """Test Round 3 Issue 2: Avatar resolution resolves GitHub handles & email prefixes."""
+    from wrench.ui.widgets.avatar import resolve_author_avatar_url
+
+    remotes = ["git@github.com:uzair777-dev/wrench.git"]
+    # Direct username handle
+    u1 = resolve_author_avatar_url("uzair777-dev", "uzair@example.com", remotes)
+    assert u1 == "https://github.com/uzair777-dev.png?size=80"
+
+    # Full name with spaces falls back to email handle
+    u2 = resolve_author_avatar_url("Junio C Hamano", "gitster@pobox.com", remotes)
+    assert u2 == "https://github.com/gitster.png?size=80"
+
+
+def test_round4_avatar_loader_get_cached_avatar_and_cache_hygiene():
+    """Test Round 4: AvatarLoader.get_cached_avatar and non-poisoning of in-flight avatars."""
+    from wrench.ui.history_view import AvatarPixmapCache
+    from wrench.ui.widgets.avatar import get_avatar_loader
+
+    loader = get_avatar_loader()
+    url = "https://example.com/nonexistent_test_avatar_round4.png"
+
+    # Uncached URL returns None (triggers background fetch, doesn't return initials as fake avatar)
+    cached = loader.get_cached_avatar(url, size=16)
+    assert cached is None
+
+    # AvatarPixmapCache must NOT cache in-flight avatar as a permanent initials tile
+    cache = AvatarPixmapCache(maxsize=16)
+    pm = cache.get_or_render("Test User", "testuser@example.com", 20, "#58a6ff", remote_urls=[])
+    assert pm is not None
+    assert not pm.isNull()
+    # Cache key for email without URL is cached definitively
+    assert ("testuser@example.com", 20, "#58a6ff", True) in cache._cache
+
+
+def test_round4_commit_detail_message_flex_sizing(qtbot):
+    """Test Round 4: Detail panel commit message flexes dynamically based on content."""
+    panel = CommitDetailPanel()
+    qtbot.addWidget(panel)
+    panel.show()
+    panel.resize(400, 500)
+
+    mock_repo = MagicMock()
+    mock_repo.path = "/tmp/repo"
+    panel.set_repo(mock_repo)
+
+    # 1. Single-line commit message
+    c1 = Commit(
+        sha="1111111111111111111111111111111111111111",
+        author_name="Dev",
+        author_email="dev@example.com",
+        author_date="2026-11-24 10:00:00",
+        message="Short single-line commit message",
+        parent_shas=(),
+    )
+    panel.set_commit(c1)
+    h_single = panel.message_edit.height()
+    assert 30 <= h_single <= 60
+
+    # 2. Multi-line commit message with long wrapped paragraph
+    long_msg = (
+        "This is a longer commit message description that wraps across multiple lines.\n"
+        "It provides comprehensive architectural details about the implementation.\n"
+        "It states the rules, constraints, edge cases, and verification results.\n"
+        "Another paragraph detailing performance implications and UI rendering behaviors.\n"
+        "Final concluding statement for the commit."
+    )
+    c2 = Commit(
+        sha="2222222222222222222222222222222222222222",
+        author_name="Dev",
+        author_email="dev@example.com",
+        author_date="2026-11-24 10:00:00",
+        message=long_msg,
+        parent_shas=(),
+    )
+    panel.set_commit(c2)
+    h_multi = panel.message_edit.height()
+    # Multi-line message must flex to be substantially taller than single-line message
+    assert h_multi > h_single + 30
+    assert h_multi >= 90
+
+
+def test_round4_worktree_tab_management_and_stale_placeholder_removal(qtbot):
+    """Test Round 4: Worktree tab placeholder is purged and replaced with WorktreePanel."""
+    from PySide6.QtWidgets import QLabel, QWidget
+
+    bar = TabContainer()
+    qtbot.addWidget(bar)
+
+    panel_widget = QWidget()
+    # Simulate a stale placeholder tab named 'worktrees'
+    placeholder = QWidget()
+    _ = QLabel("Worktrees coming soon", placeholder)
+    bar.add_tab(
+        widget=placeholder,
+        label="Worktrees",
+        tab_type="worktrees",
+        closable=True,
+    )
+
+    idx = bar.find_tab("worktrees", "")
+    assert idx is not None
+    assert bar.widget(idx) is not panel_widget
+
+    # Clean up stale placeholder and install real panel
+    bar.remove_tab(idx)
+    bar.add_tab(
+        widget=panel_widget,
+        label="Worktrees",
+        tab_type="worktrees",
+        closable=True,
+    )
+
+    new_idx = bar.find_tab("worktrees", "")
+    assert new_idx is not None
+    assert bar.widget(new_idx) is panel_widget
+
+
+def test_round5_worktree_panel_card_styling_and_actions(qtbot):
+    """Test Round 5: WorktreePanel displays spacious cards (50px+ height) and action buttons."""
+    from unittest.mock import MagicMock
+
+    from wrench.core.models import WorktreeInfo
+    from wrench.ui.widgets.worktree_panel import WorktreePanel
+
+    engine = MagicMock()
+    settings = MagicMock()
+    settings.is_enabled.return_value = True
+
+    panel = WorktreePanel(engine, settings)
+    qtbot.addWidget(panel)
+    panel.show()
+
+    wt1 = WorktreeInfo(
+        path="/tmp/fake-repo",
+        head_oid="1111222233334444555566667777888899990000",
+        branch_name="main",
+        is_bare=False,
+        is_locked=False,
+        lock_reason=None,
+        is_prunable=False,
+        is_main=True,
+    )
+    wt2 = WorktreeInfo(
+        path="/tmp/fake-repo-feature",
+        head_oid="4444333322221111000099998888777766665555",
+        branch_name="feature-worktree",
+        is_bare=False,
+        is_locked=False,
+        lock_reason=None,
+        is_prunable=False,
+        is_main=False,
+    )
+
+    panel._repo_path = "/tmp/fake-repo"
+    panel._worktrees = [wt1, wt2]
+    panel._rebuild_tree()
+
+    assert panel.lbl_count.text() == "2"
+    assert panel.btn_add.text() == "+ Add Worktree"
+    assert panel.tree.topLevelItemCount() == 2
+
+    item0 = panel.tree.topLevelItem(0)
+    item1 = panel.tree.topLevelItem(1)
+
+    # Size hint must be at least 50px tall for spacious layout
+    assert item0.sizeHint(0).height() >= 50
+    assert item1.sizeHint(0).height() >= 50
+
+    # Test double click emits open_worktree_requested
+    with qtbot.waitSignal(panel.open_worktree_requested, timeout=1000) as sig:
+        panel.tree.itemDoubleClicked.emit(item1, 0)
+    assert sig.args == ["/tmp/fake-repo-feature"]
+
+
+def test_round5_commit_detail_flex_proportions_and_minimum_heights(qtbot):
+    """Test Round 5: DetailPanel caps huge commit message height and guards bottom sections."""
+    from unittest.mock import MagicMock
+
+    panel = CommitDetailPanel()
+    qtbot.addWidget(panel)
+    panel.resize(320, 600)
+
+    mock_repo = MagicMock()
+    mock_repo.path = "/tmp/repo"
+    panel.set_repo(mock_repo)
+    panel.show()
+
+    # Minimum heights on files_table and diff_widget
+    assert panel.files_table.minimumHeight() >= 85
+    assert panel.diff_widget.minimumHeight() >= 150
+
+    # Extremely long commit message (e.g. 25 lines like Christopher Chedeau's commit)
+    huge_msg = "\n".join(
+        [f"Line {i}: This is a long commit message paragraph description." for i in range(25)]
+    )
+    c = Commit(
+        sha="44ac32b600000000000000000000000000000000",
+        author_name="Christopher",
+        author_email="chris@example.com",
+        author_date="2026-11-24 10:00:00",
+        message=huge_msg,
+        parent_shas=(),
+    )
+    panel.set_commit(c)
+
+    # Message box must be capped at <= 140px (never 300px+ crushing other widgets)
+    msg_h = panel.message_edit.height()
+    assert msg_h <= 140
+    assert msg_h >= 80
+
+    # Vertical compact layout sets splitter sizes and vertical orientation
+    panel.set_compact_vertical_layout(True)
+    assert panel.splitter.orientation() == Qt.Orientation.Vertical
+    sizes = panel.splitter.sizes()
+    assert sizes[0] >= 85  # files_table not crushed
+    assert sizes[1] >= 150  # diff_widget has plenty of room

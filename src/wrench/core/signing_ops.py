@@ -118,12 +118,29 @@ def verify_commit_signatures_batch(
     if not missing_oids:
         return results
 
+    valid_missing_oids: list[str] = []
+    for oid in missing_oids:
+        clean_oid = (oid or "").strip()
+        if not clean_oid or len(clean_oid) < 4 or set(clean_oid) == {"0"}:
+            status = SignatureStatus(
+                oid=oid,
+                state="unsigned",
+                validity_details="Uncommitted changes (WIP)" if set(clean_oid) == {"0"} else "",
+            )
+            results[oid] = status
+            _SIGNATURE_CACHE[(repo_str, oid)] = status
+        else:
+            valid_missing_oids.append(clean_oid)
+
+    if not valid_missing_oids:
+        return results
+
     # Execute single batch git log query with --no-walk
     cmd = [
         "log",
         "--no-walk",
         "--format=%H|%G?|%GS|%GF|%GK|%GT",
-        *missing_oids,
+        *valid_missing_oids,
     ]
     try:
         res = write_ops.run_git(repo_str, cmd, check=True)
@@ -138,7 +155,7 @@ def verify_commit_signatures_batch(
         new_statuses = {}
 
     # Store in bounded LRU cache
-    for oid in missing_oids:
+    for oid in valid_missing_oids:
         status = new_statuses.get(
             oid,
             SignatureStatus(oid=oid, state="unsigned"),

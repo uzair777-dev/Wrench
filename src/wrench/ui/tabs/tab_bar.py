@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from typing import Callable
 
 import shiboken6
-from PySide6.QtCore import QEvent, QMimeData, QPoint, Qt, Signal
+from PySide6.QtCore import QEvent, QMimeData, QObject, QPoint, Qt, Signal
 from PySide6.QtGui import (
     QDrag,
     QIcon,
@@ -414,7 +414,56 @@ class TabStripWidget(QWidget):
         event.acceptProposedAction()
 
 
-_SINGLETON_TAB_TYPES = frozenset({"changes", "history", "snapshots"})
+_SINGLETON_TAB_TYPES = frozenset({"changes", "history", "snapshots", "worktrees"})
+
+
+class TabLifecycle:
+    """Protocol for widgets hosted in TabContainer."""
+
+    def tab_activated(self) -> None:
+        """Invoked immediately after the tab becomes the active widget."""
+        ...
+
+    def tab_deactivated(self) -> None:
+        """Invoked immediately before switching away from this tab."""
+        ...
+
+
+class SafeStackedWidget(QStackedWidget):
+    """QStackedWidget subclass enforcing strict single-active-child mutual exclusivity.
+
+    Installs an event filter on all managed children to intercept and suppress
+    out-of-band QShowEvent notifications on inactive widgets.
+    """
+
+    def addWidget(self, widget: QWidget) -> int:
+        idx = super().addWidget(widget)
+        if widget is not None and shiboken6.isValid(widget):
+            widget.installEventFilter(self)
+            if idx != self.currentIndex():
+                widget.hide()
+        return idx
+
+    def insertWidget(self, index: int, widget: QWidget) -> int:
+        idx = super().insertWidget(index, widget)
+        if widget is not None and shiboken6.isValid(widget):
+            widget.installEventFilter(self)
+            if idx != self.currentIndex():
+                widget.hide()
+        return idx
+
+    def removeWidget(self, widget: QWidget) -> None:
+        if widget is not None and shiboken6.isValid(widget):
+            widget.removeEventFilter(self)
+        super().removeWidget(widget)
+
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        if event.type() == QEvent.Type.Show:
+            if isinstance(watched, QWidget) and shiboken6.isValid(watched):
+                if self.indexOf(watched) != -1 and watched != self.currentWidget():
+                    watched.hide()
+                    return True
+        return super().eventFilter(watched, event)
 
 
 class TabContainer(QWidget):
@@ -452,7 +501,7 @@ class TabContainer(QWidget):
         )
         self._strip_layout.setSpacing(2)
 
-        self._stack = QStackedWidget(self)
+        self._stack = SafeStackedWidget(self)
         self._loading_overlay = TabLoadingOverlay(self._stack)
         self._main_layout.addWidget(self._strip_widget)
         self._main_layout.addWidget(self._stack, 1)
@@ -805,9 +854,36 @@ class TabContainer(QWidget):
 
     def set_current_index(self, index: int) -> None:
         if 0 <= index < len(self._tabs):
+            old_widget = self.current_widget()
             self._current_index = index
-            self.ensure_loaded(index)
-            self._stack.setCurrentWidget(self._tabs[index].widget)
+            target_widget = self.ensure_loaded(index)
+            if target_widget and shiboken6.isValid(target_widget):
+                self._stack.setCurrentWidget(target_widget)
+            for i in range(self._stack.count()):
+                child = self._stack.widget(i)
+                if child and shiboken6.isValid(child) and child != target_widget:
+                    child.hide()
+
+            if old_widget != target_widget:
+                if (
+                    old_widget
+                    and shiboken6.isValid(old_widget)
+                    and hasattr(old_widget, "tab_deactivated")
+                ):
+                    try:
+                        old_widget.tab_deactivated()
+                    except Exception as e:
+                        logger.exception("Error in tab_deactivated: %s", e)
+                if (
+                    target_widget
+                    and shiboken6.isValid(target_widget)
+                    and hasattr(target_widget, "tab_activated")
+                ):
+                    try:
+                        target_widget.tab_activated()
+                    except Exception as e:
+                        logger.exception("Error in tab_activated: %s", e)
+
             for i, btn in enumerate(self._tab_buttons):
                 btn.set_active(i == index)
             self.current_changed.emit(index)

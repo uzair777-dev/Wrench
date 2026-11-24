@@ -346,7 +346,7 @@ class CommitGraphRowDelegate(QStyledItemDelegate):
         painter.setFont(font)
         metrics = QFontMetrics(font)
 
-        avail_w = rect.width() - 40
+        avail_w = rect.width() - 28
         disp_text = metrics.elidedText(pill_text, Qt.TextElideMode.ElideRight, avail_w)
         pill_w = metrics.horizontalAdvance(disp_text) + 26
         pill_h = 20
@@ -959,11 +959,12 @@ class HistoryView(QWidget):
         self.detail_panel = self.inspector_dock  # Alias for backward compatibility
         self.content_splitter.addWidget(self.inspector_dock)
 
-        # Splitter sizing: 230px sidebar, 600px graph, 380px inspector
-        self.content_splitter.setSizes([230, 600, 380])
+        # Splitter sizing: 230px sidebar, 600px graph, 480px inspector
+        self.content_splitter.setSizes([230, 600, 480])
         self.content_splitter.setStretchFactor(0, 0)
-        self.content_splitter.setStretchFactor(1, 1)
-        self.content_splitter.setStretchFactor(2, 0)
+        self.content_splitter.setStretchFactor(1, 3)
+        self.content_splitter.setStretchFactor(2, 2)
+        self.content_splitter.setChildrenCollapsible(False)
 
     def set_repo(self, repo: RepoHandle | None) -> None:
         self._repo = repo

@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QMenu,
     QMessageBox,
     QPushButton,
+    QStyledItemDelegate,
     QToolButton,
     QTreeWidget,
     QTreeWidgetItem,
@@ -29,6 +30,15 @@ from wrench.ui.dialogs.add_worktree_dialog import AddWorktreeDialog
 from wrench.ui.workers import run_in_background
 
 logger = logging.getLogger(__name__)
+
+
+class SuppressTextDelegate(QStyledItemDelegate):
+    """Suppresses delegate text painting so underlying text does not double-draw
+    beneath custom item widgets.
+    """
+
+    def paint(self, painter: Any, option: Any, index: Any) -> None:
+        pass
 
 
 class WorktreeCardWidget(QFrame):
@@ -191,6 +201,7 @@ class WorktreePanel(QWidget):
         self._repo_path: str | None = None
         self._worktrees: list[WorktreeInfo] = []
         self._load_generation = 0
+        self._needs_refresh: bool = False
 
         self._init_ui()
 
@@ -292,6 +303,7 @@ class WorktreePanel(QWidget):
 
         # Tree widget
         self.tree = QTreeWidget(self)
+        self.tree.setItemDelegateForColumn(0, SuppressTextDelegate(self.tree))
         self.tree.setHeaderHidden(True)
         self.tree.setIndentation(0)
         self.tree.setRootIsDecorated(False)
@@ -314,8 +326,24 @@ class WorktreePanel(QWidget):
             self.tree.clear()
             self.lbl_count.setText("0")
             self.empty_banner.setVisible(False)
+            self._needs_refresh = False
             return
-        self.refresh()
+
+        if self.isVisible() or self.parent() is None:
+            self.refresh()
+        else:
+            self._needs_refresh = True
+
+    def showEvent(self, event: Any) -> None:
+        super().showEvent(event)
+        if getattr(self, "_needs_refresh", False):
+            self._needs_refresh = False
+            self.refresh()
+
+    def tab_activated(self) -> None:
+        if getattr(self, "_needs_refresh", False):
+            self._needs_refresh = False
+            self.refresh()
 
     def refresh(self) -> None:
         """Query worktrees asynchronously in background."""
@@ -323,9 +351,7 @@ class WorktreePanel(QWidget):
             return
 
         if self._settings and not self._settings.is_enabled("worktrees.enabled", self._repo_path):
-            self.setVisible(False)
             return
-        self.setVisible(True)
 
         self._load_generation += 1
         gen = self._load_generation
@@ -509,6 +535,8 @@ class WorktreePanel(QWidget):
     def _on_setting_changed(self, key: str, value: Any, repo_path: Any = None) -> None:
         if key == "worktrees.enabled":
             enabled = bool(value)
-            self.setVisible(enabled)
             if enabled and self._repo_path:
-                self.refresh()
+                if self.isVisible():
+                    self.refresh()
+                else:
+                    self._needs_refresh = True

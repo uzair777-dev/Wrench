@@ -212,10 +212,12 @@ class HistoryTab(QWidget):
         if use_3col:
             self.graph_container.setMinimumWidth(420)
             self.detail_panel.set_compact_vertical_layout(True)
-            self.content_splitter.setSizes([220, 680, 380])
+            self.detail_panel.setMinimumWidth(320)
+            self.content_splitter.setSizes([220, 680, 480])
             self.content_splitter.setStretchFactor(0, 0)
-            self.content_splitter.setStretchFactor(1, 1)
-            self.content_splitter.setStretchFactor(2, 0)
+            self.content_splitter.setStretchFactor(1, 3)
+            self.content_splitter.setStretchFactor(2, 2)
+            self.content_splitter.setChildrenCollapsible(False)
         else:
             self.content_splitter.setStretchFactor(0, 3)
             self.content_splitter.setStretchFactor(1, 2)
@@ -373,7 +375,7 @@ class HistoryTab(QWidget):
                 for _col in range(hdr.count()):
                     hdr.setSectionResizeMode(_col, QHeaderView.ResizeMode.Interactive)
                 if hdr.count() == 6 and hdr.sectionSize(2) < 120:
-                    for _c, _w in ((0, 130), (1, 110), (2, 300), (3, 115), (4, 135), (5, 75)):
+                    for _c, _w in ((0, 250), (1, 160), (2, 350), (3, 140), (4, 160), (5, 85)):
                         self.graph_widget.setColumnWidth(_c, _w)
                 self.graph_widget._update_scrollbar_range()
                 self.graph_widget._update_graph_scrollbar_geom()
@@ -398,12 +400,14 @@ class HistoryTab(QWidget):
             self.content_splitter.setOrientation(Qt.Orientation.Horizontal)
             self.graph_container.setMinimumWidth(420)
             self.detail_panel.set_compact_vertical_layout(True)
+            self.detail_panel.setMinimumWidth(320)
             self.content_splitter.setStretchFactor(0, 0)
-            self.content_splitter.setStretchFactor(1, 1)
-            self.content_splitter.setStretchFactor(2, 0)
+            self.content_splitter.setStretchFactor(1, 3)
+            self.content_splitter.setStretchFactor(2, 2)
+            self.content_splitter.setChildrenCollapsible(False)
             sizes = self.content_splitter.sizes()
             if len(sizes) == 3 and (sizes[1] < 350 or sizes[2] < 150 or sum(sizes) < 400):
-                self.content_splitter.setSizes([220, 680, 380])
+                self.content_splitter.setSizes([220, 680, 480])
 
     def closeEvent(self, event) -> None:
         if hasattr(self, "_debounce_timer"):

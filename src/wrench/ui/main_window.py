@@ -361,9 +361,11 @@ class MainWindow(QMainWindow):
 
         # 3. Snapshots panel instance
         self.snapshots_panel = SnapshotsPanel(self._conn, self)
+        self.snapshots_panel.hide()
 
         # 4. Worktree panel instance (VP-3)
         self.worktree_panel = WorktreePanel(self._engine, self._settings_registry, self)
+        self.worktree_panel.hide()
         self.worktree_panel.open_worktree_requested.connect(self._on_open_worktree_tab)
 
         # Connect add category tab request from (+) menu
@@ -3382,8 +3384,15 @@ class MainWindow(QMainWindow):
             if hasattr(self, "context_header_bar") and shiboken6.isValid(self.context_header_bar):
                 self.context_header_bar.setVisible(enabled)
         elif key == "worktrees.enabled":
-            if hasattr(self, "worktree_panel") and shiboken6.isValid(self.worktree_panel):
-                self.worktree_panel.setVisible(bool(value))
+            if (
+                not value
+                and hasattr(self, "tab_container")
+                and shiboken6.isValid(self.tab_container)
+            ):
+                for i in reversed(range(self.tab_container.count())):
+                    meta = self.tab_container.tab_metadata(i)
+                    if meta and meta.tab_type == "worktrees":
+                        self.tab_container.remove_tab(i)
             if hasattr(self, "act_worktrees") and shiboken6.isValid(self.act_worktrees):
                 self.act_worktrees.setVisible(bool(value))
             if hasattr(self, "act_view_worktrees") and shiboken6.isValid(self.act_view_worktrees):

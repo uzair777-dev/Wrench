@@ -848,15 +848,15 @@ class CommitGraphWidget(QTableView):
             for col_i in range(6):
                 self.setItemDelegateForColumn(col_i, self._three_col_delegate)
 
-            header.resizeSection(0, 175)
+            header.resizeSection(0, 250)
             header.setSectionResizeMode(0, QHeaderView.Interactive)
-            header.resizeSection(1, 140)
+            header.resizeSection(1, 160)
             header.setSectionResizeMode(1, QHeaderView.Interactive)
             header.resizeSection(2, 350)
             header.setSectionResizeMode(2, QHeaderView.Stretch)
             header.resizeSection(3, 140)
             header.setSectionResizeMode(3, QHeaderView.Interactive)
-            header.resizeSection(4, 130)
+            header.resizeSection(4, 160)
             header.setSectionResizeMode(4, QHeaderView.Interactive)
             header.resizeSection(5, 85)
             header.setSectionResizeMode(5, QHeaderView.Interactive)
@@ -1123,7 +1123,7 @@ class CommitGraphWidget(QTableView):
             self._max_graph_scroll_x = 0
         else:
             max_lane = self._model.max_active_lane
-            max_graph_width = 10 + (max_lane + 1) * LANE_WIDTH + 30
+            max_graph_width = 10 + (max_lane + 1) * 22 + 30
             self._max_graph_scroll_x = max(0, max_graph_width - col_0_width)
 
         self._graph_scroll_x = max(0, min(self._graph_scroll_x, self._max_graph_scroll_x))
@@ -1142,7 +1142,9 @@ class CommitGraphWidget(QTableView):
         """Pans the graph horizontally with hysteresis deadzone to make node visible."""
         graph_col = 1 if self._three_column_mode else 0
         col_width = self.horizontalHeader().sectionSize(graph_col)
-        node_x = 10 + lane_index * LANE_WIDTH
+        lane_w = 22 if self._three_column_mode else LANE_WIDTH
+        node_offset = 14 if self._three_column_mode else 10
+        node_x = node_offset + lane_index * lane_w
         screen_x = node_x - self._graph_scroll_x
 
         left_threshold = 24

@@ -70,14 +70,15 @@ class TestHistoryTab:
             assert graph._graph_scroll_x == 40
             assert tab.graph_scrollbar.value() == 40
 
-            # Auto-scroll to outer lane 8 (node_x = 10 + 8 * 18 = 154)
-            # In 3-col mode (col_width=140), target_scroll is 84; in 2-col mode (col_width=100), 104
+            # Auto-scroll to outer lane 8 (node_x = 14 + 8 * 22 = 190 in 3-col mode)
+            # In 3-col mode (col_width=160), target_scroll is 110;
+            # in 2-col mode (col_width=100), target_scroll is 104
             graph._auto_scroll_to_node(8)
-            assert graph._graph_scroll_x in (84, 104)
-            assert tab.graph_scrollbar.value() in (84, 104)
+            assert graph._graph_scroll_x in (74, 110)
+            assert tab.graph_scrollbar.value() in (74, 110)
 
-            # Auto-scroll back to lane 0 (node_x = 10, screen_x = 10 - 104 = -94 < 24 threshold)
-            # target_scroll = max(0, 10 - 32) = 0
+            # Auto-scroll back to lane 0 (node_x = 14, screen_x = 14 - 110 = -96 < 24 threshold)
+            # target_scroll = max(0, 14 - 32) = 0
             graph._auto_scroll_to_node(0)
             assert graph._graph_scroll_x == 0
             assert tab.graph_scrollbar.value() == 0
